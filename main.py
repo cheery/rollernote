@@ -6,7 +6,7 @@ import lv2
 import audio
 import commands
 import gui
-# import math
+import math
 # from fractions import Fraction
 # import entities
 # import resolution
@@ -75,15 +75,12 @@ class Editor:
                 elif event.type == sdl2.SDL_MOUSEMOTION:
                     widget = self.widgets[event.motion.windowID]
                     widget.payload.mouse_motion(event.motion.x, event.motion.y)
-                    #expose = expose or hit_root.hit(x, y).on_hover(x,y)
                 elif event.type == sdl2.SDL_MOUSEBUTTONDOWN:
                     widget = self.widgets[event.button.windowID]
                     widget.payload.mouse_button_down(event.button.x, event.button.y, event.button.button)
-                    #expose = expose or hit_root.hit(x, y).on_button_down(x,y,event.button.button)
                 elif event.type == sdl2.SDL_MOUSEBUTTONUP:
                     widget = self.widgets[event.button.windowID]
                     widget.payload.mouse_button_up(event.button.x, event.button.y, event.button.button)
-                    #expose = expose or hit_root.hit(x, y).on_button_up(x,y,event.button.button)
                 elif event.type == sdl2.SDL_KEYDOWN:
                     widget = self.widgets[event.key.windowID]
                     widget.payload.key_down(event.key.keysym.sym, bool(event.key.repeat))
@@ -166,7 +163,30 @@ class MainPayload:
         ctx.set_source_rgba(1.0, 1.0, 1.0, 1.0)
         ctx.rectangle(0, 0, widget.width, widget.height)
         ctx.fill()
+        self.quickdraw()
         self.renderer.flip()
+
+        vu_meter = gui.Box(10, 10, 20, 10)
+        def _click_(x, y, button):
+            self.editor.transport.volume_meter.clipping0 = False
+            self.editor.transport.volume_meter.clipping1 = False
+            return True
+        vu_meter.on_button_down = _click_
+        hit.append(vu_meter)
+
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+        ctx.rectangle(10, 110, 80, 15)
+        ctx.stroke()
+        ctx.move_to(20, 122)
+        ctx.show_text(self.editor.plugin.name)
+        plugin_button = gui.Box(10, 110, 80, 15)
+        def _click_(x, y, button):
+            plugin = self.editor.plugin
+            if plugin.widget is None:
+                self.editor.widget(plugin.name, 120,70, lv2.UIPayload, plugin)
+            return True
+        plugin_button.on_button_down = _click_
+        hit.append(plugin_button)
 
 # line = 120
 # split_index = 0
@@ -451,18 +471,51 @@ class MainPayload:
 #                     entities.save_document('document.mide.zip', document)
 
     def update(self):
-        pass
+        if not self.renderer.widget.exposed:
+            self.quickdraw()
+            self.renderer.flip()
 
+    def quickdraw(self):
+        meter = self.editor.transport.volume_meter
+        ctx = self.ctx
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+        ctx.rectangle(10, 10, 20, 90)
+        ctx.fill()
+        ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
+        if meter.volume0 > 0:
+            dbfs = 20 * math.log10(meter.volume0)
+            v0 = min(1.0, max(0.0, 1 - (dbfs / -96)))
+        else:
+            v0 = 0.0
+        ctx.rectangle(11, 20+80 - 80*v0, 8, 80*v0)
+        ctx.fill()
+        if meter.volume1 > 0:
+            dbfs = 20 * math.log10(meter.volume1)
+            v1 = min(1.0, max(0.0, 1 - (dbfs / -96)))
+        else:
+            v1 = 0.0
+        ctx.rectangle(21, 20+80 - 80*v1, 8, 80*v1)
+        ctx.fill()
+        ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
+        if meter.clipping0:
+            ctx.rectangle(10, 10, 10, 10)
+        if meter.clipping1:
+            ctx.rectangle(20, 10, 10, 10)
+        ctx.fill()
+        
+
+                    #expose = expose or hit_root.hit(x, y).on_button_up(x,y,event.button.button)
     def mouse_motion(self, x, y):
-        pass
+        exposed = self.hit.hit(x, y).on_hover(x, y)
+        self.renderer.widget.exposed = self.renderer.widget.exposed or exposed
 
     def mouse_button_down(self, x, y, button):
-        plugin = self.editor.plugin
-        if plugin.widget is None:
-            self.editor.widget(plugin.name, 120,70, lv2.UIPayload, plugin)
+        exposed = self.hit.hit(x, y).on_button_down(x, y, button)
+        self.renderer.widget.exposed = self.renderer.widget.exposed or exposed
 
     def mouse_button_up(self, x, y, button):
-        pass
+        exposed = self.hit.hit(x, y).on_button_up(x, y, button)
+        self.renderer.widget.exposed = self.renderer.widget.exposed or exposed
 
     def key_down(self, sym, repeat):
         if not repeat:

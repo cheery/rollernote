@@ -3,6 +3,7 @@ import sdl2
 import lilv
 import numpy
 import resolution
+import math
 
 class Transport:
     def __init__(self, plugins):
@@ -10,6 +11,8 @@ class Transport:
         self.plugins = plugins
         self.time = 0.0
         self.live_voices = set()
+
+        self.volume_meter = Meter()
 
         self.audio_loop_c = sdl2.SDL_AudioCallback(self.audio_loop)
         wanted = sdl2.SDL_AudioSpec(48000, sdl2.AUDIO_F32, 2, self.block_length)
@@ -66,6 +69,14 @@ class Transport:
             audio0 += plugin.audio_outputs[0][1]
             audio1 += plugin.audio_outputs[1][1]
 
+        meter = self.volume_meter
+        r0 = math.sqrt(sum(audio0*audio0) / self.block_length)
+        r1 = math.sqrt(sum(audio1*audio1) / self.block_length)
+        meter.volume0 = max(r0, meter.volume0*meter.decay)
+        meter.volume1 = max(r1, meter.volume1*meter.decay)
+        meter.clipping0 = meter.clipping0 or max(abs(audio0)) > 1.0
+        meter.clipping1 = meter.clipping1 or max(abs(audio1)) > 1.0
+
         data = numpy.dstack([audio0, audio1]).flatten()
         ctypes.memmove(stream, data.ctypes.data, min(self.block_length*8, length))
 
@@ -81,6 +92,14 @@ class Transport:
 
     def close(self):
         sdl2.SDL_PauseAudio(1)
+
+class Meter:
+    def __init__(self):
+        self.volume0 = 0.0
+        self.volume1 = 0.0
+        self.clipping0 = False
+        self.clipping1 = False
+        self.decay = 0.95
 
 class LinearEnvelope:
     def __init__(self, vector):
