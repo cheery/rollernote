@@ -24,6 +24,14 @@ class Editor:
         self.time = 0.0
         self.widgets = dict()
 
+        bpm = audio.LinearEnvelope([ (0, 80, -2),
+                                     (4*3, 10, 0) ])
+        assert bpm.check_positiveness()
+        self.transport.live_voices.update([
+            audio.LiveVoice(self.plugin, voice, bpm)
+            for voice in self.document.track.voices
+        ])
+
     def widget(self, *args):
         widget = Widget(*args)
         self.widgets[widget.uid] = widget
