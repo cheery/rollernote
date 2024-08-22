@@ -1966,3 +1966,59 @@ LILV_URI_OUTPUT_PORT = "http://lv2plug.in/ns/lv2core#OutputPort"
 LILV_URI_PORT = "http://lv2plug.in/ns/lv2core#Port"
 LILV_OPTION_FILTER_LANG = "http://drobilla.net/ns/lilv#filter-lang"
 LILV_OPTION_DYN_MANIFEST = "http://drobilla.net/ns/lilv#dyn-manifest"
+
+LV2_STATE_IS_POD = 1 << 0
+LV2_STATE_IS_PORTABLE = 1 << 1
+LV2_STATE_IS_NATIVE = 1 << 2
+
+LV2_STATE_SUCCESS = 0
+LV2_STATE_ERR_UNKNOWN = 1
+LV2_STATE_ERR_BAD_TYPE = 2
+LV2_STATE_ERR_BAD_FLAGS = 3
+LV2_STATE_ERR_NO_FEATURE = 4
+LV2_STATE_ERR_NO_PROPERTY = 5
+LV2_STATE_ERR_NO_SPACE = 6
+
+LV2_State_Handle = POINTER(None)
+
+LV2_State_Store_Function = CFUNCTYPE(c_int,
+    LV2_State_Handle,
+    c_uint32, # key
+    c_void_p, # value
+    c_size_t, # size
+    c_uint32, # type
+    c_uint32) # flags
+LV2_State_Retrieve_Function = CFUNCTYPE(POINTER(None),
+    LV2_State_Handle,
+    c_uint32, # key
+    POINTER(c_size_t), # size
+    POINTER(c_uint32), # type
+    POINTER(c_uint32)) # flags
+class LV2_State_Interface(Structure):
+    _fields_ = [
+        ('save', CFUNCTYPE(c_int, LV2_Handle,
+                           LV2_State_Store_Function,
+                           LV2_State_Handle,
+                           c_uint32,
+                           POINTER(POINTER(LV2_Feature)))),
+        ('restore', CFUNCTYPE(c_int, LV2_Handle,
+                              LV2_State_Retrieve_Function,
+                              LV2_State_Handle,
+                              c_uint32,
+                              POINTER(POINTER(LV2_Feature)))),
+    ]
+
+LV2UI_Feature_Handle = c_void_p
+LV2_ResizeHandler = CFUNCTYPE(
+  c_int,
+  LV2UI_Feature_Handle,
+  c_int,
+  c_int)
+class LV2_Resize(Structure):
+    _fields_ = [
+       ('handle', c_void_p),
+       ('ui_resize', LV2_ResizeHandler) ]
+
+class LV2UI_Idle_Interface(Structure):
+    _fields_ = [('idle', CFUNCTYPE(None, LV2UI_Handle))]
+

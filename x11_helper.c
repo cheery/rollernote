@@ -1,3 +1,4 @@
+// gcc -shared -o x11_helper.so x11_helper.c -lX11
 #include <X11/Xlib.h>
 
 Visual* get_default_visual(Display* dpy) {
