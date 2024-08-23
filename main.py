@@ -146,7 +146,7 @@ class MainPayload:
         self.ctx = cairo.Context(self.renderer.surface)
         self.hit = gui.Hit()
 
-        self.tool = SplittingTool()
+        self.tool = SplittingTool(editor.document)
 
     def draw(self):
         widget = self.renderer.widget
@@ -177,13 +177,13 @@ class MainPayload:
         ctx.move_to(103, 20+32+28)
         ctx.show_text(chr(0x25B6))
 
-        bb = gui.Box(132+10, 20+32, 32, 32)
+        bb = gui.Box(132+10, 20+32, 32*3, 32)
         def _click_(x, y, button):
             instrument = self.editor.document.instrument
-            instrument.patch, instrument.data = self.plugin.save()
+            instrument.patch, instrument.data = self.editor.plugin.save()
             entities.save_document('document.mide.zip', self.editor.document)
             return False
-        bb.on_button_down = _button_down_
+        bb.on_button_down = _click_
         hit.append(bb)
         ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
         ctx.set_font_size(32)
@@ -191,6 +191,19 @@ class MainPayload:
         ctx.stroke()
         ctx.move_to(132+10, 20+32+28)
         ctx.show_text("save")
+
+        bb = gui.Box(132+20+32*3, 20+32, 32*2, 32)
+        def _click_(x, y, button):
+            self.tool = SplittingTool(self.editor.document)
+            return False
+        bb.on_button_down = _click_
+        hit.append(bb)
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+        ctx.set_font_size(32)
+        ctx.rectangle(132+20+32*3, 20+32, 32*2, 32)
+        ctx.stroke()
+        ctx.move_to(132+20+32*3, 20+32+28)
+        ctx.show_text("split")
 
         vu_meter = gui.Box(10, 10, 20, 10)
         def _click_(x, y, button):
@@ -390,81 +403,96 @@ class MainPayload:
                     offsets.append(x)
                     beats.append(beat + FULL_MEASURE_DURATION - time)
 
-                base, dots, triplet = resolution.categorize_note_duration(duration / beat_unit)
-                if len(seg.notes) == 0:
-                    t = empty_segment_position[seg]
+                cat = resolution.categorize_note_duration(duration / beat_unit)
+                if cat is None:
+                    if len(seg.notes) == 0:
+                        t = empty_segment_position[seg]
+                    else:
+                        t = mean(pitch.position for pitch in seg.notes)
                     t = (t - t % 12) - 6
                     k = (high_bound - t) * 5
-                    ctx.set_font_size(50)
+                    ctx.set_font_size(10)
                     ctx.move_to(x - 4, 150 + k -2)
-                    c = {
-                        Fraction(2,1): chr(119098),
-                        Fraction(1,1): chr(119099),
-                        Fraction(1,2): chr(119100),
-                        Fraction(1,4): chr(119101),
-                        Fraction(1,8): chr(119102),
-                        Fraction(1,16): chr(119103),
-                        Fraction(1,32): chr(119104),
-                        Fraction(1,64): chr(119105),
-                        Fraction(1,128): chr(119106),
-                    }[base]
-                    ctx.show_text(c)
-                    if triplet:
-                        ctx.move_to(x, 135)
-                        ctx.line_to(x + 5, 150 + k + 5)
-                        ctx.line_to(x + 5, 150 + k - 5)
-                        ctx.line_to(x, 150 + k)
-                        ctx.stroke()
-                    for dot in range(dots):
-                        ctx.arc(x + 16 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
-                        ctx.fill()
-                for pitch in seg.notes:
-                    k = (high_bound - pitch.position) * 5
-                    # TODO: render accidental only when it changes in measure.
-                    if pitch.accidental is not None:
-                        ctx.set_font_size(25)
-                        xt = ctx.text_extents(resolution.char_accidental[pitch.accidental])
-                        ctx.move_to(x - 8 - xt.width, 150 + k + 5)
-                        ctx.show_text(resolution.char_accidental[pitch.accidental])
-                    # TODO: represent triplet with some smarter way
-                    if triplet:
-                        ctx.move_to(x -5, 150 + k)
-                        ctx.line_to(x +5, 150 + k + 5)
-                        ctx.line_to(x +5, 150 + k - 5)
-                        ctx.line_to(x -5, 150 + k - 5)
-                    else:
-                        ctx.move_to(x +5, 150 + k)
-                        ctx.arc(x, 150 + k, 5, 0, 2*math.pi)
-                    if base >= Fraction(1, 2):
-                        ctx.stroke()
-                    else:
-                        ctx.fill()
-                    for dot in range(dots):
-                        ctx.arc(x + 8 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
-                        ctx.fill()
-                    if seg in layout:
-                        px = layout[seg][-1]
-                        ctx.move_to(px+8, 150+k + 3)
-                        ctx.curve_to(px+8, 158 + k + 3,
-                                     x-8, 158 + k + 3,
-                                     x-8, 150 + k + 3)
-                        ctx.stroke()
-                if len(seg.notes) > 0:
-                    high = 150 + min((high_bound - p.position)*5 for p in seg.notes)
-                    low = 150 + max((high_bound - p.position)*5 for p in seg.notes)
-                    if high < low:
-                        ctx.move_to(x + 5, high)
-                        ctx.line_to(x + 5, low)
-                        ctx.stroke()
-                    if base <= Fraction(1, 2):
-                        ctx.move_to(x + 5, high)
-                        ctx.line_to(x + 5, high - 30)
-                        ctx.stroke()
-                    for d in range(5):
-                        if base <= Fraction(1, 2**(d+3)):
-                            ctx.move_to(x + 5, high - 30 + d * 4)
-                            ctx.line_to(x + 5 + 5, high - 30 + d * 4 + 8)
+                    ctx.show_text(f'|{duration / beat_unit}|')
+                    d = resolution.quantize_fraction(duration / beat_unit)
+                    cat = resolution.categorize_note_duration(d)
+
+                if True:
+                    base, dots, triplet = cat
+                    if len(seg.notes) == 0:
+                        t = empty_segment_position[seg]
+                        t = (t - t % 12) - 6
+                        k = (high_bound - t) * 5
+                        ctx.set_font_size(50)
+                        ctx.move_to(x - 4, 150 + k -2)
+                        c = {
+                            Fraction(2,1): chr(119098),
+                            Fraction(1,1): chr(119099),
+                            Fraction(1,2): chr(119100),
+                            Fraction(1,4): chr(119101),
+                            Fraction(1,8): chr(119102),
+                            Fraction(1,16): chr(119103),
+                            Fraction(1,32): chr(119104),
+                            Fraction(1,64): chr(119105),
+                            Fraction(1,128): chr(119106),
+                        }[base]
+                        ctx.show_text(c)
+                        if triplet:
+                            ctx.move_to(x, 135)
+                            ctx.line_to(x + 5, 150 + k + 5)
+                            ctx.line_to(x + 5, 150 + k - 5)
+                            ctx.line_to(x, 150 + k)
                             ctx.stroke()
+                        for dot in range(dots):
+                            ctx.arc(x + 16 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
+                            ctx.fill()
+                    for pitch in seg.notes:
+                        k = (high_bound - pitch.position) * 5
+                        # TODO: render accidental only when it changes in measure.
+                        if pitch.accidental is not None:
+                            ctx.set_font_size(25)
+                            xt = ctx.text_extents(resolution.char_accidental[pitch.accidental])
+                            ctx.move_to(x - 8 - xt.width, 150 + k + 5)
+                            ctx.show_text(resolution.char_accidental[pitch.accidental])
+                        # TODO: represent triplet with some smarter way
+                        if triplet:
+                            ctx.move_to(x -5, 150 + k)
+                            ctx.line_to(x +5, 150 + k + 5)
+                            ctx.line_to(x +5, 150 + k - 5)
+                            ctx.line_to(x -5, 150 + k - 5)
+                        else:
+                            ctx.move_to(x +5, 150 + k)
+                            ctx.arc(x, 150 + k, 5, 0, 2*math.pi)
+                        if base >= Fraction(1, 2):
+                            ctx.stroke()
+                        else:
+                            ctx.fill()
+                        for dot in range(dots):
+                            ctx.arc(x + 8 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
+                            ctx.fill()
+                        if seg in layout:
+                            px = layout[seg][-1]
+                            ctx.move_to(px+8, 150+k + 3)
+                            ctx.curve_to(px+8, 158 + k + 3,
+                                         x-8, 158 + k + 3,
+                                         x-8, 150 + k + 3)
+                            ctx.stroke()
+                    if len(seg.notes) > 0:
+                        high = 150 + min((high_bound - p.position)*5 for p in seg.notes)
+                        low = 150 + max((high_bound - p.position)*5 for p in seg.notes)
+                        if high < low:
+                            ctx.move_to(x + 5, high)
+                            ctx.line_to(x + 5, low)
+                            ctx.stroke()
+                        if base <= Fraction(1, 2):
+                            ctx.move_to(x + 5, high)
+                            ctx.line_to(x + 5, high - 30)
+                            ctx.stroke()
+                        for d in range(5):
+                            if base <= Fraction(1, 2**(d+3)):
+                                ctx.move_to(x + 5, high - 30 + d * 4)
+                                ctx.line_to(x + 5 + 5, high - 30 + d * 4 + 8)
+                                ctx.stroke()
 
                 resolution.insert_in_list(layout, seg, x)
 
@@ -512,10 +540,10 @@ class MainPayload:
 
         def mk_cb(bb, beat, seg_index, spacing):
             def _hover_(x,y):
-                return self.tool.hover_segment(bb, beat, seg_index, x, y)
+                return self.tool.hover_segment(bb, beat, seg_index, spacing, x, y)
             bb.on_hover = _hover_
             def _button_down_(x,y,button):
-                return self.tool.button_down_segment(bb, beat, seg_index, x, y, button)
+                return self.tool.button_down_segment(bb, beat, seg_index, spacing, x, y, button)
             bb.on_button_down = _button_down_
 
         voice = document.track.voices[0]
@@ -547,191 +575,6 @@ class MainPayload:
         self.tool.draw(ctx, hit)
         self.quickdraw()
         self.renderer.flip()
-
-#                 #ctx.set_source_rgba(1,0,0,0.2)
-#                 #ctx.rectangle(x + p, 85, spacing[base] * 20 + 20, 135)
-#                 #ctx.fill()
-#                 box = gui.Box(x+p - 20, 85, spacing[base] * 20 + 20, 135)
-#                 t = x
-#                 def h(_, __):
-#                     global split_index, place, leveys
-#                     split_index = this_index
-#                     place = t + p - 20
-#                     leveys = spacing[base] * 20 + 20
-#                     return True
-#                 box.on_hover = h
-#                 hit_root.append(box)
-#                 return spacing[base] * 20 + 20
-
-# line = 120
-# split_index = 0
-# place = 0
-# leveys = 80
-# 
-#     if main_window in active_windows and expose:
-#         expose = False
-#         hit_root = gui.Hit()
-#         c = gui.Circle(20, 20, 10)
-#         def clicker(x, y, button):
-#             print('clicked on circle')
-#             transport.active_voices.update(map(ActiveVoice, document.track.voices))
-#         c.on_button_down = clicker
-#         hit_root.append(c)
-#         c = gui.Box(300, 300, 250, 250)
-#         def clicker(x, y, button):
-#             print('clicked on box')
-#         c.on_button_down = clicker
-#         hit_root.append(c)
-# 
-#         ctx.select_font_face('sans-serif')
-# 
-#         ctx.set_source_rgba(0, 0, 0, 1.0)
-#         ctx.arc(20, 20, 10, 0, 2*math.pi)
-#         ctx.stroke()
-# 
-#         ctx.set_source_rgba(0.75, 0.75, 0.75, 1.0)
-#         for y in range(100, 150, 10):
-#           ctx.move_to(10, y)
-#           ctx.line_to(1190, y)
-#         for y in range(160, 210, 10):
-#           ctx.move_to(10, y)
-#           ctx.line_to(1190, y)
-#         ctx.stroke()
-#         ctx.set_source_rgba(0.75, 0.75, 0.75, 1.0)
-#         ctx.arc(50, 150, 5, 0, 2*math.pi)
-#         ctx.fill()
-#         ctx.set_font_size(20)
-#         text = "C4"
-#         ext = ctx.text_extents(text)
-#         ctx.move_to(57, 150 - ext.y_bearing/2)
-#         ctx.show_text(text)
-#         bar = 57 + ext.width + 2
-#         ctx.set_source_rgba(0.75, 0.75, 0.75, 0.5)
-#         ctx.set_font_size(12)
-#         ctx.move_to(bar, 100-4)
-#         ctx.show_text('1')
-#         ctx.move_to(bar, 100)
-#         ctx.line_to(bar, 200)
-#         ctx.stroke()
-#         x = bar + 20
-#         #bar = x + 40 * 4 - 20
-#         #ctx.set_source_rgba(0.75, 0.75, 0.75, 0.5)
-#         #ctx.move_to(bar, 100)
-#         #ctx.line_to(bar, 200)
-#         #ctx.stroke()
-#         #bar = x + 40 * 8 - 20
-#         #ctx.set_source_rgba(0.75, 0.75, 0.75, 0.5)
-#         #ctx.move_to(bar, 100)
-#         #ctx.line_to(bar, 200)
-#         #ctx.stroke()
-#         beats_in_measure = 4
-#         def plot_vg(notes, duration, p, this_index):
-#         for voice in document.track.voices:
-#             p = 0
-#             beat_phase = 0
-#             bar_index = 2
-#             for ti, vg in enumerate(voice):
-#                 duration = vg.duration
-#                 while beat_phase + duration > 4:
-#                     t = p
-#                     thisd = 4 - beat_phase
-#                     duration -= thisd
-#                     p += plot_vg(vg.notes, thisd, p, ti)
-#                     beat_phase = (beat_phase + thisd) % beats_in_measure
-#                     if beat_phase == 0:
-#                         bar = x + p - 20
-#                         ctx.set_source_rgba(0.75, 0.75, 0.75, 0.5)
-#                         ctx.set_font_size(12)
-#                         ctx.move_to(bar, 100-4)
-#                         ctx.show_text(str(bar_index))
-#                         bar_index += 1
-#                         ctx.move_to(bar, 100)
-#                         ctx.line_to(bar, 200)
-#                         ctx.stroke()
-#                     for note in vg.notes:
-#                         ctx.set_source_rgba(0.2, 0.2, 0.2, 1.0)
-#                         rel_y = 32 - note.position
-#                 p += plot_vg(vg.notes, duration, p, ti)
-#                 beat_phase = (beat_phase + duration) % beats_in_measure
-#                 if beat_phase == 0:
-#                     bar = x + p - 20
-#                     ctx.set_source_rgba(0.75, 0.75, 0.75, 0.5)
-#                     ctx.set_font_size(12)
-#                     ctx.move_to(bar, 100-4)
-#                     ctx.show_text(str(bar_index))
-#                     bar_index += 1
-#                     ctx.move_to(bar, 100)
-#                     ctx.line_to(bar, 200)
-#                     ctx.stroke()
-# 
-#         total = document.track.voices[0][split_index].duration / 4
-#         ctx.set_source_rgba(1,1,1,1)
-#         ctx.rectangle(place, 100, leveys, 100)
-#         ctx.fill()
-#         ctx.set_source_rgba(0,0,0,1)
-#         ctx.rectangle(place, 100, leveys, 100)
-#         ctx.stroke()
-#         ctx.set_source_rgba(0.7,0.7,0.7,1)
-#         ctx.move_to(line, 100)
-#         ctx.line_to(line, 100+100)
-#         ctx.stroke()
-#         ctx.set_source_rgba(0,0,0,1)
-#         h = gui.Box(place, 100, leveys, 100)
-#         def f(x, y):
-#             global line
-#             ia = resolution.quantize_fraction((x - place) / leveys * float(total))
-#             ib = total - ia
-#             if ib in resolution.generate_all_note_durations():
-#                 line = x
-#                 return True
-#         h.on_hover = f
-#         def g(x,y,button):
-#             ia = resolution.quantize_fraction((line - place) / leveys * float(total))
-#             ib = total - ia
-#             if ib in resolution.generate_all_note_durations():
-#                 print('splitting')
-#                 n1 = list(document.track.voices[0][split_index].notes)
-#                 n2 = list(document.track.voices[0][split_index].notes)
-#                 document.track.voices[0][split_index:split_index+1] = [
-#                     VoiceGlyph(n1, ia * 4),
-#                     VoiceGlyph(n2, ib * 4),
-#                 ]
-#                 return True
-#         h.on_button_down = g
-#         hit_root.append(h)
-# 
-#         a = resolution.quantize_fraction((line - place) / leveys * float(total))
-#         b = total - a
-#         tab = {
-#             Fraction(2,1): chr(119132),
-#             Fraction(1,1): chr(119133),
-#             Fraction(1,2): chr(119134),
-#             Fraction(1,4): chr(119135),
-#             Fraction(1,8): chr(119136),
-#             Fraction(1,16): chr(119137),
-#             Fraction(1,32): chr(119138),
-#             Fraction(1,64): chr(119139),
-#             Fraction(1,128): chr(119140),
-#         }
-#         if b in resolution.generate_all_note_durations():
-#             ctx.select_font_face('FreeSerif')
-#             ctx.set_font_size(25)
-#             base, dots, triplet = resolution.categorize_note_duration(a)
-#             ctx.move_to(place + 5, 100 + 30)
-#             ctx.show_text(tab[base] + '.'*dots)
-#             ctx.set_font_size(12)
-#             ctx.move_to(place + 5, 100 + 42)
-#             ctx.show_text('3'*int(triplet))
-#             ctx.set_font_size(25)
-#             base, dots, triplet = resolution.categorize_note_duration(b)
-#             text = tab[base] + '.'*dots
-#             ex = ctx.text_extents(text)
-#             ctx.move_to(place + leveys - 5 - ex.width, 100 + 30)
-#             ctx.show_text(text)
-#             ctx.set_font_size(12)
-#             ctx.move_to(place + leveys - 5 - ex.width, 100 + 42)
-#             ctx.show_text('3'*int(triplet))
-# 
 
     def update(self):
         if not self.renderer.widget.exposed:
@@ -797,18 +640,104 @@ class MainPayload:
     def close(self):
         self.renderer.close()
 
+# TODO: Figure out where beat unit can be received from.
 class SplittingTool:
-    def __init__(self):
+    def __init__(self, document):
+        self.document = document
+        self.primed = False
         self.split_index = 0
+        self.split_point = 0.0
+        self.x = 0
+        self.y = 0
+        self.width = 0
+        self.height = 0
+        self.level = 0
+        self.split = None
 
-    def hover_segment(self, bb, beat, seg_index, x, y):
-        return False
+    def hover_segment(self, bb, beat, seg_index, spacing, x, y):
+        if seg_index != self.split_index:
+            self.split = None
+        self.primed = True
+        self.split_index = seg_index
+        self.split_point = (x - bb.x) / bb.width
+        self.x = bb.x
+        self.y = bb.y
+        self.width = bb.width
+        self.height = bb.height
+        self.level = y
+        if seg_index != -1:
+            total = self.document.track.voices[0][self.split_index].duration / 4
+            a = resolution.quantize_fraction(self.split_point * float(total))
+            b = total - a
+            if b in resolution.generate_all_note_durations():
+                self.split = (a, b)
+        else:
+            a = resolution.quantize_fraction((x - bb.x) / spacing / 4)
+            self.split = (a, None)
+        return True
 
-    def button_down_segment(self, bb, beat, seg_index, x, y, button):
+    def button_down_segment(self, bb, beat, seg_index, spacing, x, y, button):
+        if self.split is not None:
+            a, b = self.split
+            if b is None:
+                self.document.track.voices[0].append(entities.VoiceSegment([], a * 4))
+            else:
+                n1 = list(self.document.track.voices[0][self.split_index].notes)
+                n2 = list(self.document.track.voices[0][self.split_index].notes)
+                self.document.track.voices[0][self.split_index:self.split_index+1] = [
+                    entities.VoiceSegment(n1, a * 4),
+                    entities.VoiceSegment(n2, b * 4),
+                ]
+            return True
         return False
 
     def draw(self, ctx, hit):
-        pass
+        if not self.primed:
+            return
+        ctx.set_source_rgba(1,1,1,1)
+        ctx.rectangle(self.x, self.y, self.width, self.height)
+        ctx.fill()
+        ctx.set_source_rgba(0,0,0,1)
+        ctx.rectangle(self.x, self.y, self.width, self.height)
+        ctx.stroke()
+        ctx.set_source_rgba(0.7,0.7,0.7,1)
+        ctx.move_to(self.x + self.width * self.split_point, self.y)
+        ctx.line_to(self.x + self.width * self.split_point, self.y + self.height)
+        ctx.stroke()
+
+        ctx.set_source_rgba(0,0,0,1)
+        if self.split is not None:
+            a, b = self.split
+        
+            tab = {
+                Fraction(2,1): chr(119132),
+                Fraction(1,1): chr(119133),
+                Fraction(1,2): chr(119134),
+                Fraction(1,4): chr(119135),
+                Fraction(1,8): chr(119136),
+                Fraction(1,16): chr(119137),
+                Fraction(1,32): chr(119138),
+                Fraction(1,64): chr(119139),
+                Fraction(1,128): chr(119140),
+            }
+
+            ctx.set_font_size(25)
+            base, dots, triplet = resolution.categorize_note_duration(a)
+            ctx.move_to(self.x + 5, self.level)
+            ctx.show_text(tab[base] + '.'*dots)
+            ctx.set_font_size(12)
+            ctx.move_to(self.x + 5, self.level + 12)
+            ctx.show_text('3'*int(triplet))
+            ctx.set_font_size(25)
+            if b is not None:
+                base, dots, triplet = resolution.categorize_note_duration(b)
+                text = tab[base] + '.'*dots
+                ex = ctx.text_extents(text)
+                ctx.move_to(self.x + self.width - 5 - ex.width, self.level)
+                ctx.show_text(text)
+                ctx.set_font_size(12)
+                ctx.move_to(self.x + self.width - 5 - ex.width, self.level + 12)
+                ctx.show_text('3'*int(triplet))
 
 if __name__=='__main__':
     Editor().ui()

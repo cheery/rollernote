@@ -180,8 +180,8 @@ class Plugin:
         data = {}
         @lilv.LV2_State_Store_Function
         def store_hook(_, key, value, size, ty, flags):
-            if not (flags & LV2_STATE_IS_POD):
-                return LV2_STATE_ERR_BAD_FLAGS
+            if not (flags & lilv.LV2_STATE_IS_POD):
+                return lilv.LV2_STATE_ERR_BAD_FLAGS
             dt = ctypes.cast(value, ctypes.POINTER(ctypes.c_char))
             identifier = len(data)
             filename = f'{name}.{identifier}.patch'
@@ -189,9 +189,9 @@ class Plugin:
                 'type': self.uri_map[ty],
                 'path': filename
             }
-            data[filename] = data[:size]
-            return LV2_STATE_SUCCESS
-        self.state[0].save(instance.get_handle(),
+            data[filename] = dt[:size]
+            return lilv.LV2_STATE_SUCCESS
+        self.state[0].save(self.instance.get_handle(),
                            store_hook,
                            None,
                            (lilv.LV2_STATE_IS_POD | lilv.LV2_STATE_IS_PORTABLE),
