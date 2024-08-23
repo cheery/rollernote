@@ -7,10 +7,8 @@ import audio
 import commands
 import gui
 import math
-# from fractions import Fraction
-# import entities
-# import resolution
-# import commands
+import resolution
+from fractions import Fraction
 
 class Editor:
     def __init__(self):
@@ -33,8 +31,8 @@ class Editor:
         self.time = 0.0
         self.widgets = dict()
 
-        bpm = audio.LinearEnvelope([ (0, 80, -2),
-                                     (4*3, 10, 0) ])
+        bpm = audio.LinearEnvelope([ (0, 80, 0) ])
+                                     #(4*3, 10, 0) ])
         assert bpm.check_positiveness()
         self.transport.live_voices.update([
             audio.LiveVoice(self.plugin, voice, bpm)
@@ -103,7 +101,6 @@ class Editor:
                                 widget.window.close()
                                 self.widgets.pop(widget.uid)
 
-        #sdl2.SDL_PauseAudio(1)
         for plugin in list(self.plugins.plugins):
             plugin.close()
         sdl2.ext.quit()
@@ -160,11 +157,10 @@ class MainPayload:
         widget = self.renderer.widget
         hit = self.hit = gui.Hit()
         ctx = self.ctx
+        ctx.select_font_face('FreeSerif')
         ctx.set_source_rgba(1.0, 1.0, 1.0, 1.0)
         ctx.rectangle(0, 0, widget.width, widget.height)
         ctx.fill()
-        self.quickdraw()
-        self.renderer.flip()
 
         vu_meter = gui.Box(10, 10, 20, 10)
         def _click_(x, y, button):
@@ -175,6 +171,7 @@ class MainPayload:
         hit.append(vu_meter)
 
         ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+        ctx.set_font_size(10)
         ctx.rectangle(10, 110, 80, 15)
         ctx.stroke()
         ctx.move_to(20, 122)
@@ -187,6 +184,282 @@ class MainPayload:
             return True
         plugin_button.on_button_down = _click_
         hit.append(plugin_button)
+
+        document = self.editor.document
+        staff = 1, 3
+        canon_key = 0
+        key = resolution.canon_key(canon_key)
+
+        major = resolution.major_tonic(canon_key)
+        minor = resolution.minor_tonic(canon_key)
+        ctx.set_font_size(20)
+        ctx.move_to(100, 150)
+        ctx.show_text(f"major: {resolution.pitch_name(major, key, False)}")
+        ctx.move_to(100, 130)
+        ctx.show_text(f"minor: {resolution.pitch_name(minor, key, False)}")
+
+        positions = [pitch.position
+                     for voice in document.track.voices
+                     for vseg in voice
+                     for pitch in vseg.notes]
+        a = min(staff[0], (min(positions) - 2)//12)
+        b = staff[0]
+        c = staff[1]
+        d = max(staff[1], (max(positions) + 12 - 6)//12)
+        ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+        low_bound = 12*a+2
+        low_staff = 12*b+2
+        high_staff = 12*c+6
+        high_bound = 12*d+6
+        for i in range(12*b+2+2,12*c+6, 2):
+            if i % 12 != 4 or b==c:
+                k = (high_bound - i)*5
+                ctx.move_to(0, 150+k)
+                ctx.line_to(self.renderer.widget.width, 150+k)
+                ctx.stroke()
+
+        ctx.set_font_size(10)
+        for i in range(low_bound+1, high_bound+1, 2):
+            k = (high_bound - i) * 5
+            t = resolution.pitch_name(entities.Pitch(i), key)
+            ctx.move_to(10, 150+k+4)
+            ctx.show_text(t)
+
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+        ctx.set_font_size(20)
+        i = (low_staff + high_staff) // 2
+        j = i - i % 7
+
+        p = min((j + x for x in [-7, -4, -3, 0, 3, 4] if (j + x) % 2 == 0),
+                key = lambda p: abs(p - i))
+        k = (high_bound - p) * 5
+        t = resolution.pitch_name(entities.Pitch(p))
+        ctx.move_to(47, 150+k+7)
+        ctx.show_text(t)
+        ctx.arc(40, 150+k, 5, 0, 2*math.pi)
+        ctx.fill()
+
+        ctx.set_font_size(25)
+        x = 80
+        if canon_key >= 0:
+            for z in resolution.sharps[:canon_key]:
+                for i in range(low_staff+12, high_staff, 12):
+                    j = (i - i % 7) + z
+                    j = j - 7 * (z > 4)
+                    k = (high_bound - j)*5
+                    ctx.move_to(x, 150+k+4)
+                    ctx.show_text(resolution.char_accidental[1])
+                x += 7
+        else:
+            for z in reversed(resolution.sharps[canon_key:]):
+                for i in range(low_staff+12, high_staff, 12):
+                     j = (i - i % 7) + z
+                     j = j - 7 * (z > 2)
+                     k = (high_bound - j)*5
+                     ctx.move_to(x, 150+k+4)
+                     #ctx.show_text(str(i % 7))
+                     ctx.show_text(resolution.char_accidental[-1])
+                x += 7
+
+        for i in range(low_staff, high_staff):
+            if i % 12 == 10:
+                k = (high_bound - i) * 5
+                ctx.set_font_size(25)
+                ctx.move_to(x + 10, 150+k-2)
+                ctx.show_text('4')
+                ctx.move_to(x + 10, 150+k+18)
+                ctx.show_text('4')
+
+        ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+        ctx.move_to(x + 30, 150 + (high_bound - high_staff)*5 + 20)
+        ctx.line_to(x + 30, 150 + (high_bound - low_staff)*5 - 20)
+        ctx.stroke()
+
+        x += 30
+
+        p = 20
+        q = 50
+        a = math.log(p / q) / math.log(1 / 128)
+
+        x += 20
+        layout = {}
+
+        def mean(xs):
+            xs = list(xs)
+            return sum(xs) // len(xs)
+
+        empty_segment_position = {}
+        for voice in document.track.voices:
+            position = None
+            for seg in voice:
+                if len(seg.notes) == 0:
+                    if position is None:
+                        empty_segment_position[seg] = []
+                    else:
+                        empty_segment_position[seg] = [position]
+                else:
+                    position = mean(pitch.position for pitch in seg.notes)
+            position = None
+            for seg in reversed(voice):
+                if len(seg.notes) == 0:
+                    if position is None:
+                        positions = empty_segment_position[seg]
+                        if len(positions) == 0:
+                            positions.append((low_staff + high_staff)//2)
+                    else:
+                        empty_segment_position[seg].append(position)
+                else:
+                    position = mean(pitch.position for pitch in seg.notes)
+            for seg in reversed(voice):
+                if len(seg.notes) == 0:
+                    empty_segment_position[seg] = mean(empty_segment_position[seg])
+
+        FULL_MEASURE_DURATION = 4
+        measured_voices = []
+        for voice in document.track.voices:
+            measures = []
+            measure = []
+            remain = FULL_MEASURE_DURATION
+            for seg in voice:
+                duration = seg.duration
+                while remain < duration:
+                    if remain > 0:
+                        duration -= remain
+                        measure.append((remain, seg))
+                    measures.append(measure)
+                    remain = FULL_MEASURE_DURATION
+                    measure = []
+                if duration != 0: # seg.duration <= remain
+                    remain -= seg.duration
+                    measure.append((duration, seg))
+            measures.append(measure)
+            measured_voices.append(measures)
+
+        while sum(map(len, measured_voices)) > 0:
+            # "Efficient algorithms for music engraving,
+            #  focusing on correctness"
+            queue = []
+            all = FULL_MEASURE_DURATION
+
+            for measures in measured_voices:
+                if len(measures) > 0:
+                    queue.append((FULL_MEASURE_DURATION, measures.pop(0)))
+
+            ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+            while len(queue) > 0:
+                queue.sort(key = lambda k: -k[0])
+                time, voice = queue.pop(0)
+                duration, seg = voice[0]
+                if time < all:
+                    x += q * (all - time) ** a
+                    all = time
+
+                    if len(seg.notes) == 0:
+                        t = empty_segment_position[seg]
+                        t = (t - t % 12) - 6
+                        k = (high_bound - t) * 5
+                        ctx.set_font_size(50)
+                        ctx.move_to(x - 4, 150 + k -2)
+                        c = {
+                            Fraction(2,1): chr(119098),
+                            Fraction(1,1): chr(119099),
+                            Fraction(1,2): chr(119100),
+                            Fraction(1,4): chr(119101),
+                            Fraction(1,8): chr(119102),
+                            Fraction(1,16): chr(119103),
+                            Fraction(1,32): chr(119104),
+                            Fraction(1,64): chr(119105),
+                            Fraction(1,128): chr(119106),
+                        }[base]
+                        ctx.show_text(c)
+                        if triplet:
+                            ctx.move_to(x, 135)
+                            ctx.line_to(x + 5, 150 + k + 5)
+                            ctx.line_to(x + 5, 150 + k - 5)
+                            ctx.line_to(x, 150 + k)
+                            ctx.stroke()
+                        for dot in range(dots):
+                            ctx.arc(x + 16 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
+                            ctx.fill()
+                for pitch in seg.notes:
+                    k = (high_bound - pitch.position) * 5
+                    base, dots, triplet = resolution.categorize_note_duration(duration / 4)
+                    # TODO: render accidental only when it changes in measure.
+                    if pitch.accidental is not None:
+                        ctx.set_font_size(25)
+                        xt = ctx.text_extents(resolution.char_accidental[pitch.accidental])
+                        ctx.move_to(x - 8 - xt.width, 150 + k + 5)
+                        ctx.show_text(resolution.char_accidental[pitch.accidental])
+                    # TODO: represent triplet with some smarter way
+                    if triplet:
+                        ctx.move_to(x -5, 150 + k)
+                        ctx.line_to(x +5, 150 + k + 5)
+                        ctx.line_to(x +5, 150 + k - 5)
+                        ctx.line_to(x -5, 150 + k - 5)
+                    else:
+                        ctx.move_to(x +5, 150 + k)
+                        ctx.arc(x, 150 + k, 5, 0, 2*math.pi)
+                    if base >= Fraction(1, 2):
+                        ctx.stroke()
+                    else:
+                        ctx.fill()
+                    for dot in range(dots):
+                        ctx.arc(x + 8 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
+                        ctx.fill()
+                    if seg in layout:
+                        px = layout[seg][-1]
+                        ctx.move_to(px+8, 150+k + 3)
+                        ctx.curve_to(px+8, 158 + k + 3,
+                                     x-8, 158 + k + 3,
+                                     x-8, 150 + k + 3)
+                        ctx.stroke()
+                if len(seg.notes) > 0:
+                    high = 150 + min((high_bound - p.position)*5 for p in seg.notes)
+                    low = 150 + max((high_bound - p.position)*5 for p in seg.notes)
+                    if high < low:
+                        ctx.move_to(x + 5, high)
+                        ctx.line_to(x + 5, low)
+                        ctx.stroke()
+                    if base <= Fraction(1, 2):
+                        ctx.move_to(x + 5, high)
+                        ctx.line_to(x + 5, high - 30)
+                        ctx.stroke()
+                    for d in range(5):
+                        if base <= Fraction(1, 2**(d+3)):
+                            ctx.move_to(x + 5, high - 30 + d * 4)
+                            ctx.line_to(x + 5 + 5, high - 30 + d * 4 + 8)
+                            ctx.stroke()
+#                 #ctx.set_source_rgba(1,0,0,0.2)
+#                 #ctx.rectangle(x + p, 85, spacing[base] * 20 + 20, 135)
+#                 #ctx.fill()
+#                 box = gui.Box(x+p - 20, 85, spacing[base] * 20 + 20, 135)
+#                 t = x
+#                 def h(_, __):
+#                     global split_index, place, leveys
+#                     split_index = this_index
+#                     place = t + p - 20
+#                     leveys = spacing[base] * 20 + 20
+#                     return True
+#                 box.on_hover = h
+#                 hit_root.append(box)
+#                 return spacing[base] * 20 + 20
+
+                resolution.insert_in_list(layout, seg, x)
+
+                time = time - float(duration)
+                if len(voice) > 1:
+                    queue.append((time, voice[1:]))
+
+            x += q * all ** a
+
+            ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+            ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
+            ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
+            ctx.stroke()
+            x += 20
+
+        self.quickdraw()
+        self.renderer.flip()
 
 # line = 120
 # split_index = 0
@@ -252,110 +525,6 @@ class MainPayload:
 #         #ctx.stroke()
 #         beats_in_measure = 4
 #         def plot_vg(notes, duration, p, this_index):
-#                 base, dots, triplet = resolution.categorize_note_duration(duration / 4)
-#                 spacing = {
-#                     Fraction(2,1): 12,
-#                     Fraction(1,1): 7,
-#                     Fraction(1,2): 5,
-#                     Fraction(1,4): 2,
-#                     Fraction(1,8): 1,
-#                     Fraction(1,16): 1,
-#                     Fraction(1,32): 1,
-#                     Fraction(1,64): 1,
-#                     Fraction(1,128): 1,
-#                 }
-#                 if len(notes) == 0:
-#                     #ctx.set_font_size(9)
-#                     #ctx.move_to(x + p, 150)
-#                     #ctx.show_text(str(duration / 4))
-#                     ctx.select_font_face('FreeSerif')
-#                     ctx.set_source_rgba(0.2, 0.2, 0.2, 1.0)
-#                     ctx.set_font_size(50)
-#                     ctx.move_to(x + p - 4, 140-2)
-#                     c = {
-#                         Fraction(2,1): chr(119098),
-#                         Fraction(1,1): chr(119099),
-#                         Fraction(1,2): chr(119100),
-#                         Fraction(1,4): chr(119101),
-#                         Fraction(1,8): chr(119102),
-#                         Fraction(1,16): chr(119103),
-#                         Fraction(1,32): chr(119104),
-#                         Fraction(1,64): chr(119105),
-#                         Fraction(1,128): chr(119106),
-#                     }[base]
-#                     ctx.show_text(c)
-#                     ctx.select_font_face('sans-serif')
-#                     if triplet:
-#                         ctx.move_to(x + p, 135)
-#                         ctx.line_to(x + p + 5, 135 + 5)
-#                         ctx.line_to(x + p + 5, 135 - 5)
-#                         ctx.line_to(x + p, 135)
-#                         ctx.stroke()
-#                     for dot in range(dots):
-#                         ctx.arc(x + p + 16 + dot*5, 135 + 3, 2, 0, 2*math.pi)
-#                         ctx.fill()
-#                 for note in notes:
-#                     rel_y = 32 - note.position
-#                     rel_x = p
-#                     ctx.set_source_rgba(0.2, 0.2, 0.2, 1.0)
-#                     if note.accidental is not None:
-#                         char_accidental = {
-#                           -2: chr(119083),
-#                           -1: chr(0x266d),
-#                            0: chr(0x266e),
-#                           +1: chr(0x266f),
-#                           +2: chr(119082),
-#                         }
-#                         ctx.select_font_face('FreeSerif')
-#                         ctx.set_font_size(25)
-#                         xt = ctx.text_extents(char_accidental[note.accidental])
-#                         ctx.move_to(x + rel_x - 8 - xt.width, 150 + rel_y*5 + 5)
-#                         ctx.show_text(char_accidental[note.accidental])
-#                         ctx.select_font_face('sans-serif')
-#                     if triplet:
-#                         ctx.move_to(x + rel_x-5, 150 + rel_y*5)
-#                         ctx.line_to(x + rel_x+5, 150 + rel_y*5 + 5)
-#                         ctx.line_to(x + rel_x+5, 150 + rel_y*5 - 5)
-#                     else:
-#                         ctx.move_to(x + rel_x+5, 150 + rel_y*5)
-#                         ctx.arc(x + rel_x, 150 + rel_y*5, 5, 0, 2*math.pi)
-#                     if base >= Fraction(1, 2):
-#                         ctx.stroke()
-#                     else:
-#                         ctx.fill()
-#                     for dot in range(dots):
-#                         ctx.arc(x + rel_x + 8 + dot*5, 150 + rel_y*5 + 3, 2, 0, 2*math.pi)
-#                         ctx.fill()
-#                 if len(notes) > 0:
-#                     high = min(150 + (32 - n.position)*5 for n in notes)
-#                     low = max(150 + (32 - n.position)*5 for n in notes)
-#                     if high < low:
-#                         ctx.move_to(x + rel_x + 5, high)
-#                         ctx.line_to(x + rel_x + 5, low)
-#                         ctx.stroke()
-#                     if base <= Fraction(1, 2):
-#                         ctx.move_to(x + rel_x + 5, high)
-#                         ctx.line_to(x + rel_x + 5, high - 30)
-#                         ctx.stroke()
-#                     for k in range(5):
-#                         if base <= Fraction(1, 2**(k+3)):
-#                             ctx.move_to(x + rel_x + 5, high - 30 + k * 4)
-#                             ctx.line_to(x + rel_x + 5 + 5, high - 30 + k * 4 + 8)
-#                             ctx.stroke()
-#                 #ctx.set_source_rgba(1,0,0,0.2)
-#                 #ctx.rectangle(x + p, 85, spacing[base] * 20 + 20, 135)
-#                 #ctx.fill()
-#                 box = gui.Box(x+p - 20, 85, spacing[base] * 20 + 20, 135)
-#                 t = x
-#                 def h(_, __):
-#                     global split_index, place, leveys
-#                     split_index = this_index
-#                     place = t + p - 20
-#                     leveys = spacing[base] * 20 + 20
-#                     return True
-#                 box.on_hover = h
-#                 hit_root.append(box)
-#                 return spacing[base] * 20 + 20
 #         for voice in document.track.voices:
 #             p = 0
 #             beat_phase = 0
@@ -381,11 +550,6 @@ class MainPayload:
 #                     for note in vg.notes:
 #                         ctx.set_source_rgba(0.2, 0.2, 0.2, 1.0)
 #                         rel_y = 32 - note.position
-#                         ctx.move_to(x+t+8, 150 + rel_y*5 + 3)
-#                         ctx.curve_to(x+t+8, 158 + rel_y*5 + 3,
-#                                      x+p-8, 158 + rel_y*5 + 3,
-#                                      x+p-8, 150 + rel_y*5 + 3)
-#                         ctx.stroke()
 #                 p += plot_vg(vg.notes, duration, p, ti)
 #                 beat_phase = (beat_phase + duration) % beats_in_measure
 #                 if beat_phase == 0:

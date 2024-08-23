@@ -1,17 +1,60 @@
 from fractions import Fraction
 import entities
 
+char_accidental = {
+    2: chr(119083),
+   -1: chr(0x266d),
+    0: chr(0x266e),
+   +1: chr(0x266f),
+   +2: chr(119082),
+}
+
+# order of sharps in a canonical key
+         #F C G D A E B
+sharps = [3,0,4,1,5,2,6]
+
+def canon_key(index):
+    key = list(base_key)
+    for i in range(0, index):
+        key[sharps[i]] += 1
+    for i in range(index, 0):
+        key[sharps[i]] -= 1
+    return key
+
+def major_tonic(index):
+    nkey = [i % 12 for i in canon_key(index)]
+    return entities.Pitch(nkey.index((index * 7) % 12))
+
+def minor_tonic(index):
+    nkey = [i % 12 for i in canon_key(index)]
+    return entities.Pitch(nkey.index((index * 7 + 9) % 12))
+
 # The pitch representation is contextual,
 # next function converts the pitch to canonical representation.
+
 base_key = [0,2,4,5,7,9,11]
 def resolve_pitch(note, key=base_key):
-    octave = note.position // 8
+    octave = note.position // 7
     if note.accidental is None:
-        pc = key[note.position % 8]
+        pc = key[note.position % 7]
         return (octave+1)*12 + pc
     else:
-        pc = base_key[note.position % 8]
+        pc = base_key[note.position % 7]
         return (octave+1)*12 + pc + note.accidental
+
+def pitch_name(p, key=base_key, with_octave=True):
+    if isinstance(p, entities.Pitch):
+        q = resolve_pitch(p, key)
+        p = resolve_pitch(p)
+    else:
+        q = p
+    letter = "CCDDEFFGGAAB"[p%12]
+    if q == p:
+        accidental = " # #  # # # "[p%12].strip()
+    else:
+        accidental = char_accidental[q-p]
+    octave = p//12 - 1
+    return letter + accidental + str(octave)*with_octave
 
 # The canonical pitch can be converted to its enharmonics.
 def enharmonics(pitch, key=base_key):
@@ -19,14 +62,14 @@ def enharmonics(pitch, key=base_key):
     pc = pitch % 12
     try:
         i = list(x % 12 for x in key).index(pc)
-        yield entities.Pitch(octave * (8 + (key[i] // 12)) + i)
+        yield entities.Pitch(octave * (7 + (key[i] // 12)) + i)
     except ValueError:
         pass
     for k in range(-2, 3):
         octave = ((pitch - k) // 12)-1
         pc = (pitch - k) % 12
         try:
-            yield entities.Pitch(octave * 8 + base_key.index(pc), k)
+            yield entities.Pitch(octave * 7 + base_key.index(pc), k)
         except ValueError:
             pass
 
