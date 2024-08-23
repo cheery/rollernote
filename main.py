@@ -8,6 +8,7 @@ import commands
 import gui
 import math
 import resolution
+import bisect
 from fractions import Fraction
 
 class Editor:
@@ -30,14 +31,6 @@ class Editor:
         self.running = False
         self.time = 0.0
         self.widgets = dict()
-
-        bpm = audio.LinearEnvelope([ (0, 80, 0) ])
-                                     #(4*3, 10, 0) ])
-        assert bpm.check_positiveness()
-        self.transport.live_voices.update([
-            audio.LiveVoice(self.plugin, voice, bpm)
-            for voice in self.document.track.voices
-        ])
 
     def widget(self, *args):
         widget = Widget(*args)
@@ -153,6 +146,8 @@ class MainPayload:
         self.ctx = cairo.Context(self.renderer.surface)
         self.hit = gui.Hit()
 
+        self.tool = SplittingTool()
+
     def draw(self):
         widget = self.renderer.widget
         hit = self.hit = gui.Hit()
@@ -161,6 +156,41 @@ class MainPayload:
         ctx.set_source_rgba(1.0, 1.0, 1.0, 1.0)
         ctx.rectangle(0, 0, widget.width, widget.height)
         ctx.fill()
+
+        commands.history_toolbar(self.editor.history, ctx, hit)
+
+        bb = gui.Box(100, 20+32, 32, 32)
+        def _button_down_(x, y, button):
+            bpm = audio.LinearEnvelope([ (0, 80, 0) ])
+            assert bpm.check_positiveness()
+            self.editor.transport.live_voices.update([
+                audio.LiveVoice(self.editor.plugin, voice, bpm)
+                for voice in self.editor.document.track.voices
+            ])
+            return False
+        bb.on_button_down = _button_down_
+        hit.append(bb)
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+        ctx.set_font_size(32)
+        ctx.rectangle(100, 20+32, 32, 32)
+        ctx.stroke()
+        ctx.move_to(103, 20+32+28)
+        ctx.show_text(chr(0x25B6))
+
+        bb = gui.Box(132+10, 20+32, 32, 32)
+        def _click_(x, y, button):
+            instrument = self.editor.document.instrument
+            instrument.patch, instrument.data = self.plugin.save()
+            entities.save_document('document.mide.zip', self.editor.document)
+            return False
+        bb.on_button_down = _button_down_
+        hit.append(bb)
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+        ctx.set_font_size(32)
+        ctx.rectangle(132+10, 20+32, 32*3, 32)
+        ctx.stroke()
+        ctx.move_to(132+10, 20+32+28)
+        ctx.show_text("save")
 
         vu_meter = gui.Box(10, 10, 20, 10)
         def _click_(x, y, button):
@@ -189,6 +219,8 @@ class MainPayload:
         staff = 1, 3
         canon_key = 0
         key = resolution.canon_key(canon_key)
+        beats_per_bar = 4
+        beat_unit = 4
 
         major = resolution.major_tonic(canon_key)
         minor = resolution.minor_tonic(canon_key)
@@ -257,7 +289,6 @@ class MainPayload:
                      j = j - 7 * (z > 2)
                      k = (high_bound - j)*5
                      ctx.move_to(x, 150+k+4)
-                     #ctx.show_text(str(i % 7))
                      ctx.show_text(resolution.char_accidental[-1])
                 x += 7
 
@@ -266,9 +297,9 @@ class MainPayload:
                 k = (high_bound - i) * 5
                 ctx.set_font_size(25)
                 ctx.move_to(x + 10, 150+k-2)
-                ctx.show_text('4')
+                ctx.show_text(str(beats_per_bar))
                 ctx.move_to(x + 10, 150+k+18)
-                ctx.show_text('4')
+                ctx.show_text(str(beat_unit))
 
         ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
         ctx.move_to(x + 30, 150 + (high_bound - high_staff)*5 + 20)
@@ -314,7 +345,7 @@ class MainPayload:
                 if len(seg.notes) == 0:
                     empty_segment_position[seg] = mean(empty_segment_position[seg])
 
-        FULL_MEASURE_DURATION = 4
+        FULL_MEASURE_DURATION = beats_per_bar
         measured_voices = []
         for voice in document.track.voices:
             measures = []
@@ -335,6 +366,10 @@ class MainPayload:
             measures.append(measure)
             measured_voices.append(measures)
 
+        offsets = [x]
+        beats = [0.0]
+        beat = 0.0
+
         while sum(map(len, measured_voices)) > 0:
             # "Efficient algorithms for music engraving,
             #  focusing on correctness"
@@ -347,43 +382,44 @@ class MainPayload:
 
             ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
             while len(queue) > 0:
-                queue.sort(key = lambda k: -k[0])
-                time, voice = queue.pop(0)
+                time, voice = queue.pop()
                 duration, seg = voice[0]
                 if time < all:
-                    x += q * (all - time) ** a
+                    x += q * ((all - time) / beat_unit) ** a
                     all = time
+                    offsets.append(x)
+                    beats.append(beat + FULL_MEASURE_DURATION - time)
 
-                    if len(seg.notes) == 0:
-                        t = empty_segment_position[seg]
-                        t = (t - t % 12) - 6
-                        k = (high_bound - t) * 5
-                        ctx.set_font_size(50)
-                        ctx.move_to(x - 4, 150 + k -2)
-                        c = {
-                            Fraction(2,1): chr(119098),
-                            Fraction(1,1): chr(119099),
-                            Fraction(1,2): chr(119100),
-                            Fraction(1,4): chr(119101),
-                            Fraction(1,8): chr(119102),
-                            Fraction(1,16): chr(119103),
-                            Fraction(1,32): chr(119104),
-                            Fraction(1,64): chr(119105),
-                            Fraction(1,128): chr(119106),
-                        }[base]
-                        ctx.show_text(c)
-                        if triplet:
-                            ctx.move_to(x, 135)
-                            ctx.line_to(x + 5, 150 + k + 5)
-                            ctx.line_to(x + 5, 150 + k - 5)
-                            ctx.line_to(x, 150 + k)
-                            ctx.stroke()
-                        for dot in range(dots):
-                            ctx.arc(x + 16 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
-                            ctx.fill()
+                base, dots, triplet = resolution.categorize_note_duration(duration / beat_unit)
+                if len(seg.notes) == 0:
+                    t = empty_segment_position[seg]
+                    t = (t - t % 12) - 6
+                    k = (high_bound - t) * 5
+                    ctx.set_font_size(50)
+                    ctx.move_to(x - 4, 150 + k -2)
+                    c = {
+                        Fraction(2,1): chr(119098),
+                        Fraction(1,1): chr(119099),
+                        Fraction(1,2): chr(119100),
+                        Fraction(1,4): chr(119101),
+                        Fraction(1,8): chr(119102),
+                        Fraction(1,16): chr(119103),
+                        Fraction(1,32): chr(119104),
+                        Fraction(1,64): chr(119105),
+                        Fraction(1,128): chr(119106),
+                    }[base]
+                    ctx.show_text(c)
+                    if triplet:
+                        ctx.move_to(x, 135)
+                        ctx.line_to(x + 5, 150 + k + 5)
+                        ctx.line_to(x + 5, 150 + k - 5)
+                        ctx.line_to(x, 150 + k)
+                        ctx.stroke()
+                    for dot in range(dots):
+                        ctx.arc(x + 16 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
+                        ctx.fill()
                 for pitch in seg.notes:
                     k = (high_bound - pitch.position) * 5
-                    base, dots, triplet = resolution.categorize_note_duration(duration / 4)
                     # TODO: render accidental only when it changes in measure.
                     if pitch.accidental is not None:
                         ctx.set_font_size(25)
@@ -429,6 +465,89 @@ class MainPayload:
                             ctx.move_to(x + 5, high - 30 + d * 4)
                             ctx.line_to(x + 5 + 5, high - 30 + d * 4 + 8)
                             ctx.stroke()
+
+                resolution.insert_in_list(layout, seg, x)
+
+                time = time - float(duration)
+                if len(voice) > 1:
+                    bisect.insort(queue, (time, voice[1:]), key=lambda k: k[0])
+
+            x += q * (all / beat_unit) ** a
+            offsets.append(x)
+            beats.append(beat + FULL_MEASURE_DURATION)
+
+            ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+            ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
+            ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
+            ctx.stroke()
+            x += 20
+
+            offsets.append(x)
+            beats.append(beat + FULL_MEASURE_DURATION)
+            beat += FULL_MEASURE_DURATION
+
+        #ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
+        #for offset, beat in zip(offsets, beats):
+        #    ctx.move_to(offset, 150 + (high_bound - high_staff)*5 + 20)
+        #    ctx.line_to(offset, 150 + (high_bound - low_staff)*5 - 20)
+        #    ctx.stroke()
+        #    ctx.move_to(offset, 150)
+        #    ctx.show_text(str(beat))
+
+        def monotonic_interpolation(value, sequence, interpolant, use_highest=False):
+            li = bisect.bisect_left(sequence, value)
+            ri = bisect.bisect_right(sequence, value)
+            if li < len(sequence) and sequence[li] == value:
+                if use_highest:
+                    return interpolant[ri-1]
+                else:
+                    return interpolant[li]
+            lowi = max(0, li - 1)
+            uppi = min(len(sequence) - 1, ri)
+            if sequence[uppi] != sequence[lowi]:
+                t = (value - sequence[lowi]) / (sequence[uppi] - sequence[lowi])
+            else:
+                t = 0
+            return interpolant[lowi]*(1-t) + interpolant[uppi]*t
+
+        def mk_cb(bb, beat, seg_index, spacing):
+            def _hover_(x,y):
+                return self.tool.hover_segment(bb, beat, seg_index, x, y)
+            bb.on_hover = _hover_
+            def _button_down_(x,y,button):
+                return self.tool.button_down_segment(bb, beat, seg_index, x, y, button)
+            bb.on_button_down = _button_down_
+
+        voice = document.track.voices[0]
+        beat = 0.0
+        for index, seg in enumerate(voice):
+            duration = float(seg.duration)
+            spacing = q * (duration / beat_unit) ** a
+            left = monotonic_interpolation(beat, beats, offsets, use_highest=True)
+            right = monotonic_interpolation(beat+duration, beats, offsets)
+            right = max(right, left + spacing)
+            #if beat <= self.loco < beat + duration:
+            #    ctx.rectangle(left, 150, zzz-left, (high_bound - low_bound)*5 )
+            #    ctx.stroke()
+            bb = gui.Box(left, 150, right-left, (high_bound - low_bound)*5 )
+            mk_cb(bb, beat, index, spacing)
+            hit.append(bb)
+            beat += duration
+        if right < self.renderer.widget.width:
+            #if beat <= self.loco:
+            #    ctx.rectangle(right, 150, self.renderer.widget.width - right, (high_bound - low_bound)*5)
+            #    ctx.stroke()
+            # On terminal segment, we give a spacing for a single beat and use it for letting user
+            # subdivide the terminal segment and create new segments that way.
+            spacing = q * (1.0 / beat_unit) ** a
+            bb = gui.Box(right, 150, self.renderer.widget.width - right, (high_bound - low_bound)*5)
+            mk_cb(bb, beat, -1, spacing)
+            hit.append(bb)
+
+        self.tool.draw(ctx, hit)
+        self.quickdraw()
+        self.renderer.flip()
+
 #                 #ctx.set_source_rgba(1,0,0,0.2)
 #                 #ctx.rectangle(x + p, 85, spacing[base] * 20 + 20, 135)
 #                 #ctx.fill()
@@ -443,23 +562,6 @@ class MainPayload:
 #                 box.on_hover = h
 #                 hit_root.append(box)
 #                 return spacing[base] * 20 + 20
-
-                resolution.insert_in_list(layout, seg, x)
-
-                time = time - float(duration)
-                if len(voice) > 1:
-                    queue.append((time, voice[1:]))
-
-            x += q * all ** a
-
-            ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-            ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
-            ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
-            ctx.stroke()
-            x += 20
-
-        self.quickdraw()
-        self.renderer.flip()
 
 # line = 120
 # split_index = 0
@@ -487,7 +589,6 @@ class MainPayload:
 #         ctx.arc(20, 20, 10, 0, 2*math.pi)
 #         ctx.stroke()
 # 
-#         commands.history_toolbar(history, ctx, hit_root)
 #         ctx.set_source_rgba(0.75, 0.75, 0.75, 1.0)
 #         for y in range(100, 150, 10):
 #           ctx.move_to(10, y)
@@ -631,8 +732,6 @@ class MainPayload:
 #             ctx.move_to(place + leveys - 5 - ex.width, 100 + 42)
 #             ctx.show_text('3'*int(triplet))
 # 
-#                 if i == parent_window_id:
-#                     entities.save_document('document.mide.zip', document)
 
     def update(self):
         if not self.renderer.widget.exposed:
@@ -667,8 +766,6 @@ class MainPayload:
             ctx.rectangle(20, 10, 10, 10)
         ctx.fill()
         
-
-                    #expose = expose or hit_root.hit(x, y).on_button_up(x,y,event.button.button)
     def mouse_motion(self, x, y):
         exposed = self.hit.hit(x, y).on_hover(x, y)
         self.renderer.widget.exposed = self.renderer.widget.exposed or exposed
@@ -699,6 +796,19 @@ class MainPayload:
 
     def close(self):
         self.renderer.close()
+
+class SplittingTool:
+    def __init__(self):
+        self.split_index = 0
+
+    def hover_segment(self, bb, beat, seg_index, x, y):
+        return False
+
+    def button_down_segment(self, bb, beat, seg_index, x, y, button):
+        return False
+
+    def draw(self, ctx, hit):
+        pass
 
 if __name__=='__main__':
     Editor().ui()

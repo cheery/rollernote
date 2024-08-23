@@ -196,6 +196,7 @@ class Plugin:
                            None,
                            (lilv.LV2_STATE_IS_POD | lilv.LV2_STATE_IS_PORTABLE),
                            None)
+        return patch, data
 
     def get_ui_binary_path(self):
         binaries = []
