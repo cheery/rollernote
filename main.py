@@ -241,6 +241,9 @@ class MainPayload:
         clef = initial.clef
         key = resolution.canon_key(canon_key)
 
+        # TODO: This is where things need to change
+        #       We render a staff, but that's about it.
+        #       Positioning and it's inverse needs to be programmed in.
         staff = staff.bot, staff.top
 
         # Major/Minor letters above the 'clef'
@@ -371,12 +374,10 @@ class MainPayload:
 
         staff_block(initial)
 
-        # Staff line
         ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
         ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
         ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
         ctx.stroke()
-
         x += 20
 
         # Spacing configuration for note heads
@@ -414,6 +415,13 @@ class MainPayload:
             for seg in reversed(voice):
                 if len(seg.notes) == 0:
                     empty_segment_position[seg] = mean(empty_segment_position[seg])
+        # Events on the line
+        events = []
+        E_SEGMENT = 0
+        E_BARLINE = 1
+        E_BLOCK = 2
+        def insert_event(beat, kind, value):
+            bisect.insort(events, (beat, kind, value), key=lambda k: -k[0])
         # Breaking segments into measures
         def beats_in_this_measure(eat):
             this, future = entities.at_beat(staff_blocks, beat)
@@ -426,6 +434,7 @@ class MainPayload:
                 else:
                     return this.beats_in_measure, False
         measured_voices = []
+        highest_beat = 0.0
         for voice in document.track.voices:
             measures = []
             measure = []
@@ -435,6 +444,7 @@ class MainPayload:
                 duration = seg.duration
                 while remain < duration:
                     if remain > 0:
+                        insert_event(beat, E_SEGMENT, (remain, seg))
                         duration -= remain
                         beat += float(remain)
                         measure.append((remain, seg))
@@ -442,44 +452,76 @@ class MainPayload:
                     remain, _ = beats_in_this_measure(beat)
                     measure = []
                 if duration != 0: # seg.duration <= remain
+                    insert_event(beat, E_SEGMENT, (duration, seg))
                     remain -= duration
                     beat += float(duration)
                     measure.append((duration, seg))
+            highest_beat = max(highest_beat, beat)
             measures.append(measure)
             measured_voices.append(measures)
+        def frange(start, stop, step):
+            current = start
+            while current < stop:
+                yield current
+                current += step
+        # Inserting blocks into event stream
+        previous = initial
+        for i, block in enumerate(staff_blocks[1:], 1):
+            print(block.beat)
+            for stop in frange(previous.beat + previous.beats_in_measure, block.beat, previous.beats_in_measure):
+                insert_event(stop, E_BARLINE, None)
+            rawblock = document.track.graphs[0].blocks[i]
+            unusual = (block.beat - previous.beat) % previous.beats_in_measure != 0
+            insert_event(block.beat, E_BLOCK, (rawblock, block, unusual))
+            previous = block
+        for stop in frange(previous.beat + previous.beats_in_measure, highest_beat, previous.beats_in_measure):
+            insert_event(stop, E_BARLINE, None)
+
         # Layout data to draw ties
         layout = {}
         # Offsets and corresponding beat for drawing segment boxes
         offsets = [x]
         beats = [0.0]
         beat = 0.0
-        while sum(map(len, measured_voices)) > 0:
-            # "Efficient algorithms for music engraving,
-            #  focusing on correctness"
-            queue = []
-            bitm, unusual = beats_in_this_measure(beat)
-            block = entities.by_beat(document.track.graphs[0].blocks, beat)
-            if block.beat == int(beat) and beat != 0.0:
-                x -= 20
-                staff_block(block)
-                x += 15
-                
-            all = bitm
-
-            for measures in measured_voices:
-                if len(measures) > 0:
-                    queue.append((bitm, measures.pop(0)))
-
-            ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
-            while len(queue) > 0:
-                time, voice = queue.pop()
-                duration, seg = voice[0]
-                if time < all:
-                    x += q * ((all - time) / beat_unit) ** a
-                    all = time
-                    offsets.append(x)
-                    beats.append(beat + bitm - time)
-
+        # "Efficient algorithms for music engraving,
+        #  focusing on correctness"
+        #bitm, unusual = beats_in_this_measure(beat)
+        #block = entities.by_beat(document.track.graphs[0].blocks, beat)
+        #if block.beat == int(beat) and beat != 0.0:
+        #x -= 20
+        #staff_block(block)
+        #x += 15
+        while len(events) > 0:
+            time, which, value = events.pop()
+            if beat < time:
+                x += q * ((time - beat) / beat_unit) ** a
+                beat = time
+                offsets.append(x)
+                beats.append(beat)
+            if which == E_BLOCK:
+                rawblock, block, unusual = value
+                if unusual:
+                    ctx.set_dash([1, 1])
+                    ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+                    ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
+                    ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
+                    ctx.stroke()
+                    ctx.set_dash([])
+                staff_block(rawblock)
+                x += 10
+                offsets.append(x)
+                beats.append(beat)
+            if which == E_BARLINE:
+                ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+                ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
+                ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
+                ctx.stroke()
+                x += 20
+                offsets.append(x)
+                beats.append(beat)
+            if which == E_SEGMENT:
+                ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+                duration, seg = value
                 cat = resolution.categorize_note_duration(duration / beat_unit)
                 if cat is None:
                     if len(seg.notes) == 0:
@@ -573,27 +615,27 @@ class MainPayload:
 
                 resolution.insert_in_list(layout, seg, x)
 
-                time = time - float(duration)
-                if len(voice) > 1:
-                    bisect.insort(queue, (time, voice[1:]), key=lambda k: k[0])
+                #time = time + float(duration)
+                #if len(voice) > 1:
+                #    bisect.insort(queue, (time, voice[1:]), key=lambda k: k[0])
 
-            x += q * (all / beat_unit) ** a
-            offsets.append(x)
-            beats.append(beat + bitm)
+            #x += q * ((bitm - mbeat) / beat_unit) ** a
+            #offsets.append(x)
+            #beats.append(beat + bitm)
 
-            # Staff line
-            if unusual:
-                ctx.set_dash([1, 1])
-            ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-            ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
-            ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
-            ctx.stroke()
-            ctx.set_dash([])
-            x += 20
+        #offsets.append(x)
+        #beats.append(beat)
 
-            offsets.append(x)
-            beats.append(beat + bitm)
-            beat += bitm
+        x += 20
+        # Staff line
+            #if unusual:
+            #    ctx.set_dash([1, 1])
+        ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+        ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
+        ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
+        ctx.stroke()
+        #ctx.set_dash([])
+
 
         #ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
         #for offset, beat in zip(offsets, beats):

@@ -126,7 +126,7 @@ class StaffBlock:
 def smear(staff_blocks):
     blocks = []
     current = staff_blocks[0]
-    for block in staff_blocks:
+    for block in staff_blocks[1:]:
         blocks.append(current)
         current = block.complete_from(current)
     blocks.append(current)
