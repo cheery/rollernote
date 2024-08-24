@@ -47,19 +47,19 @@ class Track:
     def from_json(record):
         return Track(
             graphs = [graph_from_json(a) for a in record['graphs']],
-            voices = [[VoiceSegment.from_json(vs) for vs in voice]
-                      for voice in record['voices']]
+            voices = [Voice.from_json(a) for a in record['voices']],
         )
 
     def as_json(self):
         return {
             'graphs': [graph.as_json() for graph in self.graphs],
-            'voices': [[vs.as_json() for vs in voice] for voice in self.voices]
+            'voices': [voice.as_json() for voice in self.voices]
         }
 
 def graph_from_json(record):
     if record['type'] == 'staff':
         return Staff(
+            uid = record['uid'],
             top = record['top'],
             bot = record['bot'],
             blocks = [StaffBlock.from_json(a) for a in record['blocks']],
@@ -68,7 +68,8 @@ def graph_from_json(record):
        raise ValueError
 
 class Staff:
-    def __init__(self, top, bot, blocks):
+    def __init__(self, uid, top, bot, blocks):
+        self.uid = uid
         self.top = top
         self.bot = bot
         self.blocks = blocks
@@ -76,6 +77,7 @@ class Staff:
     def as_json(self):
         return {
             'type': "staff",
+            'uid': self.uid,
             'top': self.top,
             'bot': self.bot,
             'blocks': [block.as_json() for block in self.blocks],
@@ -141,6 +143,27 @@ def at_beat(blocks, beat):
         return blocks[i-1], blocks[i]
     else:
         return blocks[i-1], None
+
+class Voice:
+    def __init__(self, uid, staff_uid, segments):
+        self.uid = uid
+        self.staff_uid = staff_uid
+        self.segments = segments
+
+    @staticmethod
+    def from_json(record):
+        return Voice(
+            uid = record['uid'],
+            staff_uid = record['staff_uid'],
+            segments = [VoiceSegment.from_json(a) for a in record['segments']],
+        )
+
+    def as_json(self):
+        return {
+            'uid': self.uid,
+            'staff_uid': self.staff_uid,
+            'segments': [seg.as_json() for seg in self.segments],
+        }
 
 class VoiceSegment:
     def __init__(self, notes, duration):

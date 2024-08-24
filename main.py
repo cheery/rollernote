@@ -164,7 +164,7 @@ class MainPayload:
             bpm = audio.LinearEnvelope([ (0, 80, 0) ])
             assert bpm.check_positiveness()
             self.editor.transport.live_voices.update([
-                audio.LiveVoice(self.editor.plugin, voice, bpm)
+                audio.LiveVoice(self.editor.plugin, voice.segments, bpm)
                 for voice in self.editor.document.track.voices
             ])
             return False
@@ -247,7 +247,7 @@ class MainPayload:
         def shifted_positions():
             for voice in document.track.voices:
                 beat = 0.0
-                for seg in voice:
+                for seg in voice.segments:
                     block = entities.by_beat(staff_blocks, beat)
                     for pitch in seg.notes:
                         yield pitch.position - staff.bot*12 - block.clef
@@ -282,7 +282,8 @@ class MainPayload:
         ctx.line_to(self.renderer.widget.width, reference)
         ctx.stroke()
 
-        def note_position(position):
+        def note_position(beat, position):
+            clef = entities.by_beat(staff_blocks, beat).clef
             return reference - (position - staff.bot*12 - clef)*5
 
         # Major/Minor letters above the 'clef'
@@ -299,7 +300,7 @@ class MainPayload:
         for i in range(0, span, 2):
             position = i + staff.bot*12 + clef
             t = resolution.pitch_name(entities.Pitch(position), key)
-            ctx.move_to(10, note_position(position)+4)
+            ctx.move_to(10, note_position(0.0, position)+4)
             ctx.show_text(t)
 
         # Layout calculation begins
@@ -313,17 +314,18 @@ class MainPayload:
                 # Select most centered C, F, G in the staff
                 ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
                 ctx.set_font_size(20)
-                i = (staff.top*6 + staff.bot*6) + clef + 1
+                i = (staff.top*6 + staff.bot*6) + block.clef + 1
                 j = i - i % 7
                 p = min((j + x for x in [-7, -4, -3, 0, 3, 4] if (j + x - block.clef) % 2 == 1),
                         key = lambda p: abs(p - i))
-                y = note_position(p)
+                y = note_position(block.beat, p)
                 t = resolution.pitch_name(entities.Pitch(p))
                 ctx.move_to(x + 15 + 7, y+7)
                 ctx.show_text(t)
                 ctx.arc(x + 15, y, 5, 0, 2*math.pi)
                 ctx.fill()
-                #ctx.arc(x + 15, note_position(i), 5, 0, 2*math.pi)
+
+                #ctx.arc(x + 15, note_position(block.beat, i), 5, 0, 2*math.pi)
                 #ctx.fill()
                 x += 50
 
@@ -337,19 +339,19 @@ class MainPayload:
                 if canon_key >= 0:
                     for sharp in resolution.sharps[:canon_key]:
                         for i in range(staff.bot, staff.top):
-                            position = i*12 + staff.bot + clef + 9
+                            position = i*12 + block.clef + 11
                             c_pos = position - position % 7
                             if c_pos + 4 >= position + 2:
                                 j = c_pos + sharp - 7
                             else:
                                 j = c_pos + sharp - 7 * (sharp > 4)
-                            ctx.move_to(x, note_position(j)+4)
+                            ctx.move_to(x, note_position(block.beat, j)+4)
                             ctx.show_text(resolution.char_accidental[1])
                         x += 7
                 else:
                     for flat in reversed(resolution.sharps[canon_key:]):
                         for i in range(staff.bot, staff.top):
-                            position = i*12 + staff.bot + clef + 9
+                            position = i*12 + block.clef + 11
                             j = (position - position % 7) + flat - 7 * (flat > 2)
                             # It is questionable to move them around like this,
                             # It seems that more likely there are several fixed patterns
@@ -358,7 +360,7 @@ class MainPayload:
                                  j -= 7
                             if j <= position - 10:
                                  j += 7
-                            ctx.move_to(x, note_position(j)+4)
+                            ctx.move_to(x, note_position(block.beat, j)+4)
                             ctx.show_text(resolution.char_accidental[-1])
                         x += 7
 
@@ -366,340 +368,317 @@ class MainPayload:
                 ctx.set_source_rgba(0, 0, 0, 1)
                 ctx.set_font_size(25)
                 for i in range(staff.bot, staff.top):
-                    position = i*12 + staff.bot + clef + 5
+                    position = i*12 + clef + 7
                     ctx.set_font_size(25)
-                    ctx.move_to(x + 10, note_position(position)-2)
+                    ctx.move_to(x + 10, note_position(0, position)-2)
                     ctx.show_text(str(full_block.beats_in_measure))
-                    ctx.move_to(x + 10, note_position(position)+18)
+                    ctx.move_to(x + 10, note_position(0, position)+18)
                     ctx.show_text(str(full_block.beat_unit))
 
             x += 30
 
         staff_block(initial, initial)
 
-        #   ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-        #   ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
-        #   ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
-        #   ctx.stroke()
-        #   x += 20
+        # bar
+        ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+        ctx.move_to(x, note_position(0.0, staff.top*12 + clef - 1))
+        ctx.line_to(x, note_position(0.0, staff.bot*12 + clef + 3))
+        ctx.stroke()
+        x += 20
 
-        #   # Spacing configuration for note heads
-        #   p = 20 # width of 1/128th note
-        #   q = 50 # width of 1/1 note
-        #   a = math.log(p / q) / math.log(1 / 128)
+        # Spacing configuration for note heads
+        p = 20 # width of 1/128th note
+        q = 50 # width of 1/1 note
+        a = math.log(p / q) / math.log(1 / 128)
 
-        #   # Computing positioning data for empty segments
-        #   # from their empty neighbours
-        #   def mean(xs):
-        #       xs = list(xs)
-        #       return sum(xs) // len(xs)
-        #   empty_segment_position = {}
-        #   for voice in document.track.voices:
-        #       position = None
-        #       for seg in voice:
-        #           if len(seg.notes) == 0:
-        #               if position is None:
-        #                   empty_segment_position[seg] = []
-        #               else:
-        #                   empty_segment_position[seg] = [position]
-        #           else:
-        #               position = mean(pitch.position for pitch in seg.notes)
-        #       position = None
-        #       for seg in reversed(voice):
-        #           if len(seg.notes) == 0:
-        #               if position is None:
-        #                   positions = empty_segment_position[seg]
-        #                   if len(positions) == 0:
-        #                       positions.append((low_staff + high_staff)//2)
-        #               else:
-        #                   empty_segment_position[seg].append(position)
-        #           else:
-        #               position = mean(pitch.position for pitch in seg.notes)
-        #       for seg in reversed(voice):
-        #           if len(seg.notes) == 0:
-        #               empty_segment_position[seg] = mean(empty_segment_position[seg])
-        #   # Events on the line
-        #   events = []
-        #   E_SEGMENT = 0
-        #   E_BARLINE = 1
-        #   E_BLOCK = 2
-        #   def insert_event(beat, kind, value):
-        #       bisect.insort_left(events, (beat, kind, value), key=lambda k: k[0])
-        #   # Breaking segments into measures
-        #   def beats_in_this_measure(eat):
-        #       this, future = entities.at_beat(staff_blocks, beat)
-        #       if future is None:
-        #           return this.beats_in_measure, False
-        #       else:
-        #           distance = future.beat - beat
-        #           if distance < this.beats_in_measure:
-        #               return distance, True
-        #           else:
-        #               return this.beats_in_measure, False
-        #   measured_voices = []
-        #   highest_beat = 0.0
-        #   for voice in document.track.voices:
-        #       measures = []
-        #       measure = []
-        #       beat = 0.0
-        #       remain, _ = beats_in_this_measure(beat)
-        #       for seg in voice:
-        #           duration = seg.duration
-        #           while remain < duration:
-        #               if remain > 0:
-        #                   insert_event(beat, E_SEGMENT, (remain, seg))
-        #                   duration -= remain
-        #                   beat += float(remain)
-        #                   measure.append((remain, seg))
-        #               measures.append(measure)
-        #               remain, _ = beats_in_this_measure(beat)
-        #               measure = []
-        #           if duration != 0: # seg.duration <= remain
-        #               insert_event(beat, E_SEGMENT, (duration, seg))
-        #               remain -= duration
-        #               beat += float(duration)
-        #               measure.append((duration, seg))
-        #       highest_beat = max(highest_beat, beat)
-        #       measures.append(measure)
-        #       measured_voices.append(measures)
-        #   def frange(start, stop, step):
-        #       current = start
-        #       while current < stop:
-        #           yield current
-        #           current += step
-        #   # Inserting blocks into event stream
-        #   previous = initial
-        #   for i, block in enumerate(staff_blocks[1:], 1):
-        #       print(block.beat)
-        #       for stop in frange(previous.beat + previous.beats_in_measure, block.beat, previous.beats_in_measure):
-        #           insert_event(stop, E_BARLINE, None)
-        #       rawblock = document.track.graphs[0].blocks[i]
-        #       unusual = (block.beat - previous.beat) % previous.beats_in_measure != 0
-        #       insert_event(block.beat, E_BLOCK, (rawblock, block, unusual))
-        #       previous = block
-        #   for stop in frange(previous.beat + previous.beats_in_measure, highest_beat, previous.beats_in_measure):
-        #       insert_event(stop, E_BARLINE, None)
+        # Computing positioning data for empty segments
+        # from their empty neighbours
+        def mean(xs):
+            xs = list(xs)
+            return sum(xs) // len(xs)
+        empty_segment_position = {}
+        for voice in document.track.voices:
+            position = None
+            for seg in voice.segments:
+                if len(seg.notes) == 0:
+                    if position is None:
+                        empty_segment_position[seg] = []
+                    else:
+                        empty_segment_position[seg] = [position]
+                else:
+                    position = mean(pitch.position for pitch in seg.notes)
+            position = None
+            for seg in reversed(voice.segments):
+                if len(seg.notes) == 0:
+                    if position is None:
+                        positions = empty_segment_position[seg]
+                        if len(positions) == 0:
+                            positions.append((low_staff + high_staff)//2)
+                    else:
+                        empty_segment_position[seg].append(position)
+                else:
+                    position = mean(pitch.position for pitch in seg.notes)
+            for seg in reversed(voice.segments):
+                if len(seg.notes) == 0:
+                    empty_segment_position[seg] = mean(empty_segment_position[seg])
+        # Events on the line
+        events = []
+        E_SEGMENT = 0
+        E_BARLINE = 1
+        E_BLOCK = 2
+        def insert_event(beat, kind, value):
+            bisect.insort_left(events, (beat, kind, value), key=lambda k: k[0])
+        # Breaking segments into measures
+        def beats_in_this_measure(eat):
+            this, future = entities.at_beat(staff_blocks, beat)
+            if future is None:
+                return this.beats_in_measure, False
+            else:
+                distance = future.beat - beat
+                if distance < this.beats_in_measure:
+                    return distance, True
+                else:
+                    return this.beats_in_measure, False
+        measured_voices = []
+        highest_beat = 0.0
+        for voice in document.track.voices:
+            measures = []
+            measure = []
+            beat = 0.0
+            remain, _ = beats_in_this_measure(beat)
+            for seg in voice.segments:
+                duration = seg.duration
+                while remain < duration:
+                    if remain > 0:
+                        insert_event(beat, E_SEGMENT, (remain, seg))
+                        duration -= remain
+                        beat += float(remain)
+                        measure.append((remain, seg))
+                    measures.append(measure)
+                    remain, _ = beats_in_this_measure(beat)
+                    measure = []
+                if duration != 0: # seg.duration <= remain
+                    insert_event(beat, E_SEGMENT, (duration, seg))
+                    remain -= duration
+                    beat += float(duration)
+                    measure.append((duration, seg))
+            highest_beat = max(highest_beat, beat)
+            measures.append(measure)
+            measured_voices.append(measures)
+        def frange(start, stop, step):
+            current = start
+            while current < stop:
+                yield current
+                current += step
+        # Inserting blocks into event stream
+        previous = initial
+        for i, block in enumerate(staff_blocks[1:], 1):
+            for stop in frange(previous.beat + previous.beats_in_measure, block.beat, previous.beats_in_measure):
+                insert_event(stop, E_BARLINE, None)
+            rawblock = document.track.graphs[0].blocks[i]
+            unusual = (block.beat - previous.beat) % previous.beats_in_measure != 0
+            insert_event(block.beat, E_BLOCK, (rawblock, block, unusual))
+            previous = block
+        for stop in frange(previous.beat + previous.beats_in_measure, highest_beat, previous.beats_in_measure):
+            insert_event(stop, E_BARLINE, None)
 
-        #   # Layout data to draw ties
-        #   layout = {}
-        #   # Offsets and corresponding beat for drawing segment boxes
-        #   offsets = [x]
-        #   beats = [0.0]
-        #   beat = 0.0
-        #   # "Efficient algorithms for music engraving,
-        #   #  focusing on correctness"
-        #   #bitm, unusual = beats_in_this_measure(beat)
-        #   #block = entities.by_beat(document.track.graphs[0].blocks, beat)
-        #   #if block.beat == int(beat) and beat != 0.0:
-        #   #x -= 20
-        #   #staff_block(block)
-        #   #x += 15
-        #   for time, which, value in events:
-        #       if beat < time:
-        #           x += q * ((time - beat) / beat_unit) ** a
-        #           beat = time
-        #           offsets.append(x)
-        #           beats.append(beat)
-        #       if which == E_BLOCK:
-        #           rawblock, block, unusual = value
-        #           if unusual:
-        #               ctx.set_dash([1, 1])
-        #               ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-        #               ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
-        #               ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
-        #               ctx.stroke()
-        #               ctx.set_dash([])
-        #           staff_block(rawblock)
-        #           x += 10
-        #           offsets.append(x)
-        #           beats.append(beat)
-        #       if which == E_BARLINE:
-        #           ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-        #           ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
-        #           ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
-        #           ctx.stroke()
-        #           x += 20
-        #           offsets.append(x)
-        #           beats.append(beat)
-        #       if which == E_SEGMENT:
-        #           ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
-        #           duration, seg = value
-        #           cat = resolution.categorize_note_duration(duration / beat_unit)
-        #           if cat is None:
-        #               if len(seg.notes) == 0:
-        #                   t = empty_segment_position[seg]
-        #               else:
-        #                   t = mean(pitch.position for pitch in seg.notes)
-        #               t = (t - t % 12) - 6
-        #               k = (high_bound - t) * 5
-        #               ctx.set_font_size(10)
-        #               ctx.move_to(x - 4, 150 + k -2)
-        #               ctx.show_text(f'|{duration / beat_unit}|')
-        #               d = resolution.quantize_fraction(duration / beat_unit)
-        #               cat = resolution.categorize_note_duration(d)
+        # Layout data to draw ties
+        layout = {}
+        # Offsets and corresponding beat for drawing segment boxes
+        offsets = [x]
+        beats = [0.0]
+        beat = 0.0
+        # "Efficient algorithms for music engraving,
+        #  focusing on correctness"
+        for time, which, value in events:
+            if beat < time:
+                x += q * ((time - beat) / beat_unit) ** a
+                beat = time
+                offsets.append(x)
+                beats.append(beat)
+            if which == E_BLOCK:
+                rawblock, block, unusual = value
+                if unusual:
+                    ctx.set_dash([1, 1])
+                    ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+                    ctx.move_to(x, note_position(0.0, staff.top*12 + clef - 1))
+                    ctx.line_to(x, note_position(0.0, staff.bot*12 + clef + 3))
+                    ctx.stroke()
+                    ctx.stroke()
+                    ctx.set_dash([])
+                staff_block(rawblock, block)
+                x += 10
+                offsets.append(x)
+                beats.append(beat)
+            if which == E_BARLINE:
+                ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+                ctx.move_to(x, note_position(0.0, staff.top*12 + clef - 1))
+                ctx.line_to(x, note_position(0.0, staff.bot*12 + clef + 3))
+                ctx.stroke()
+                x += 20
+                offsets.append(x)
+                beats.append(beat)
+            if which == E_SEGMENT:
+                ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+                duration, seg = value
+                cat = resolution.categorize_note_duration(duration / beat_unit)
+                if cat is None:
+                    if len(seg.notes) == 0:
+                        t = empty_segment_position[seg]
+                    else:
+                        t = mean(pitch.position for pitch in seg.notes)
+                    t = (t - t % 12) - 6
+                    k = (high_bound - t) * 5
+                    ctx.set_font_size(10)
+                    ctx.move_to(x - 4, 150 + k -2)
+                    ctx.show_text(f'|{duration / beat_unit}|')
+                    d = resolution.quantize_fraction(duration / beat_unit)
+                    cat = resolution.categorize_note_duration(d)
 
-        #           if True:
-        #               base, dots, triplet = cat
-        #               if len(seg.notes) == 0:
-        #                   t = empty_segment_position[seg]
-        #                   t = (t - t % 12) - 6
-        #                   k = (high_bound - t) * 5
-        #                   ctx.set_font_size(50)
-        #                   ctx.move_to(x - 4, 150 + k -2)
-        #                   c = {
-        #                       Fraction(2,1): chr(119098),
-        #                       Fraction(1,1): chr(119099),
-        #                       Fraction(1,2): chr(119100),
-        #                       Fraction(1,4): chr(119101),
-        #                       Fraction(1,8): chr(119102),
-        #                       Fraction(1,16): chr(119103),
-        #                       Fraction(1,32): chr(119104),
-        #                       Fraction(1,64): chr(119105),
-        #                       Fraction(1,128): chr(119106),
-        #                   }[base]
-        #                   ctx.show_text(c)
-        #                   if triplet:
-        #                       ctx.move_to(x, 135)
-        #                       ctx.line_to(x + 5, 150 + k + 5)
-        #                       ctx.line_to(x + 5, 150 + k - 5)
-        #                       ctx.line_to(x, 150 + k)
-        #                       ctx.stroke()
-        #                   for dot in range(dots):
-        #                       ctx.arc(x + 16 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
-        #                       ctx.fill()
-        #               for pitch in seg.notes:
-        #                   k = (high_bound - pitch.position) * 5
-        #                   # TODO: render accidental only when it changes in measure.
-        #                   if pitch.accidental is not None:
-        #                       ctx.set_font_size(25)
-        #                       xt = ctx.text_extents(resolution.char_accidental[pitch.accidental])
-        #                       ctx.move_to(x - 8 - xt.width, 150 + k + 5)
-        #                       ctx.show_text(resolution.char_accidental[pitch.accidental])
-        #                   # TODO: represent triplet with some smarter way
-        #                   if triplet:
-        #                       ctx.move_to(x -5, 150 + k)
-        #                       ctx.line_to(x +5, 150 + k + 5)
-        #                       ctx.line_to(x +5, 150 + k - 5)
-        #                       ctx.line_to(x -5, 150 + k - 5)
-        #                   else:
-        #                       ctx.move_to(x +5, 150 + k)
-        #                       ctx.arc(x, 150 + k, 5, 0, 2*math.pi)
-        #                   if base >= Fraction(1, 2):
-        #                       ctx.stroke()
-        #                   else:
-        #                       ctx.fill()
-        #                   for dot in range(dots):
-        #                       ctx.arc(x + 8 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
-        #                       ctx.fill()
-        #                   if seg in layout:
-        #                       px = layout[seg][-1]
-        #                       ctx.move_to(px+8, 150+k + 3)
-        #                       ctx.curve_to(px+8, 158 + k + 3,
-        #                                    x-8, 158 + k + 3,
-        #                                    x-8, 150 + k + 3)
-        #                       ctx.stroke()
-        #               if len(seg.notes) > 0:
-        #                   high = 150 + min((high_bound - p.position)*5 for p in seg.notes)
-        #                   low = 150 + max((high_bound - p.position)*5 for p in seg.notes)
-        #                   if high < low:
-        #                       ctx.move_to(x + 5, high)
-        #                       ctx.line_to(x + 5, low)
-        #                       ctx.stroke()
-        #                   if base <= Fraction(1, 2):
-        #                       ctx.move_to(x + 5, high)
-        #                       ctx.line_to(x + 5, high - 30)
-        #                       ctx.stroke()
-        #                   for d in range(5):
-        #                       if base <= Fraction(1, 2**(d+3)):
-        #                           ctx.move_to(x + 5, high - 30 + d * 4)
-        #                           ctx.line_to(x + 5 + 5, high - 30 + d * 4 + 8)
-        #                           ctx.stroke()
+                if True:
+                    base, dots, triplet = cat
+                    if len(seg.notes) == 0:
+                        t = empty_segment_position[seg]
+                        t = (t - t % 12) - 6
+                        y = note_position(beat, t)
+                        ctx.set_font_size(50)
+                        ctx.move_to(x - 4, y -2)
+                        c = {
+                            Fraction(2,1): chr(119098),
+                            Fraction(1,1): chr(119099),
+                            Fraction(1,2): chr(119100),
+                            Fraction(1,4): chr(119101),
+                            Fraction(1,8): chr(119102),
+                            Fraction(1,16): chr(119103),
+                            Fraction(1,32): chr(119104),
+                            Fraction(1,64): chr(119105),
+                            Fraction(1,128): chr(119106),
+                        }[base]
+                        ctx.show_text(c)
+                        if triplet:
+                            ctx.move_to(x, 135)
+                            ctx.line_to(x + 5, 150 + k + 5)
+                            ctx.line_to(x + 5, 150 + k - 5)
+                            ctx.line_to(x, 150 + k)
+                            ctx.stroke()
+                        for dot in range(dots):
+                            ctx.arc(x + 16 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
+                            ctx.fill()
+                    for pitch in seg.notes:
+                        y = note_position(beat, pitch.position)
+                        # TODO: render accidental only when it changes in measure.
+                        if pitch.accidental is not None:
+                            ctx.set_font_size(25)
+                            xt = ctx.text_extents(resolution.char_accidental[pitch.accidental])
+                            ctx.move_to(x - 8 - xt.width, y + 5)
+                            ctx.show_text(resolution.char_accidental[pitch.accidental])
+                        # TODO: represent triplet with some smarter way
+                        if triplet:
+                            ctx.move_to(x -5, y)
+                            ctx.line_to(x +5, y + 5)
+                            ctx.line_to(x +5, y - 5)
+                            ctx.line_to(x -5, y - 5)
+                        else:
+                            ctx.move_to(x +5, y)
+                            ctx.arc(x, y, 5, 0, 2*math.pi)
+                        if base >= Fraction(1, 2):
+                            ctx.stroke()
+                        else:
+                            ctx.fill()
+                        for dot in range(dots):
+                            ctx.arc(x + 8 + dot*5, y + 3, 2, 0, 2*math.pi)
+                            ctx.fill()
+                        if seg in layout:
+                            past, px = layout[seg][-1]
+                            y0 = note_position(past, pitch.position)
+                            ctx.move_to(px+8, y0 + 3)
+                            ctx.curve_to(px+8, 8 + y0 + 3,
+                                         x-8, 8 + y + 3,
+                                         x-8, 0 + y + 3)
+                            ctx.stroke()
+                    if len(seg.notes) > 0:
+                        high = min(note_position(beat, p.position) for p in seg.notes)
+                        low = max(note_position(beat, p.position) for p in seg.notes)
+                        if high < low:
+                            ctx.move_to(x + 5, high)
+                            ctx.line_to(x + 5, low)
+                            ctx.stroke()
+                        if base <= Fraction(1, 2):
+                            ctx.move_to(x + 5, high)
+                            ctx.line_to(x + 5, high - 30)
+                            ctx.stroke()
+                        for d in range(5):
+                            if base <= Fraction(1, 2**(d+3)):
+                                ctx.move_to(x + 5, high - 30 + d * 4)
+                                ctx.line_to(x + 5 + 5, high - 30 + d * 4 + 8)
+                                ctx.stroke()
 
-        #           resolution.insert_in_list(layout, seg, x)
+                resolution.insert_in_list(layout, seg, (beat, x))
 
-        #           #time = time + float(duration)
-        #           #if len(voice) > 1:
-        #           #    bisect.insort(queue, (time, voice[1:]), key=lambda k: k[0])
+        x += 20
+        # bar line
+        ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+        ctx.move_to(x, note_position(0.0, staff.top*12 + clef - 1))
+        ctx.line_to(x, note_position(0.0, staff.bot*12 + clef + 3))
+        ctx.stroke()
 
-        #       #x += q * ((bitm - mbeat) / beat_unit) ** a
-        #       #offsets.append(x)
-        #       #beats.append(beat + bitm)
+        def monotonic_interpolation(value, sequence, interpolant, use_highest=False):
+            li = bisect.bisect_left(sequence, value)
+            ri = bisect.bisect_right(sequence, value)
+            if li < len(sequence) and sequence[li] == value:
+                if use_highest:
+                    return interpolant[ri-1]
+                else:
+                    return interpolant[li]
+            lowi = max(0, li - 1)
+            uppi = min(len(sequence) - 1, ri)
+            if sequence[uppi] != sequence[lowi]:
+                t = (value - sequence[lowi]) / (sequence[uppi] - sequence[lowi])
+            else:
+                t = 0
+            return interpolant[lowi]*(1-t) + interpolant[uppi]*t
 
-        #   #offsets.append(x)
-        #   #beats.append(beat)
+        def mk_cb(bb, beat, seg_index, spacing):
+            def _hover_(x,y):
+                return self.tool.hover_segment(bb, beat, seg_index, spacing, x, y)
+            bb.on_hover = _hover_
+            def _button_down_(x,y,button):
+                return self.tool.button_down_segment(bb, beat, seg_index, spacing, x, y, button)
+            bb.on_button_down = _button_down_
 
-        #   x += 20
-        #   # Staff line
-        #       #if unusual:
-        #       #    ctx.set_dash([1, 1])
-        #   ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-        #   ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
-        #   ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
-        #   ctx.stroke()
-        #   #ctx.set_dash([])
+        voice = document.track.voices[0]
+        beat = 0.0
+        for index, seg in enumerate(voice.segments):
+            duration = float(seg.duration)
+            spacing = q * (duration / beat_unit) ** a
+            left = monotonic_interpolation(beat, beats, offsets, use_highest=True)
+            right = monotonic_interpolation(beat+duration, beats, offsets)
+            right = max(right, left + spacing)
+            #if beat <= self.loco < beat + duration:
+            #    ctx.rectangle(left, 150, zzz-left, (high_bound - low_bound)*5 )
+            #    ctx.stroke()
+            low = note_position(0.0, staff.top*12 + clef - 1)
+            high = note_position(0.0, staff.bot*12 + clef + 3)
+            bb = gui.Box(left, low, right-left, high - low )
+            mk_cb(bb, beat, index, spacing)
+            hit.append(bb)
+            beat += duration
+        if right < self.renderer.widget.width:
+            #if beat <= self.loco:
+            #    ctx.rectangle(right, 150, self.renderer.widget.width - right, (high_bound - low_bound)*5)
+            #    ctx.stroke()
+            # On terminal segment, we give a spacing for a single beat and use it for letting user
+            # subdivide the terminal segment and create new segments that way.
+            spacing = q * (1.0 / beat_unit) ** a
+            low = note_position(0.0, staff.top*12 + clef - 1)
+            high = note_position(0.0, staff.bot*12 + clef + 3)
+            bb = gui.Box(right, low, self.renderer.widget.width - right, high - low)
+            mk_cb(bb, beat, -1, spacing)
+            hit.append(bb)
 
-
-        #   #ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
-        #   #for offset, beat in zip(offsets, beats):
-        #   #    ctx.move_to(offset, 150 + (high_bound - high_staff)*5 + 20)
-        #   #    ctx.line_to(offset, 150 + (high_bound - low_staff)*5 - 20)
-        #   #    ctx.stroke()
-        #   #    ctx.move_to(offset, 150)
-        #   #    ctx.show_text(str(beat))
-
-        #   def monotonic_interpolation(value, sequence, interpolant, use_highest=False):
-        #       li = bisect.bisect_left(sequence, value)
-        #       ri = bisect.bisect_right(sequence, value)
-        #       if li < len(sequence) and sequence[li] == value:
-        #           if use_highest:
-        #               return interpolant[ri-1]
-        #           else:
-        #               return interpolant[li]
-        #       lowi = max(0, li - 1)
-        #       uppi = min(len(sequence) - 1, ri)
-        #       if sequence[uppi] != sequence[lowi]:
-        #           t = (value - sequence[lowi]) / (sequence[uppi] - sequence[lowi])
-        #       else:
-        #           t = 0
-        #       return interpolant[lowi]*(1-t) + interpolant[uppi]*t
-
-        #   def mk_cb(bb, beat, seg_index, spacing):
-        #       def _hover_(x,y):
-        #           return self.tool.hover_segment(bb, beat, seg_index, spacing, x, y)
-        #       bb.on_hover = _hover_
-        #       def _button_down_(x,y,button):
-        #           return self.tool.button_down_segment(bb, beat, seg_index, spacing, x, y, button)
-        #       bb.on_button_down = _button_down_
-
-        #   voice = document.track.voices[0]
-        #   beat = 0.0
-        #   for index, seg in enumerate(voice):
-        #       duration = float(seg.duration)
-        #       spacing = q * (duration / beat_unit) ** a
-        #       left = monotonic_interpolation(beat, beats, offsets, use_highest=True)
-        #       right = monotonic_interpolation(beat+duration, beats, offsets)
-        #       right = max(right, left + spacing)
-        #       #if beat <= self.loco < beat + duration:
-        #       #    ctx.rectangle(left, 150, zzz-left, (high_bound - low_bound)*5 )
-        #       #    ctx.stroke()
-        #       bb = gui.Box(left, 150, right-left, (high_bound - low_bound)*5 )
-        #       mk_cb(bb, beat, index, spacing)
-        #       hit.append(bb)
-        #       beat += duration
-        #   if right < self.renderer.widget.width:
-        #       #if beat <= self.loco:
-        #       #    ctx.rectangle(right, 150, self.renderer.widget.width - right, (high_bound - low_bound)*5)
-        #       #    ctx.stroke()
-        #       # On terminal segment, we give a spacing for a single beat and use it for letting user
-        #       # subdivide the terminal segment and create new segments that way.
-        #       spacing = q * (1.0 / beat_unit) ** a
-        #       bb = gui.Box(right, 150, self.renderer.widget.width - right, (high_bound - low_bound)*5)
-        #       mk_cb(bb, beat, -1, spacing)
-        #       hit.append(bb)
-
-        #   self.tool.draw(ctx, hit)
-        #   self.quickdraw()
-        #   self.renderer.flip()
+        self.tool.draw(ctx, hit)
+        self.quickdraw()
+        self.renderer.flip()
 
     def update(self):
         if not self.renderer.widget.exposed:
@@ -791,7 +770,7 @@ class SplittingTool:
         self.height = bb.height
         self.level = y
         if seg_index != -1:
-            total = self.document.track.voices[0][self.split_index].duration / 4
+            total = self.document.track.voices[0].segments[self.split_index].duration / 4
             a = resolution.quantize_fraction(self.split_point * float(total))
             b = total - a
             if b in resolution.generate_all_note_durations():
@@ -805,11 +784,11 @@ class SplittingTool:
         if self.split is not None:
             a, b = self.split
             if b is None:
-                self.document.track.voices[0].append(entities.VoiceSegment([], a * 4))
+                self.document.track.voices[0].segments.append(entities.VoiceSegment([], a * 4))
             else:
-                n1 = list(self.document.track.voices[0][self.split_index].notes)
-                n2 = list(self.document.track.voices[0][self.split_index].notes)
-                self.document.track.voices[0][self.split_index:self.split_index+1] = [
+                n1 = list(self.document.track.voices[0].segments[self.split_index].notes)
+                n2 = list(self.document.track.voices[0].segments[self.split_index].notes)
+                self.document.track.voices[0].segments[self.split_index:self.split_index+1] = [
                     entities.VoiceSegment(n1, a * 4),
                     entities.VoiceSegment(n2, b * 4),
                 ]
