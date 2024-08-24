@@ -229,40 +229,61 @@ class MainPayload:
         hit.append(plugin_button)
 
         document = self.editor.document
-        staff = 1, 3
-        canon_key = 0
+        staff = document.track.graphs[0]
+        assert isinstance(staff, entities.Staff)
+
+        staff_blocks = entities.smear(staff.blocks)
+
+        initial = entities.by_beat(staff_blocks, 0.0)
+        beat_unit = initial.beat_unit
+        beats_in_measure = initial.beats_in_measure
+        canon_key = initial.canonical_key
+        clef = initial.clef
         key = resolution.canon_key(canon_key)
-        beats_in_measure = 4
-        beat_unit = 4
 
-        major = resolution.major_tonic(canon_key)
-        minor = resolution.minor_tonic(canon_key)
-        ctx.set_font_size(20)
-        ctx.move_to(100, 150)
-        ctx.show_text(f"major: {resolution.pitch_name(major, key, False)}")
-        ctx.move_to(100, 130)
-        ctx.show_text(f"minor: {resolution.pitch_name(minor, key, False)}")
+        staff = staff.bot, staff.top
 
-        positions = [pitch.position
-                     for voice in document.track.voices
-                     for vseg in voice
-                     for pitch in vseg.notes]
-        a = min(staff[0], (min(positions) - 2)//12)
+        # Major/Minor letters above the 'clef'
+        major = resolution.tonic(canon_key)
+        minor = resolution.tonic(canon_key, 5)
+        major_text = resolution.pitch_name(major, key, show_octave=False)
+        minor_text = resolution.pitch_name(minor, key, show_octave=False)
+        ctx.set_font_size(10)
+        ctx.move_to(35, 150 + 9)
+        ctx.show_text(f"{major_text} {minor_text}m")
+
+        # Margins to fit every note in
+        def shifted_positions():
+            for voice in document.track.voices:
+                beat = 0.0
+                for seg in voice:
+                    block = entities.by_beat(staff_blocks, beat)
+                    for pitch in seg.notes:
+                        if block is initial:
+                            yield pitch.position
+                        else:
+                            yield pitch.position + block.clef - initial.clef
+                    beat += float(seg.duration)
+        positions = list(shifted_positions())
+        a = min(staff[0], (min(positions) - 2 + clef)//12)
         b = staff[0]
         c = staff[1]
-        d = max(staff[1], (max(positions) + 12 - 6)//12)
+        d = max(staff[1], (max(positions) + 6 + clef)//12)
+
+        # Staff lines
         ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-        low_bound = 12*a+2
-        low_staff = 12*b+2
-        high_staff = 12*c+6
-        high_bound = 12*d+6
-        for i in range(12*b+2+2,12*c+6, 2):
-            if i % 12 != 4 or b==c:
+        low_bound = 12*a+2 - clef
+        low_staff = 12*b+2 - clef
+        high_staff = 12*c+6 - clef
+        high_bound = 12*d+6 - clef
+        for i in range(low_staff+2, high_staff, 2):
+            if (i + clef) % 12 != 4 or b==c:
                 k = (high_bound - i)*5
                 ctx.move_to(0, 150+k)
                 ctx.line_to(self.renderer.widget.width, 150+k)
                 ctx.stroke()
 
+        # Initial pitch markings
         ctx.set_font_size(10)
         for i in range(low_bound+1, high_bound+1, 2):
             k = (high_bound - i) * 5
@@ -270,126 +291,104 @@ class MainPayload:
             ctx.move_to(10, 150+k+4)
             ctx.show_text(t)
 
-        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
-        ctx.set_font_size(20)
-        i = (low_staff + high_staff) // 2
-        j = i - i % 7
+        # Layout calculation begins
+        x = 25
 
-        p = min((j + x for x in [-7, -4, -3, 0, 3, 4] if (j + x) % 2 == 0),
-                key = lambda p: abs(p - i))
-        k = (high_bound - p) * 5
-        t = resolution.pitch_name(entities.Pitch(p))
-        ctx.move_to(47, 150+k+7)
-        ctx.show_text(t)
-        ctx.arc(40, 150+k, 5, 0, 2*math.pi)
-        ctx.fill()
+        def staff_block(block):
+            nonlocal x
 
-        # # The second gap is colored blue in each line.
-        # ctx.set_source_rgba(0, 0, 1, 1)
-        # ctx.set_font_size(10)
-        # for i in range(low_bound+7, high_bound, 12):
-        #     k = (high_bound - i) * 5
-        #     t = resolution.pitch_name(entities.Pitch(i), key)
-        #     ctx.move_to(10, 150+k+4)
-        #     ctx.show_text(t)
+            if block.clef is not None:
+                # Our version of a clef
+                # Select most centered C, F, G in the staff
+                ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+                ctx.set_font_size(20)
+                i = (low_staff + high_staff) // 2
+                j = i - i % 7
+                p = min((j + x for x in [-7, -4, -3, 0, 3, 4] if (j + x - clef) % 2 == 0),
+                        key = lambda p: abs(p - i))
+                k = (high_bound - p) * 5
+                t = resolution.pitch_name(entities.Pitch(p))
+                ctx.move_to(x + 15 + 7, 150+k+7)
+                ctx.show_text(t)
+                ctx.arc(x + 15, 150+k, 5, 0, 2*math.pi)
+                ctx.fill()
+                x += 50
 
-        #     i += 1
-        #     j = i - i % 7
-        #     p = min((j + x for x in [-7, -4, -3, 0, 3, 4] if (j + x) % 2 == 0),
-        #             key = lambda p: abs(p - i))
-        #     k = (high_bound - p) * 5
-        #     t = resolution.pitch_name(entities.Pitch(p))
-        #     ctx.move_to(47, 150+k+4)
-        #     ctx.show_text(t)
-        #     ctx.arc(40, 150+k, 3, 0, 2*math.pi)
-        #     ctx.fill()
-
-        x = 80
-        ctx.set_font_size(25)
-        # The vertical positioning of accidentals is awful at the moment,
-        # but blame people who call you stupid when you ask
-        # what is behind vertical positioning of accidentals.
-        if canon_key >= 0:
-            for sharp in resolution.sharps[:canon_key]:
-                for i in range(low_staff+12, high_staff, 12):
-                    k = (high_bound - i)*5
-                    ctx.arc(40, 150+k, 3, 0, 2*math.pi)
-                    ctx.fill()
-                    c_pos = i - i % 7
-                    if c_pos + 4 >= i + 2:
-                        j = c_pos + sharp - 7
-                    else:
-                        j = c_pos + sharp - 7 * (sharp > 4)
-                    k = (high_bound - j)*5
-                    ctx.move_to(x, 150+k+4)
-                    ctx.show_text(resolution.char_accidental[1])
-                x += 7
-        else:
-            for flat in reversed(resolution.sharps[canon_key:]):
-                for i in range(low_staff+12, high_staff, 12):
-                     j = (i - i % 7) + flat - 7 * (flat > 2)
-                     # It is questionable to move them around like this,
-                     # It seems that more likely there are several fixed patterns
-                     # and one is used when it fits the best.
-                     if j > i:
-                         j -= 7
-                     if j <= i - 10:
-                         j += 7
-                     k = (high_bound - j)*5
-                     ctx.move_to(x, 150+k+4)
-                     ctx.show_text(resolution.char_accidental[-1])
-                x += 7
-
-        ctx.set_source_rgba(0, 0, 0, 1)
-
-        ctx.set_font_size(25)
-        #x = 80
-        #if canon_key >= 0:
-        #    for z in resolution.sharps[:canon_key]:
-        #        for i in range(low_staff+12, high_staff, 12):
-        #            j = (i - i % 7) + z
-        #            j = j - 7 * (z > 4)
-        #            k = (high_bound - j)*5
-        #            ctx.move_to(x, 150+k+4)
-        #            ctx.show_text(resolution.char_accidental[1])
-        #        x += 7
-        #else:
-        #    for z in reversed(resolution.sharps[canon_key:]):
-        #        for i in range(low_staff+12, high_staff, 12):
-        #             j = (i - i % 7) + z
-        #             j = j - 7 * (z > 2)
-        #             k = (high_bound - j)*5
-        #             ctx.move_to(x, 150+k+4)
-        #             ctx.show_text(resolution.char_accidental[-1])
-        #        x += 7
-
-        for i in range(low_staff, high_staff):
-            if i % 12 == 10:
-                k = (high_bound - i) * 5
+            if block.canonical_key is not None:
+                canon_key = block.canonical_key
+                # Key signature
                 ctx.set_font_size(25)
-                ctx.move_to(x + 10, 150+k-2)
-                ctx.show_text(str(beats_in_measure))
-                ctx.move_to(x + 10, 150+k+18)
-                ctx.show_text(str(beat_unit))
+                # The vertical positioning of accidentals is awful at the moment,
+                # but blame people who call you stupid when you ask
+                # what is behind vertical positioning of accidentals.
+                if canon_key >= 0:
+                    for sharp in resolution.sharps[:canon_key]:
+                        for i in range(low_staff+12, high_staff, 12):
+                            k = (high_bound - i)*5
+                            #ctx.arc(40, 150+k, 3, 0, 2*math.pi)
+                            #ctx.fill()
+                            c_pos = i - i % 7
+                            if c_pos + 4 >= i + 2:
+                                j = c_pos + sharp - 7
+                            else:
+                                j = c_pos + sharp - 7 * (sharp > 4)
+                            k = (high_bound - j)*5
+                            ctx.move_to(x, 150+k+4)
+                            ctx.show_text(resolution.char_accidental[1])
+                        x += 7
+                else:
+                    for flat in reversed(resolution.sharps[canon_key:]):
+                        for i in range(low_staff+12, high_staff, 12):
+                             j = (i - i % 7) + flat - 7 * (flat > 2)
+                             # It is questionable to move them around like this,
+                             # It seems that more likely there are several fixed patterns
+                             # and one is used when it fits the best.
+                             if j > i:
+                                 j -= 7
+                             if j <= i - 10:
+                                 j += 7
+                             k = (high_bound - j)*5
+                             ctx.move_to(x, 150+k+4)
+                             ctx.show_text(resolution.char_accidental[-1])
+                        x += 7
 
+            if block.beats_in_measure is not None or block.beat_unit is not None:
+                # So that we get the whole signature
+                whole_block = entities.by_beat(staff_blocks, block.beat)
+                # Time signature
+                ctx.set_source_rgba(0, 0, 0, 1)
+                ctx.set_font_size(25)
+                for i in range(low_staff, high_staff):
+                    if (i + clef) % 12 == 10:
+                        k = (high_bound - i) * 5
+                        ctx.set_font_size(25)
+                        ctx.move_to(x + 10, 150+k-2)
+                        ctx.show_text(str(whole_block.beats_in_measure))
+                        ctx.move_to(x + 10, 150+k+18)
+                        ctx.show_text(str(whole_block.beat_unit))
+
+            x += 30
+
+        staff_block(initial)
+
+        # Staff line
         ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-        ctx.move_to(x + 30, 150 + (high_bound - high_staff)*5 + 20)
-        ctx.line_to(x + 30, 150 + (high_bound - low_staff)*5 - 20)
+        ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
+        ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
         ctx.stroke()
 
-        x += 30
+        x += 20
 
-        p = 20
-        q = 50
+        # Spacing configuration for note heads
+        p = 20 # width of 1/128th note
+        q = 50 # width of 1/1 note
         a = math.log(p / q) / math.log(1 / 128)
 
-        x += 20
-        layout = {}
-
+        # Computing positioning data for empty segments
+        # from their empty neighbours
         def mean(xs):
             xs = list(xs)
             return sum(xs) // len(xs)
-
         empty_segment_position = {}
         for voice in document.track.voices:
             position = None
@@ -415,41 +414,61 @@ class MainPayload:
             for seg in reversed(voice):
                 if len(seg.notes) == 0:
                     empty_segment_position[seg] = mean(empty_segment_position[seg])
-
-        FULL_MEASURE_DURATION = beats_in_measure
+        # Breaking segments into measures
+        def beats_in_this_measure(eat):
+            this, future = entities.at_beat(staff_blocks, beat)
+            if future is None:
+                return this.beats_in_measure, False
+            else:
+                distance = future.beat - beat
+                if distance < this.beats_in_measure:
+                    return distance, True
+                else:
+                    return this.beats_in_measure, False
         measured_voices = []
         for voice in document.track.voices:
             measures = []
             measure = []
-            remain = FULL_MEASURE_DURATION
+            beat = 0.0
+            remain, _ = beats_in_this_measure(beat)
             for seg in voice:
                 duration = seg.duration
                 while remain < duration:
                     if remain > 0:
                         duration -= remain
+                        beat += float(remain)
                         measure.append((remain, seg))
                     measures.append(measure)
-                    remain = FULL_MEASURE_DURATION
+                    remain, _ = beats_in_this_measure(beat)
                     measure = []
                 if duration != 0: # seg.duration <= remain
-                    remain -= seg.duration
+                    remain -= duration
+                    beat += float(duration)
                     measure.append((duration, seg))
             measures.append(measure)
             measured_voices.append(measures)
-
+        # Layout data to draw ties
+        layout = {}
+        # Offsets and corresponding beat for drawing segment boxes
         offsets = [x]
         beats = [0.0]
         beat = 0.0
-
         while sum(map(len, measured_voices)) > 0:
             # "Efficient algorithms for music engraving,
             #  focusing on correctness"
             queue = []
-            all = FULL_MEASURE_DURATION
+            bitm, unusual = beats_in_this_measure(beat)
+            block = entities.by_beat(document.track.graphs[0].blocks, beat)
+            if block.beat == int(beat) and beat != 0.0:
+                x -= 20
+                staff_block(block)
+                x += 15
+                
+            all = bitm
 
             for measures in measured_voices:
                 if len(measures) > 0:
-                    queue.append((FULL_MEASURE_DURATION, measures.pop(0)))
+                    queue.append((bitm, measures.pop(0)))
 
             ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
             while len(queue) > 0:
@@ -459,7 +478,7 @@ class MainPayload:
                     x += q * ((all - time) / beat_unit) ** a
                     all = time
                     offsets.append(x)
-                    beats.append(beat + FULL_MEASURE_DURATION - time)
+                    beats.append(beat + bitm - time)
 
                 cat = resolution.categorize_note_duration(duration / beat_unit)
                 if cat is None:
@@ -560,17 +579,21 @@ class MainPayload:
 
             x += q * (all / beat_unit) ** a
             offsets.append(x)
-            beats.append(beat + FULL_MEASURE_DURATION)
+            beats.append(beat + bitm)
 
+            # Staff line
+            if unusual:
+                ctx.set_dash([1, 1])
             ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
             ctx.move_to(x, 150 + (high_bound - high_staff)*5 + 20)
             ctx.line_to(x, 150 + (high_bound - low_staff)*5 - 20)
             ctx.stroke()
+            ctx.set_dash([])
             x += 20
 
             offsets.append(x)
-            beats.append(beat + FULL_MEASURE_DURATION)
-            beat += FULL_MEASURE_DURATION
+            beats.append(beat + bitm)
+            beat += bitm
 
         #ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
         #for offset, beat in zip(offsets, beats):
@@ -746,6 +769,7 @@ class SplittingTool:
                     entities.VoiceSegment(n1, a * 4),
                     entities.VoiceSegment(n2, b * 4),
                 ]
+            self.primed = False
             return True
         return False
 

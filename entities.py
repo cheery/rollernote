@@ -4,6 +4,7 @@
 """
 from fractions import Fraction
 import zipfile, json, io
+import bisect
 
 class Document:
     def __init__(self, track, instrument):
@@ -38,20 +39,108 @@ def save_document(filename, document):
             zf.writestr(path, content)
 
 class Track:
-    def __init__(self, voices):
+    def __init__(self, graphs, voices):
+        self.graphs = graphs
         self.voices = voices
 
     @staticmethod
     def from_json(record):
         return Track(
+            graphs = [graph_from_json(a) for a in record['graphs']],
             voices = [[VoiceSegment.from_json(vs) for vs in voice]
                       for voice in record['voices']]
         )
 
     def as_json(self):
         return {
+            'graphs': [graph.as_json() for graph in self.graphs],
             'voices': [[vs.as_json() for vs in voice] for voice in self.voices]
         }
+
+def graph_from_json(record):
+    if record['type'] == 'staff':
+        return Staff(
+            top = record['top'],
+            bot = record['bot'],
+            blocks = [StaffBlock.from_json(a) for a in record['blocks']],
+        )
+    else:
+       raise ValueError
+
+class Staff:
+    def __init__(self, top, bot, blocks):
+        self.top = top
+        self.bot = bot
+        self.blocks = blocks
+
+    def as_json(self):
+        return {
+            'type': "staff",
+            'top': self.top,
+            'bot': self.bot,
+            'blocks': [block.as_json() for block in self.blocks],
+        }
+
+# Staff is required to have at least one at beat=0, with all parameters present.
+# In later blocks the parameters may fill up from the previous blocks.
+class StaffBlock:
+    def __init__(self, beat, beats_in_measure=None, beat_unit=None, canonical_key=None, clef=None, mode=None):
+        self.beat = beat
+        self.beats_in_measure = beats_in_measure
+        self.beat_unit = beat_unit
+        self.canonical_key = canonical_key # Between -7, +7
+        self.clef = clef # a numerical value describing how the pitches are positioned on the staff.
+        self.mode = mode # None, 'major' or 'minor'
+
+    def complete_from(self, source):
+        opt = lambda x, default: default if x is None else x
+        return StaffBlock(self.beat,
+            opt(self.beats_in_measure, source.beats_in_measure),
+            opt(self.beat_unit, source.beat_unit),
+            opt(self.canonical_key, source.canonical_key),
+            opt(self.clef, source.clef),
+            opt(self.mode, source.mode)
+        )
+
+    @staticmethod
+    def from_json(record):
+        return StaffBlock(
+            beat = record['beat'],
+            beats_in_measure = record['beats_in_measure'],
+            beat_unit = record['beat_unit'],
+            canonical_key = record['canonical_key'],
+            clef = record['clef'],
+            mode = record['mode'],
+        )
+
+    def as_json(self):
+        return {
+            'beat': self.beat,
+            'beats_in_measure': self.beats_in_measure,
+            'beat_unit': self.beat_unit,
+            'canonical_key': self.canonical_key,
+            'clef': self.clef,
+            'mode': self.mode,
+        }
+
+def smear(staff_blocks):
+    blocks = []
+    current = staff_blocks[0]
+    for block in staff_blocks:
+        blocks.append(current)
+        current = block.complete_from(current)
+    blocks.append(current)
+    return blocks
+
+def by_beat(blocks, beat):
+    return blocks[bisect.bisect(blocks, beat, key=lambda p: p.beat) - 1]
+
+def at_beat(blocks, beat):
+    i = bisect.bisect(blocks, beat, key=lambda p: p.beat)
+    if i < len(blocks):
+        return blocks[i-1], blocks[i]
+    else:
+        return blocks[i-1], None
 
 class VoiceSegment:
     def __init__(self, notes, duration):

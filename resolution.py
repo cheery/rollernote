@@ -21,13 +21,12 @@ def canon_key(index):
         key[sharps[i]] -= 1
     return key
 
-def major_tonic(index):
-    nkey = [i % 12 for i in canon_key(index)]
-    return entities.Pitch(nkey.index((index * 7) % 12))
-
-def minor_tonic(index):
-    nkey = [i % 12 for i in canon_key(index)]
-    return entities.Pitch(nkey.index((index * 7 + 9) % 12))
+# index = 0 for major
+# index = 5 for minor
+def tonic(canonical_key, index=0):
+    nkey = [i % 12 for i in canon_key(canonical_key)]
+    k = base_key[index]
+    return entities.Pitch(nkey.index((canonical_key * 7 + k) % 12))
 
 # The pitch representation is contextual,
 # next function converts the pitch to canonical representation.
@@ -42,7 +41,7 @@ def resolve_pitch(note, key=base_key):
         pc = base_key[note.position % 7]
         return (octave+1)*12 + pc + note.accidental
 
-def pitch_name(p, key=base_key, with_octave=True):
+def pitch_name(p, key=base_key, show_octave=True):
     if isinstance(p, entities.Pitch):
         q = resolve_pitch(p, key)
         p = resolve_pitch(p)
@@ -54,7 +53,7 @@ def pitch_name(p, key=base_key, with_octave=True):
     else:
         accidental = char_accidental[q-p]
     octave = p//12 - 1
-    return letter + accidental + str(octave)*with_octave
+    return letter + accidental + str(octave)*show_octave
 
 # The canonical pitch can be converted to its enharmonics.
 def enharmonics(pitch, key=base_key):
@@ -180,4 +179,3 @@ def quantize_fraction(input_value):
         return Fraction(rounded)
     else:
         return fraction
-    
