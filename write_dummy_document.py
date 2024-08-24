@@ -10,7 +10,7 @@ document = Document(
           beats_in_measure = 4,
           beat_unit = 4,
           canonical_key = 7, # F#
-          clef = 6, # Alto clef
+          clef = -3, # Alto clef
           mode = None,
         ),
         StaffBlock(
@@ -18,7 +18,7 @@ document = Document(
           beats_in_measure = 3,
           canonical_key = +2, # D
           mode = 'major',
-          clef = 0, # Treble/bass clef
+          clef = 3, # Treble/bass clef
         ),
       ]),
     ],
