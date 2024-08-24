@@ -30,6 +30,8 @@ class Transport:
             plugin.pending_events.clear()
         now = sdl2.SDL_GetTicks64() / 1000.0
 
+        # TODO: Get the key from correct sources.
+        key = resolution.canon_key(0)
         still_live = set()
         for lv in self.live_voices:
             buf = lv.plugin.inputs['In']
@@ -40,7 +42,7 @@ class Transport:
                                                  lambda bpm: 60 / bpm)
                 lv.beat += float(lv.voice[0].duration)
                 for note in lv.voice[0].notes:
-                    mp = resolution.resolve_pitch(note)
+                    mp = resolution.resolve_pitch(note, key)
                     lv.plugin.push_midi_event(buf, [0x90, mp, 0xFF])
                     lv.live_notes.append(mp)
                 still_live.add(lv)
@@ -54,7 +56,7 @@ class Transport:
                                                 lambda bpm: 60 / bpm)
                     lv.beat += float(lv.voice[lv.current+1].duration)
                     for note in lv.voice[lv.current+1].notes:
-                        mp = resolution.resolve_pitch(note)
+                        mp = resolution.resolve_pitch(note, key)
                         lv.plugin.push_midi_event(buf, [0x90, mp, 0xFF])
                         lv.live_notes.append(mp)
                     still_live.add(lv)
