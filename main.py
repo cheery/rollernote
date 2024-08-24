@@ -232,7 +232,7 @@ class MainPayload:
         staff = 1, 3
         canon_key = 0
         key = resolution.canon_key(canon_key)
-        beats_per_bar = 4
+        beats_in_measure = 4
         beat_unit = 4
 
         major = resolution.major_tonic(canon_key)
@@ -284,33 +284,91 @@ class MainPayload:
         ctx.arc(40, 150+k, 5, 0, 2*math.pi)
         ctx.fill()
 
-        ctx.set_font_size(25)
+        # # The second gap is colored blue in each line.
+        # ctx.set_source_rgba(0, 0, 1, 1)
+        # ctx.set_font_size(10)
+        # for i in range(low_bound+7, high_bound, 12):
+        #     k = (high_bound - i) * 5
+        #     t = resolution.pitch_name(entities.Pitch(i), key)
+        #     ctx.move_to(10, 150+k+4)
+        #     ctx.show_text(t)
+
+        #     i += 1
+        #     j = i - i % 7
+        #     p = min((j + x for x in [-7, -4, -3, 0, 3, 4] if (j + x) % 2 == 0),
+        #             key = lambda p: abs(p - i))
+        #     k = (high_bound - p) * 5
+        #     t = resolution.pitch_name(entities.Pitch(p))
+        #     ctx.move_to(47, 150+k+4)
+        #     ctx.show_text(t)
+        #     ctx.arc(40, 150+k, 3, 0, 2*math.pi)
+        #     ctx.fill()
+
         x = 80
+        ctx.set_font_size(25)
+        # The vertical positioning of accidentals is awful at the moment,
+        # but blame people who call you stupid when you ask
+        # what is behind vertical positioning of accidentals.
         if canon_key >= 0:
-            for z in resolution.sharps[:canon_key]:
+            for sharp in resolution.sharps[:canon_key]:
                 for i in range(low_staff+12, high_staff, 12):
-                    j = (i - i % 7) + z
-                    j = j - 7 * (z > 4)
+                    k = (high_bound - i)*5
+                    ctx.arc(40, 150+k, 3, 0, 2*math.pi)
+                    ctx.fill()
+                    c_pos = i - i % 7
+                    if c_pos + 4 >= i + 2:
+                        j = c_pos + sharp - 7
+                    else:
+                        j = c_pos + sharp - 7 * (sharp > 4)
                     k = (high_bound - j)*5
                     ctx.move_to(x, 150+k+4)
                     ctx.show_text(resolution.char_accidental[1])
                 x += 7
         else:
-            for z in reversed(resolution.sharps[canon_key:]):
+            for flat in reversed(resolution.sharps[canon_key:]):
                 for i in range(low_staff+12, high_staff, 12):
-                     j = (i - i % 7) + z
-                     j = j - 7 * (z > 2)
+                     j = (i - i % 7) + flat - 7 * (flat > 2)
+                     # It is questionable to move them around like this,
+                     # It seems that more likely there are several fixed patterns
+                     # and one is used when it fits the best.
+                     if j > i:
+                         j -= 7
+                     if j <= i - 10:
+                         j += 7
                      k = (high_bound - j)*5
                      ctx.move_to(x, 150+k+4)
                      ctx.show_text(resolution.char_accidental[-1])
                 x += 7
+
+        ctx.set_source_rgba(0, 0, 0, 1)
+
+        ctx.set_font_size(25)
+        #x = 80
+        #if canon_key >= 0:
+        #    for z in resolution.sharps[:canon_key]:
+        #        for i in range(low_staff+12, high_staff, 12):
+        #            j = (i - i % 7) + z
+        #            j = j - 7 * (z > 4)
+        #            k = (high_bound - j)*5
+        #            ctx.move_to(x, 150+k+4)
+        #            ctx.show_text(resolution.char_accidental[1])
+        #        x += 7
+        #else:
+        #    for z in reversed(resolution.sharps[canon_key:]):
+        #        for i in range(low_staff+12, high_staff, 12):
+        #             j = (i - i % 7) + z
+        #             j = j - 7 * (z > 2)
+        #             k = (high_bound - j)*5
+        #             ctx.move_to(x, 150+k+4)
+        #             ctx.show_text(resolution.char_accidental[-1])
+        #        x += 7
 
         for i in range(low_staff, high_staff):
             if i % 12 == 10:
                 k = (high_bound - i) * 5
                 ctx.set_font_size(25)
                 ctx.move_to(x + 10, 150+k-2)
-                ctx.show_text(str(beats_per_bar))
+                ctx.show_text(str(beats_in_measure))
                 ctx.move_to(x + 10, 150+k+18)
                 ctx.show_text(str(beat_unit))
 
@@ -358,7 +416,7 @@ class MainPayload:
                 if len(seg.notes) == 0:
                     empty_segment_position[seg] = mean(empty_segment_position[seg])
 
-        FULL_MEASURE_DURATION = beats_per_bar
+        FULL_MEASURE_DURATION = beats_in_measure
         measured_voices = []
         for voice in document.track.voices:
             measures = []
@@ -724,14 +782,21 @@ class SplittingTool:
             ctx.set_font_size(25)
             base, dots, triplet = resolution.categorize_note_duration(a)
             ctx.move_to(self.x + 5, self.level)
-            ctx.show_text(tab[base] + '.'*dots)
+            if base > 2:
+                text = (tab[Fraction(1,base.denominator)] + '.'*dots) * base.numerator
+            else:
+                text = tab[base] + '.'*dots
+            ctx.show_text(text)
             ctx.set_font_size(12)
             ctx.move_to(self.x + 5, self.level + 12)
             ctx.show_text('3'*int(triplet))
             ctx.set_font_size(25)
             if b is not None:
                 base, dots, triplet = resolution.categorize_note_duration(b)
-                text = tab[base] + '.'*dots
+                if base > 2:
+                    text = (tab[Fraction(1,base.denominator)] + '.'*dots) * base.numerator
+                else:
+                    text = tab[base] + '.'*dots
                 ex = ctx.text_extents(text)
                 ctx.move_to(self.x + self.width - 5 - ex.width, self.level)
                 ctx.show_text(text)
