@@ -146,7 +146,7 @@ class MainPayload:
         self.ctx = cairo.Context(self.renderer.surface)
         self.hit = gui.Hit()
 
-        self.tool = SplittingTool(editor.document)
+        self.tool = NoteTool(self, editor.document)
 
     def draw(self):
         widget = self.renderer.widget
@@ -205,6 +205,8 @@ class MainPayload:
         ctx.move_to(132+20+32*3, 20+32+28)
         ctx.show_text("split")
 
+        # TODO: Another tool button!
+
         vu_meter = gui.Box(10, 10, 20, 10)
         def _click_(x, y, button):
             self.editor.transport.volume_meter.clipping0 = False
@@ -228,6 +230,8 @@ class MainPayload:
         plugin_button.on_button_down = _click_
         hit.append(plugin_button)
 
+        # TODO: Start by drawing multiple stave beginnings and recording their layouts.
+        # TODO: Right-align stave headers.
         document = self.editor.document
         staff = document.track.graphs[0]
         assert isinstance(staff, entities.Staff)
@@ -398,6 +402,29 @@ class MainPayload:
             return sum(xs) // len(xs)
         empty_segment_position = {}
         for voice in document.track.voices:
+#        last_note_position = None
+#        rest_positions = []
+#
+#        # Forward pass
+#        for seg in voice:
+#            if len(seg.notes) == 0:
+#                # Store empty segment for later processing
+#                rest_positions.append(seg)
+#            else:
+#                # Calculate mean position for current notes
+#                note_position = mean(pitch.position for pitch in seg.notes)
+#                
+#                # Assign this position to previous empty segments
+#                for rest_seg in rest_positions:
+#                    if rest_seg not in empty_segment_position:
+#                        empty_segment_position[rest_seg] = []
+#                    if last_note_position is not None:
+#                        empty_segment_position[rest_seg].append(last_note_position)
+#                    empty_segment_position[rest_seg].append(note_position)
+#                
+#                # Clear list of rest positions
+#                rest_positions = []
+#                last_note_position = note_position
             position = None
             for seg in voice.segments:
                 if len(seg.notes) == 0:
@@ -408,19 +435,32 @@ class MainPayload:
                 else:
                     position = mean(pitch.position for pitch in seg.notes)
             position = None
+            beat = 0
             for seg in reversed(voice.segments):
                 if len(seg.notes) == 0:
                     if position is None:
                         positions = empty_segment_position[seg]
                         if len(positions) == 0:
-                            positions.append((low_staff + high_staff)//2)
+                            block = entities.by_beat(staff_blocks, beat)
+                            i = (staff.top*6 + staff.bot*6) + block.clef + 1
+                            positions.append(i)
                     else:
                         empty_segment_position[seg].append(position)
                 else:
                     position = mean(pitch.position for pitch in seg.notes)
-            for seg in reversed(voice.segments):
-                if len(seg.notes) == 0:
-                    empty_segment_position[seg] = mean(empty_segment_position[seg])
+                beat += float(seg.duration)
+#        # If rest positions are left over, fill them using the last known note position
+#        for rest_seg in rest_positions:
+#            if rest_seg not in empty_segment_position:
+#                empty_segment_position[rest_seg] = []
+#            if last_note_position is not None:
+#                empty_segment_position[rest_seg].append(last_note_position)
+#            else:
+#                # Default to center if no notes were found
+#                empty_segment_position[rest_seg].append((low_staff + high_staff) // 2)
+        for seg, positions in empty_segment_position.items():
+            empty_segment_position[seg] = mean(positions)
+
         # Events on the line
         events = []
         E_SEGMENT = 0
@@ -638,6 +678,13 @@ class MainPayload:
                 t = 0
             return interpolant[lowi]*(1-t) + interpolant[uppi]*t
 
+        # TODO: Come up with better way to broadcast layout details.
+        def location_as_position(x, y):
+            beat = monotonic_interpolation(x, offsets, beats)
+            clef = entities.by_beat(staff_blocks, beat).clef
+            return round((reference - y) / 5) + staff.bot*12 + clef
+        self.location_as_position = location_as_position
+
         def mk_cb(bb, beat, seg_index, spacing):
             def _hover_(x,y):
                 return self.tool.hover_segment(bb, beat, seg_index, spacing, x, y)
@@ -743,6 +790,24 @@ class MainPayload:
 
     def close(self):
         self.renderer.close()
+
+class NoteTool:
+    def __init__(self, payload, document):
+        self.payload = payload
+        self.document = document
+
+    def hover_segment(self, bb, beat, seg_index, spacing, x, y):
+        pass
+
+    def button_down_segment(self, bb, beat, seg_index, spacing, x, y, button):
+        position = self.payload.location_as_position(x, y)
+        seg = self.document.track.voices[0].segments[seg_index]
+        if not any(pitch.position == position for pitch in seg.notes):
+            seg.notes.append(entities.Pitch(position))
+            return True
+
+    def draw(self, ctx, hit):
+        pass
 
 # TODO: Figure out where beat unit can be received from.
 class SplittingTool:
