@@ -9,6 +9,7 @@ import gui
 import math
 import resolution
 import bisect
+import dialogs
 from fractions import Fraction
 
 class Editor:
@@ -42,6 +43,7 @@ class Editor:
         sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO | sdl2.SDL_INIT_AUDIO)
 
         root = self.widget("rollernote", 1200, 700, MainPayload, self)
+        sdl2.SDL_StartTextInput()
 
         while self.running:
             self.time = sdl2.SDL_GetTicks64() / 1000.0
@@ -72,12 +74,16 @@ class Editor:
                 elif event.type == sdl2.SDL_MOUSEBUTTONUP:
                     widget = self.widgets[event.button.windowID]
                     widget.payload.mouse_button_up(event.button.x, event.button.y, event.button.button)
+                elif event.type == sdl2.SDL_TEXTINPUT:
+                    widget = self.widgets[event.text.windowID]
+                    text = event.text.text.decode('utf-8')
+                    widget.payload.text_input(text)
                 elif event.type == sdl2.SDL_KEYDOWN:
                     widget = self.widgets[event.key.windowID]
-                    widget.payload.key_down(event.key.keysym.sym, bool(event.key.repeat))
+                    widget.payload.key_down(event.key.keysym.sym, bool(event.key.repeat), event.key.keysym.mod)
                 elif event.type == sdl2.SDL_KEYUP:
                     widget = self.widgets[event.key.windowID]
-                    widget.payload.key_up(event.key.keysym.sym)
+                    widget.payload.key_up(event.key.keysym.sym, event.key.keysym.mod)
                 elif event.type == sdl2.SDL_WINDOWEVENT:
                     widget = self.widgets.get(event.window.windowID)
                     if event.window.event == sdl2.video.SDL_WINDOWEVENT_CLOSE:
@@ -94,6 +100,7 @@ class Editor:
                                 widget.window.close()
                                 self.widgets.pop(widget.uid)
 
+        sdl2.SDL_StopTextInput()
         for plugin in list(self.plugins.plugins):
             plugin.close()
         sdl2.ext.quit()
@@ -127,10 +134,13 @@ class DummyPayload:
     def mouse_button_up(self, x, y, button):
         pass
 
-    def key_down(self, sym, repeat):
+    def text_input(self, text):
         pass
 
-    def key_up(self, sym):
+    def key_down(self, sym, repeat, modifiers):
+        pass
+
+    def key_up(self, sym, modifiers):
         pass
 
     def closing(self):
@@ -147,6 +157,7 @@ class MainPayload:
         self.hit = gui.Hit()
 
         self.tool = NoteTool(self, editor.document)
+        self.dialog = dialogs.TextDialog(self.ctx, "HELLO", 20, 50, 50, 300, 50)
 
     def draw(self):
         widget = self.renderer.widget
@@ -234,7 +245,7 @@ class MainPayload:
         views = {}
         y_base = 150
         for staff in document.track.graphs:
-            view = StaffView(staff)
+            view = StaffView(staff, y_base)
 
             initial = view.by_beat(0.0)
             canon_key = initial.canonical_key
@@ -268,7 +279,7 @@ class MainPayload:
                     ctx.line_to(self.renderer.widget.width, y_base+k)
                     ctx.stroke()
             span = (margin_top - margin_bot)*12+4
-            height = span * 5
+            view.height = span * 5
             #ctx.set_source_rgba(0.5, 0.5, 1.0, 1.0)
             #ctx.move_to(0, y_base)
             #ctx.line_to(self.renderer.widget.width, y_base)
@@ -299,7 +310,7 @@ class MainPayload:
                 ctx.move_to(10, view.note_position(0.0, position)+4)
                 ctx.show_text(t)
 
-            y_base += height + 10
+            y_base += view.height + 10
 
             views[staff.uid] = view
 
@@ -566,9 +577,10 @@ class MainPayload:
                     ctx.line_to(x, view.graph_point(staff.bot*12 + 3))
                     ctx.stroke()
                     ctx.set_dash([])
-                    push1 = staff_block(view, x + 10, rawblock, block) - x
+                    pushk = staff_block(view, x + 10, rawblock, block) - x
                 else:
-                    push1 = 10 + staff_block(view, x, rawblock, block) - x
+                    pushk = 10 + staff_block(view, x, rawblock, block) - x
+                push1 = max(push1, pushk)
             if which == E_BARLINE:
                 view = value
                 ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
@@ -704,45 +716,53 @@ class MainPayload:
             return round((view.reference - y) / 5) + staff.bot*12 + clef
         self.location_as_position = location_as_position
 
-        def mk_cb(bb, beat, seg_index, spacing):
+        def mk_cb(bb, beat, voice, seg_index, spacing):
             def _hover_(x,y):
-                return self.tool.hover_segment(bb, beat, seg_index, spacing, x, y)
+                return self.tool.hover_segment(bb, beat, voice, seg_index, spacing, x, y)
             bb.on_hover = _hover_
             def _button_down_(x,y,button):
-                return self.tool.button_down_segment(bb, beat, seg_index, spacing, x, y, button)
+                return self.tool.button_down_segment(bb, beat, voice, seg_index, spacing, x, y, button)
             bb.on_button_down = _button_down_
 
-        voice = document.track.voices[0]
-        beat = 0.0
-        for index, seg in enumerate(voice.segments):
-            duration = float(seg.duration)
-            spacing = q * (duration / beat_unit) ** a
-            left = monotonic_interpolation(beat, beats, offsets, use_highest=True)
-            right = monotonic_interpolation(beat+duration, beats, offsets)
-            right = max(right, left + spacing)
-            #if beat <= self.loco < beat + duration:
-            #    ctx.rectangle(left, 150, zzz-left, (high_bound - low_bound)*5 )
-            #    ctx.stroke()
-            low = view.graph_point(staff.top*12 - 1)
-            high = view.graph_point(staff.bot*12 + 3)
-            bb = gui.Box(left, low, right-left, high - low )
-            mk_cb(bb, beat, index, spacing)
-            hit.append(bb)
-            beat += duration
-        if right < self.renderer.widget.width:
-            #if beat <= self.loco:
-            #    ctx.rectangle(right, 150, self.renderer.widget.width - right, (high_bound - low_bound)*5)
-            #    ctx.stroke()
-            # On terminal segment, we give a spacing for a single beat and use it for letting user
-            # subdivide the terminal segment and create new segments that way.
-            spacing = q * (1.0 / beat_unit) ** a
-            low = view.graph_point(staff.top*12 - 1)
-            high = view.graph_point(staff.bot*12 + 3)
-            bb = gui.Box(right, low, self.renderer.widget.width - right, high - low)
-            mk_cb(bb, beat, -1, spacing)
-            hit.append(bb)
+        for voice in document.track.voices:
+            view = views[voice.staff_uid]
+            beat = 0.0
+            for index, seg in enumerate(voice.segments):
+                duration = float(seg.duration)
+                spacing = q * (duration / beat_unit) ** a
+                left = monotonic_interpolation(beat, beats, offsets, use_highest=True)
+                right = monotonic_interpolation(beat+duration, beats, offsets)
+                right = max(right, left + spacing)
+                #if beat <= self.loco < beat + duration:
+                #    ctx.rectangle(left, 150, zzz-left, (high_bound - low_bound)*5 )
+                #    ctx.stroke()
+                #low = view.graph_point(staff.top*12 - 1)
+                #high = view.graph_point(staff.bot*12 + 3)
+                low = view.y
+                high = view.y + view.height
+                bb = gui.Box(left, low, right-left, high - low )
+                mk_cb(bb, beat, voice, index, spacing)
+                hit.append(bb)
+                beat += duration
+            if right < self.renderer.widget.width:
+                #if beat <= self.loco:
+                #    ctx.rectangle(right, 150, self.renderer.widget.width - right, (high_bound - low_bound)*5)
+                #    ctx.stroke()
+                # On terminal segment, we give a spacing for a single beat and use it for letting user
+                # subdivide the terminal segment and create new segments that way.
+                spacing = q * (1.0 / beat_unit) ** a
+                #low = view.graph_point(staff.top*12 - 1)
+                #high = view.graph_point(staff.bot*12 + 3)
+                low = view.y
+                high = view.y + view.height
+                bb = gui.Box(right, low, self.renderer.widget.width - right, high - low)
+                mk_cb(bb, beat, voice, -1, spacing)
+                hit.append(bb)
 
         self.tool.draw(ctx, hit)
+        if self.dialog is not None:
+            self.dialog.draw()
+
         self.quickdraw()
         self.renderer.flip()
 
@@ -780,29 +800,53 @@ class MainPayload:
         ctx.fill()
         
     def mouse_motion(self, x, y):
-        exposed = self.hit.hit(x, y).on_hover(x, y)
+        if self.dialog is not None:
+            exposed = self.dialog.mouse_motion(x, y)
+        else:
+            exposed = self.hit.hit(x, y).on_hover(x, y)
         self.renderer.widget.exposed = self.renderer.widget.exposed or exposed
 
     def mouse_button_down(self, x, y, button):
-        exposed = self.hit.hit(x, y).on_button_down(x, y, button)
+        if self.dialog is not None:
+            if self.dialog.hit(x, y):
+                exposed = self.dialog.mouse_button_down(x, y, button)
+            else:
+                exposed = True
+                self.dialog = None
+        else:
+            exposed = self.hit.hit(x, y).on_button_down(x, y, button)
         self.renderer.widget.exposed = self.renderer.widget.exposed or exposed
 
     def mouse_button_up(self, x, y, button):
-        exposed = self.hit.hit(x, y).on_button_up(x, y, button)
+        if self.dialog is not None:
+            exposed = self.dialog.mouse_button_up(x, y, button)
+        else:
+            exposed = self.hit.hit(x, y).on_button_up(x, y, button)
         self.renderer.widget.exposed = self.renderer.widget.exposed or exposed
 
-    def key_down(self, sym, repeat):
-        if not repeat:
+    def text_input(self, text):
+        if self.dialog is not None:
+            self.dialog.text_input(text)
+
+    def key_down(self, sym, repeat, modifiers):
+        if self.dialog is not None:
+            exposed = self.dialog.key_down(sym, modifiers)
+            self.renderer.widget.exposed = self.renderer.widget.exposed or exposed
+        elif not repeat:
             @self.editor.plugin.event
             def _event_():
                 buf = self.editor.plugin.inputs['In']
                 self.editor.plugin.push_midi_event(buf, [0x91, sym % 128, 0xFF])
 
-    def key_up(self, sym):
-        @self.editor.plugin.event
-        def _event_():
-            buf = self.editor.plugin.inputs['In']
-            self.editor.plugin.push_midi_event(buf, [0x81, sym % 128, 0xFF])
+    def key_up(self, sym, modifiers):
+        if self.dialog is not None:
+            exposed = self.dialog.key_up(sym, modifiers)
+            self.renderer.widget.exposed = self.renderer.widget.exposed or exposed
+        else:
+            @self.editor.plugin.event
+            def _event_():
+                buf = self.editor.plugin.inputs['In']
+                self.editor.plugin.push_midi_event(buf, [0x81, sym % 128, 0xFF])
 
     def closing(self):
         return True
@@ -848,7 +892,7 @@ class SplittingTool:
         self.level = 0
         self.split = None
 
-    def hover_segment(self, bb, beat, seg_index, spacing, x, y):
+    def hover_segment(self, bb, beat, voice, seg_index, spacing, x, y):
         if seg_index != self.split_index:
             self.split = None
         self.primed = True
@@ -860,7 +904,7 @@ class SplittingTool:
         self.height = bb.height
         self.level = y
         if seg_index != -1:
-            total = self.document.track.voices[0].segments[self.split_index].duration / 4
+            total = voice.segments[self.split_index].duration / 4
             a = resolution.quantize_fraction(self.split_point * float(total))
             b = total - a
             if b in resolution.generate_all_note_durations():
@@ -870,14 +914,14 @@ class SplittingTool:
             self.split = (a, None)
         return True
 
-    def button_down_segment(self, bb, beat, seg_index, spacing, x, y, button):
+    def button_down_segment(self, bb, beat, voice, seg_index, spacing, x, y, button):
         if self.split is not None:
             a, b = self.split
             if b is None:
-                self.document.track.voices[0].segments.append(entities.VoiceSegment([], a * 4))
+                voice.segments.append(entities.VoiceSegment([], a * 4))
             else:
-                n1 = list(self.document.track.voices[0].segments[self.split_index].notes)
-                n2 = list(self.document.track.voices[0].segments[self.split_index].notes)
+                n1 = list(voice.segments[self.split_index].notes)
+                n2 = list(voice.segments[self.split_index].notes)
                 self.document.track.voices[0].segments[self.split_index:self.split_index+1] = [
                     entities.VoiceSegment(n1, a * 4),
                     entities.VoiceSegment(n2, b * 4),
@@ -948,12 +992,15 @@ class StaffView:
         'reference',
         'left_margin',
         'highest_beat',
+        'y',
+        'height'
     ]
-    def __init__(self, staff):
+    def __init__(self, staff, y):
         assert isinstance(staff, entities.Staff)
         self.staff = staff
         self.blocks = entities.smear(staff.blocks)
         self.highest_beat = 0.0
+        self.y = y
 
     def by_beat(self, beat):
         return entities.by_beat(self.blocks, beat)
