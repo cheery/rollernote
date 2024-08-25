@@ -230,89 +230,94 @@ class MainPayload:
         plugin_button.on_button_down = _click_
         hit.append(plugin_button)
 
-        # TODO: Start by drawing multiple stave beginnings and recording their layouts.
-        # TODO: Right-align stave headers.
         document = self.editor.document
-        staff = document.track.graphs[0]
-        assert isinstance(staff, entities.Staff)
+        views = {}
+        y_base = 150
+        for staff in document.track.graphs:
+            view = StaffView(staff)
 
-        staff_blocks = entities.smear(staff.blocks)
+            initial = view.by_beat(0.0)
+            canon_key = initial.canonical_key
+            clef = initial.clef
+            key = resolution.canon_key(canon_key)
 
-        initial = entities.by_beat(staff_blocks, 0.0)
-        beat_unit = initial.beat_unit
-        beats_in_measure = initial.beats_in_measure
-        canon_key = initial.canonical_key
-        clef = initial.clef
-        key = resolution.canon_key(canon_key)
+            ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
 
-        ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+            # Margins to fit everything in
+            def shifted_positions():
+                for voice in document.track.voices:
+                    beat = 0.0
+                    for seg in voice.segments:
+                        block = view.by_beat(beat)
+                        for pitch in seg.notes:
+                            yield pitch.position - staff.bot*12 - block.clef
+                        beat += float(seg.duration)
+            positions = list(shifted_positions())
+            margin_bot = staff.bot + min(min(positions) // 12, 0)
+            margin_top = max(staff.top, staff.bot + (max(positions) // 12))
 
-        # Margins to fit everything in
-        def shifted_positions():
-            for voice in document.track.voices:
-                beat = 0.0
-                for seg in voice.segments:
-                    block = entities.by_beat(staff_blocks, beat)
-                    for pitch in seg.notes:
-                        yield pitch.position - staff.bot*12 - block.clef
-                    beat += float(seg.duration)
-        positions = list(shifted_positions())
-        margin_bot = staff.bot + min(min(positions) // 12, 0)
-        margin_top = max(staff.top, staff.bot + (max(positions) // 12))
+            # Staff lines
+            # These are rendered without refering
+            # to anything else but staff.top and staff.bot and margins
+            start = (margin_top - staff.top)*12+2
+            stop = (margin_top - staff.bot)*12+2
+            for i in range(start, stop, 2):
+                if i % 12 != 2:
+                    k = i * 5
+                    ctx.move_to(0, y_base+k)
+                    ctx.line_to(self.renderer.widget.width, y_base+k)
+                    ctx.stroke()
+            span = (margin_top - margin_bot)*12+4
+            height = span * 5
+            #ctx.set_source_rgba(0.5, 0.5, 1.0, 1.0)
+            #ctx.move_to(0, y_base)
+            #ctx.line_to(self.renderer.widget.width, y_base)
+            #ctx.move_to(0, y_base+height)
+            #ctx.line_to(self.renderer.widget.width, y_base+height)
+            #ctx.stroke()
 
-        # Staff lines
-        # These are rendered without refering
-        # to anything else but staff.top and staff.bot and margins
-        start = (margin_top - staff.top)*12+2
-        stop = (margin_top - staff.bot)*12+2
-        for i in range(start, stop, 2):
-            if i % 12 != 2:
-                k = i * 5
-                ctx.move_to(0, 150+k)
-                ctx.line_to(self.renderer.widget.width, 150+k)
-                ctx.stroke()
-        span = (margin_top - margin_bot)*12+4
-        height = span * 5
-        ctx.set_source_rgba(0.5, 0.5, 1.0, 1.0)
-        ctx.move_to(0, 150)
-        ctx.line_to(self.renderer.widget.width, 150)
-        ctx.move_to(0, 150+height)
-        ctx.line_to(self.renderer.widget.width, 150+height)
-        ctx.stroke()
+            # The reference note is staff.bot*12-clef
+            view.reference = (stop+1) * 5 + y_base
+            #ctx.move_to(0, view.reference)
+            #ctx.line_to(self.renderer.widget.width, view.reference)
+            #ctx.stroke()
 
-        # The reference note is staff.bot*12-clef
-        reference = (stop+1) * 5 + 150
-        ctx.move_to(0, reference)
-        ctx.line_to(self.renderer.widget.width, reference)
-        ctx.stroke()
+            # Major/Minor letters above the 'clef'
+            major = resolution.tonic(canon_key)
+            minor = resolution.tonic(canon_key, 5)
+            major_text = resolution.pitch_name(major, key, show_octave=False)
+            minor_text = resolution.pitch_name(minor, key, show_octave=False)
+            ctx.set_font_size(10)
+            ctx.move_to(35, y_base + 9)
+            ctx.show_text(f"{major_text} {minor_text}m")
 
-        def note_position(beat, position):
-            clef = entities.by_beat(staff_blocks, beat).clef
-            return reference - (position - staff.bot*12 - clef)*5
+            # Initial pitch markings
+            ctx.set_font_size(10)
+            for i in range(0, span, 2):
+                position = i + margin_bot*12 + clef
+                t = resolution.pitch_name(entities.Pitch(position), key)
+                ctx.move_to(10, view.note_position(0.0, position)+4)
+                ctx.show_text(t)
 
-        # Major/Minor letters above the 'clef'
-        major = resolution.tonic(canon_key)
-        minor = resolution.tonic(canon_key, 5)
-        major_text = resolution.pitch_name(major, key, show_octave=False)
-        minor_text = resolution.pitch_name(minor, key, show_octave=False)
-        ctx.set_font_size(10)
-        ctx.move_to(35, 150 + 9)
-        ctx.show_text(f"{major_text} {minor_text}m")
+            y_base += height + 10
 
-        # Initial pitch markings
-        ctx.set_font_size(10)
-        for i in range(0, span, 2):
-            position = i + staff.bot*12 + clef
-            t = resolution.pitch_name(entities.Pitch(position), key)
-            ctx.move_to(10, note_position(0.0, position)+4)
-            ctx.show_text(t)
+            views[staff.uid] = view
 
         # Layout calculation begins
-        x = 25
+        for view in views.values():
+            margin = 35
+            block = view.by_beat(0.0)
+            if block.clef is not None:
+                margin += 50
+            if block.canonical_key is not None:
+                canon_key = block.canonical_key
+                margin += abs(canon_key) * 7
+            #if block.beats_in_measure is not None or block.beat_unit is not None:
+            #    pass
+            margin += 30
+            view.left_margin = margin
 
-        def staff_block(block, full_block):
-            nonlocal x
-
+        def staff_block(view, x, block, full_block):
             if block.clef is not None:
                 # Our version of a clef
                 # Select most centered C, F, G in the staff
@@ -322,16 +327,16 @@ class MainPayload:
                 j = i - i % 7
                 p = min((j + x for x in [-7, -4, -3, 0, 3, 4] if (j + x - block.clef) % 2 == 1),
                         key = lambda p: abs(p - i))
-                y = note_position(block.beat, p)
+                y = view.note_position(block.beat, p)
                 t = resolution.pitch_name(entities.Pitch(p))
-                ctx.move_to(x + 15 + 7, y+7)
+                ctx.move_to(x + 5 + 7, y+7)
                 ctx.show_text(t)
-                ctx.arc(x + 15, y, 5, 0, 2*math.pi)
+                ctx.arc(x + 5, y, 5, 0, 2*math.pi)
                 ctx.fill()
 
                 #ctx.arc(x + 15, note_position(block.beat, i), 5, 0, 2*math.pi)
                 #ctx.fill()
-                x += 50
+                x += 40
 
             if block.canonical_key is not None:
                 canon_key = block.canonical_key
@@ -343,19 +348,19 @@ class MainPayload:
                 if canon_key >= 0:
                     for sharp in resolution.sharps[:canon_key]:
                         for i in range(staff.bot, staff.top):
-                            position = i*12 + block.clef + 11
+                            position = i*12 + full_block.clef + 11
                             c_pos = position - position % 7
                             if c_pos + 4 >= position + 2:
                                 j = c_pos + sharp - 7
                             else:
                                 j = c_pos + sharp - 7 * (sharp > 4)
-                            ctx.move_to(x, note_position(block.beat, j)+4)
+                            ctx.move_to(x, view.note_position(block.beat, j)+4)
                             ctx.show_text(resolution.char_accidental[1])
                         x += 7
                 else:
                     for flat in reversed(resolution.sharps[canon_key:]):
                         for i in range(staff.bot, staff.top):
-                            position = i*12 + block.clef + 11
+                            position = i*12 + full_block.clef + 11
                             j = (position - position % 7) + flat - 7 * (flat > 2)
                             # It is questionable to move them around like this,
                             # It seems that more likely there are several fixed patterns
@@ -364,7 +369,7 @@ class MainPayload:
                                  j -= 7
                             if j <= position - 10:
                                  j += 7
-                            ctx.move_to(x, note_position(block.beat, j)+4)
+                            ctx.move_to(x, view.note_position(block.beat, j)+4)
                             ctx.show_text(resolution.char_accidental[-1])
                         x += 7
 
@@ -372,22 +377,27 @@ class MainPayload:
                 ctx.set_source_rgba(0, 0, 0, 1)
                 ctx.set_font_size(25)
                 for i in range(staff.bot, staff.top):
-                    position = i*12 + clef + 7
+                    position = i*12 + 7
                     ctx.set_font_size(25)
-                    ctx.move_to(x + 10, note_position(0, position)-2)
+                    ctx.move_to(x + 10, view.graph_point(position)-2)
                     ctx.show_text(str(full_block.beats_in_measure))
-                    ctx.move_to(x + 10, note_position(0, position)+18)
+                    ctx.move_to(x + 10, view.graph_point(position)+18)
                     ctx.show_text(str(full_block.beat_unit))
-
             x += 30
+            return x
 
-        staff_block(initial, initial)
+        x = max(view.left_margin for view in views.values())
 
-        # bar
-        ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-        ctx.move_to(x, note_position(0.0, staff.top*12 + clef - 1))
-        ctx.line_to(x, note_position(0.0, staff.bot*12 + clef + 3))
-        ctx.stroke()
+        for view in views.values():
+            block = view.by_beat(0.0)
+            staff_block(view, x - view.left_margin + 35, block, block)
+
+            # bar
+            ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
+            ctx.move_to(x, view.graph_point(staff.top*12 - 1))
+            ctx.line_to(x, view.graph_point(staff.bot*12 + 3))
+            ctx.stroke()
+
         x += 20
 
         # Spacing configuration for note heads
@@ -463,14 +473,14 @@ class MainPayload:
 
         # Events on the line
         events = []
-        E_SEGMENT = 0
-        E_BARLINE = 1
-        E_BLOCK = 2
+        E_SEGMENT = 2
+        E_BLOCK = 1
+        E_BARLINE = 0
         def insert_event(beat, kind, value):
-            bisect.insort_left(events, (beat, kind, value), key=lambda k: k[0])
+            bisect.insort_left(events, (beat, kind, value), key=lambda k: (k[0], k[1]))
         # Breaking segments into measures
-        def beats_in_this_measure(eat):
-            this, future = entities.at_beat(staff_blocks, beat)
+        def beats_in_this_measure(view, beat):
+            this, future = entities.at_beat(view.blocks, beat)
             if future is None:
                 return this.beats_in_measure, False
             else:
@@ -480,29 +490,29 @@ class MainPayload:
                 else:
                     return this.beats_in_measure, False
         measured_voices = []
-        highest_beat = 0.0
         for voice in document.track.voices:
+            view = views[voice.staff_uid]
             measures = []
             measure = []
             beat = 0.0
-            remain, _ = beats_in_this_measure(beat)
+            remain, _ = beats_in_this_measure(view, beat)
             for seg in voice.segments:
                 duration = seg.duration
                 while remain < duration:
                     if remain > 0:
-                        insert_event(beat, E_SEGMENT, (remain, seg))
+                        insert_event(beat, E_SEGMENT, (remain, seg, view))
                         duration -= remain
                         beat += float(remain)
                         measure.append((remain, seg))
                     measures.append(measure)
-                    remain, _ = beats_in_this_measure(beat)
+                    remain, _ = beats_in_this_measure(view, beat)
                     measure = []
                 if duration != 0: # seg.duration <= remain
-                    insert_event(beat, E_SEGMENT, (duration, seg))
+                    insert_event(beat, E_SEGMENT, (duration, seg, view))
                     remain -= duration
                     beat += float(duration)
                     measure.append((duration, seg))
-            highest_beat = max(highest_beat, beat)
+            view.highest_beat = max(view.highest_beat, beat)
             measures.append(measure)
             measured_voices.append(measures)
         def frange(start, stop, step):
@@ -511,16 +521,17 @@ class MainPayload:
                 yield current
                 current += step
         # Inserting blocks into event stream
-        previous = initial
-        for i, block in enumerate(staff_blocks[1:], 1):
-            for stop in frange(previous.beat + previous.beats_in_measure, block.beat, previous.beats_in_measure):
-                insert_event(stop, E_BARLINE, None)
-            rawblock = document.track.graphs[0].blocks[i]
-            unusual = (block.beat - previous.beat) % previous.beats_in_measure != 0
-            insert_event(block.beat, E_BLOCK, (rawblock, block, unusual))
-            previous = block
-        for stop in frange(previous.beat + previous.beats_in_measure, highest_beat, previous.beats_in_measure):
-            insert_event(stop, E_BARLINE, None)
+        for view in views.values():
+            previous = view.blocks[0]
+            for i, block in enumerate(view.blocks[1:], 1):
+                for stop in frange(previous.beat + previous.beats_in_measure, block.beat, previous.beats_in_measure):
+                    insert_event(stop, E_BARLINE, view)
+                rawblock = view.staff.blocks[i]
+                unusual = (block.beat - previous.beat) % previous.beats_in_measure != 0
+                insert_event(block.beat, E_BLOCK, (view, rawblock, block, unusual))
+                previous = block
+            for stop in frange(previous.beat + previous.beats_in_measure, view.highest_beat, previous.beats_in_measure):
+                insert_event(stop, E_BARLINE, view)
 
         # Layout data to draw ties
         layout = {}
@@ -528,39 +539,47 @@ class MainPayload:
         offsets = [x]
         beats = [0.0]
         beat = 0.0
+        push0 = 0 # Additional pushes from other items.
+        push1 = 0
         # "Efficient algorithms for music engraving,
         #  focusing on correctness"
         for time, which, value in events:
+            if which == E_BLOCK and push0 > 0:
+                x += push0
+                push0 = 0
+            if which == E_SEGMENT and push0 + push1 > 0:
+                x += push0 + push1
+                push0 = push1 = 0
+                offsets.append(x)
+                beats.append(beat)
             if beat < time:
                 x += q * ((time - beat) / beat_unit) ** a
                 beat = time
                 offsets.append(x)
                 beats.append(beat)
             if which == E_BLOCK:
-                rawblock, block, unusual = value
+                view, rawblock, block, unusual = value
                 if unusual:
                     ctx.set_dash([1, 1])
                     ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-                    ctx.move_to(x, note_position(0.0, staff.top*12 + clef - 1))
-                    ctx.line_to(x, note_position(0.0, staff.bot*12 + clef + 3))
-                    ctx.stroke()
+                    ctx.move_to(x, view.graph_point(staff.top*12 - 1))
+                    ctx.line_to(x, view.graph_point(staff.bot*12 + 3))
                     ctx.stroke()
                     ctx.set_dash([])
-                staff_block(rawblock, block)
-                x += 10
-                offsets.append(x)
-                beats.append(beat)
+                    push1 = staff_block(view, x + 10, rawblock, block) - x
+                else:
+                    push1 = 10 + staff_block(view, x, rawblock, block) - x
             if which == E_BARLINE:
+                view = value
                 ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-                ctx.move_to(x, note_position(0.0, staff.top*12 + clef - 1))
-                ctx.line_to(x, note_position(0.0, staff.bot*12 + clef + 3))
+                ctx.move_to(x, view.graph_point(staff.top*12 - 1))
+                ctx.line_to(x, view.graph_point(staff.bot*12 + 3))
                 ctx.stroke()
-                x += 20
-                offsets.append(x)
-                beats.append(beat)
+                push0 = 10
             if which == E_SEGMENT:
                 ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
-                duration, seg = value
+                duration, seg, view = value
+                beat_unit = view.by_beat(beat).beat_unit
                 cat = resolution.categorize_note_duration(duration / beat_unit)
                 if cat is None:
                     if len(seg.notes) == 0:
@@ -568,9 +587,9 @@ class MainPayload:
                     else:
                         t = mean(pitch.position for pitch in seg.notes)
                     t = (t - t % 12) - 6
-                    k = (high_bound - t) * 5
+                    y = view.note_position(beat, t)
                     ctx.set_font_size(10)
-                    ctx.move_to(x - 4, 150 + k -2)
+                    ctx.move_to(x - 4, y -2)
                     ctx.show_text(f'|{duration / beat_unit}|')
                     d = resolution.quantize_fraction(duration / beat_unit)
                     cat = resolution.categorize_note_duration(d)
@@ -580,7 +599,7 @@ class MainPayload:
                     if len(seg.notes) == 0:
                         t = empty_segment_position[seg]
                         t = (t - t % 12) - 6
-                        y = note_position(beat, t)
+                        y = view.note_position(beat, t)
                         ctx.set_font_size(50)
                         ctx.move_to(x - 4, y -2)
                         c = {
@@ -605,7 +624,7 @@ class MainPayload:
                             ctx.arc(x + 16 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
                             ctx.fill()
                     for pitch in seg.notes:
-                        y = note_position(beat, pitch.position)
+                        y = view.note_position(beat, pitch.position)
                         # TODO: render accidental only when it changes in measure.
                         if pitch.accidental is not None:
                             ctx.set_font_size(25)
@@ -630,15 +649,15 @@ class MainPayload:
                             ctx.fill()
                         if seg in layout:
                             past, px = layout[seg][-1]
-                            y0 = note_position(past, pitch.position)
+                            y0 = view.note_position(past, pitch.position)
                             ctx.move_to(px+8, y0 + 3)
                             ctx.curve_to(px+8, 8 + y0 + 3,
                                          x-8, 8 + y + 3,
                                          x-8, 0 + y + 3)
                             ctx.stroke()
                     if len(seg.notes) > 0:
-                        high = min(note_position(beat, p.position) for p in seg.notes)
-                        low = max(note_position(beat, p.position) for p in seg.notes)
+                        high = min(view.note_position(beat, p.position) for p in seg.notes)
+                        low = max(view.note_position(beat, p.position) for p in seg.notes)
                         if high < low:
                             ctx.move_to(x + 5, high)
                             ctx.line_to(x + 5, low)
@@ -658,8 +677,8 @@ class MainPayload:
         x += 20
         # bar line
         ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-        ctx.move_to(x, note_position(0.0, staff.top*12 + clef - 1))
-        ctx.line_to(x, note_position(0.0, staff.bot*12 + clef + 3))
+        ctx.move_to(x, view.graph_point(staff.top*12 - 1))
+        ctx.line_to(x, view.graph_point(staff.bot*12 + 3))
         ctx.stroke()
 
         def monotonic_interpolation(value, sequence, interpolant, use_highest=False):
@@ -681,8 +700,8 @@ class MainPayload:
         # TODO: Come up with better way to broadcast layout details.
         def location_as_position(x, y):
             beat = monotonic_interpolation(x, offsets, beats)
-            clef = entities.by_beat(staff_blocks, beat).clef
-            return round((reference - y) / 5) + staff.bot*12 + clef
+            clef = entities.by_beat(view.blocks, beat).clef
+            return round((view.reference - y) / 5) + staff.bot*12 + clef
         self.location_as_position = location_as_position
 
         def mk_cb(bb, beat, seg_index, spacing):
@@ -704,8 +723,8 @@ class MainPayload:
             #if beat <= self.loco < beat + duration:
             #    ctx.rectangle(left, 150, zzz-left, (high_bound - low_bound)*5 )
             #    ctx.stroke()
-            low = note_position(0.0, staff.top*12 + clef - 1)
-            high = note_position(0.0, staff.bot*12 + clef + 3)
+            low = view.graph_point(staff.top*12 - 1)
+            high = view.graph_point(staff.bot*12 + 3)
             bb = gui.Box(left, low, right-left, high - low )
             mk_cb(bb, beat, index, spacing)
             hit.append(bb)
@@ -717,8 +736,8 @@ class MainPayload:
             # On terminal segment, we give a spacing for a single beat and use it for letting user
             # subdivide the terminal segment and create new segments that way.
             spacing = q * (1.0 / beat_unit) ** a
-            low = note_position(0.0, staff.top*12 + clef - 1)
-            high = note_position(0.0, staff.bot*12 + clef + 3)
+            low = view.graph_point(staff.top*12 - 1)
+            high = view.graph_point(staff.bot*12 + 3)
             bb = gui.Box(right, low, self.renderer.widget.width - right, high - low)
             mk_cb(bb, beat, -1, spacing)
             hit.append(bb)
@@ -802,9 +821,15 @@ class NoteTool:
     def button_down_segment(self, bb, beat, seg_index, spacing, x, y, button):
         position = self.payload.location_as_position(x, y)
         seg = self.document.track.voices[0].segments[seg_index]
-        if not any(pitch.position == position for pitch in seg.notes):
-            seg.notes.append(entities.Pitch(position))
-            return True
+        if button == 1:
+            if not any(pitch.position == position for pitch in seg.notes):
+                seg.notes.append(entities.Pitch(position))
+                return True
+        if button == 3:
+            for pitch in seg.notes:
+                if pitch.position == position:
+                    seg.notes.remove(pitch)
+                    return True
 
     def draw(self, ctx, hit):
         pass
@@ -915,6 +940,34 @@ class SplittingTool:
                 ctx.set_font_size(12)
                 ctx.move_to(self.x + self.width - 5 - ex.width, self.level + 12)
                 ctx.show_text('3'*int(triplet))
+
+class StaffView:
+    __slots__ = [
+        'staff',
+        'blocks',
+        'reference',
+        'left_margin',
+        'highest_beat',
+    ]
+    def __init__(self, staff):
+        assert isinstance(staff, entities.Staff)
+        self.staff = staff
+        self.blocks = entities.smear(staff.blocks)
+        self.highest_beat = 0.0
+
+    def by_beat(self, beat):
+        return entities.by_beat(self.blocks, beat)
+
+    def raw_by_beat(self, beat):
+        return entities.by_beat(self.staff.blocks, beat)
+
+    def graph_point(self, index):
+        return self.reference - (index - self.staff.bot*12)*5
+
+    def note_position(self, beat, position):
+        clef = self.by_beat(beat).clef
+        return self.reference - (position - self.staff.bot*12 - clef)*5
+
 
 if __name__=='__main__':
     Editor().ui()

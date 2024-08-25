@@ -24,18 +24,16 @@ document = Document(
       Staff(200, 3, 2, [
         StaffBlock(
           beat = 0,
-          beats_in_measure = 4,
+          beats_in_measure = 3,
           beat_unit = 4,
-          canonical_key = 7, # F#
-          clef = -3, # Alto clef
+          canonical_key = 0, # C
+          clef = 3, # Treble clef
           mode = None,
         ),
         StaffBlock(
           beat = 7,
           beats_in_measure = 3,
           canonical_key = +2, # D
-          mode = 'major',
-          clef = 3, # Treble/bass clef
         ),
       ]),
     ],
