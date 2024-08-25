@@ -10,6 +10,7 @@ import math
 import resolution
 import bisect
 import dialogs
+import random
 from fractions import Fraction
 
 class Editor:
@@ -203,6 +204,46 @@ class MainPayload:
         ctx.move_to(132+10, 20+32+28)
         ctx.show_text("save")
 
+        bb = gui.Box(132+10, 20+32*2, 32*3, 32)
+        def _click_(x, y, button):
+            # TODO: Also stop playback!!
+            for plugin in list(self.editor.plugins.plugins):
+                plugin.close()
+            self.editor.document = entities.Document(
+                track = entities.Track(
+                    graphs = [
+                        entities.Staff(100, 3, 2, [
+                            entities.StaffBlock(
+                                beat = 0,
+                                beats_in_measure = random.choice([3,4]),
+                                beat_unit = 4,
+                                canonical_key = random.randrange(-7, 8),
+                                clef = 3,
+                                mode = None
+                            )
+                        ])
+                    ],
+                    voices = [
+                        entities.Voice(200, 100, [])
+                    ]
+                ),
+                instrument = entities.Instrument(
+                    plugin = "https://surge-synthesizer.github.io/lv2/surge-xt",
+                    patch = {},
+                    data = {}
+                )
+            )
+            self.editor.plugin = self.editor.plugins.plugin(self.editor.document.instrument.plugin)
+            return True
+        bb.on_button_down = _click_
+        hit.append(bb)
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+        ctx.set_font_size(32)
+        ctx.rectangle(132+10, 20+32*2, 32*3, 32)
+        ctx.stroke()
+        ctx.move_to(132+10, 20+32*2+28)
+        ctx.show_text("new")
+
         bb = gui.Box(132+20+32*3, 20+32, 32*2, 32)
         def _click_(x, y, button):
             self.tool = SplittingTool(self.editor.document)
@@ -216,7 +257,18 @@ class MainPayload:
         ctx.move_to(132+20+32*3, 20+32+28)
         ctx.show_text("split")
 
-        # TODO: Another tool button!
+        bb = gui.Box(132+40+32*6, 20+32, 32*2, 32)
+        def _click_(x, y, button):
+            self.tool = NoteTool(self, self.editor.document)
+            return False
+        bb.on_button_down = _click_
+        hit.append(bb)
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+        ctx.set_font_size(32)
+        ctx.rectangle(132+40+32*6, 20+32, 32*2, 32)
+        ctx.stroke()
+        ctx.move_to(132+40+32*6, 20+32+28)
+        ctx.show_text("plot")
 
         vu_meter = gui.Box(10, 10, 20, 10)
         def _click_(x, y, button):
@@ -264,8 +316,8 @@ class MainPayload:
                             yield pitch.position - staff.bot*12 - block.clef
                         beat += float(seg.duration)
             positions = list(shifted_positions())
-            margin_bot = staff.bot + min(min(positions) // 12, 0)
-            margin_top = max(staff.top, staff.bot + (max(positions) // 12))
+            margin_bot = staff.bot + min(min(positions, default=0) // 12, 0)
+            margin_top = max(staff.top, staff.bot + (max(positions, default=0) // 12))
 
             # Staff lines
             # These are rendered without refering
@@ -423,6 +475,7 @@ class MainPayload:
             return sum(xs) // len(xs)
         empty_segment_position = {}
         for voice in document.track.voices:
+            view = views[voice.staff_uid]
 #        last_note_position = None
 #        rest_positions = []
 #
@@ -462,7 +515,7 @@ class MainPayload:
                     if position is None:
                         positions = empty_segment_position[seg]
                         if len(positions) == 0:
-                            block = entities.by_beat(staff_blocks, beat)
+                            block = view.by_beat(beat)
                             i = (staff.top*6 + staff.bot*6) + block.clef + 1
                             positions.append(i)
                     else:
@@ -712,8 +765,10 @@ class MainPayload:
         # TODO: Come up with better way to broadcast layout details.
         def location_as_position(x, y):
             beat = monotonic_interpolation(x, offsets, beats)
-            clef = entities.by_beat(view.blocks, beat).clef
-            return round((view.reference - y) / 5) + staff.bot*12 + clef
+            for view in views.values():
+                clef = entities.by_beat(view.blocks, beat).clef
+                if view.y <= y < view.y + view.height:
+                    return round((view.reference - y) / 5) + staff.bot*12 + clef
         self.location_as_position = location_as_position
 
         def mk_cb(bb, beat, voice, seg_index, spacing):
@@ -727,8 +782,10 @@ class MainPayload:
         for voice in document.track.voices:
             view = views[voice.staff_uid]
             beat = 0.0
+            right = monotonic_interpolation(0.0, beats, offsets)
             for index, seg in enumerate(voice.segments):
                 duration = float(seg.duration)
+                beat_unit = view.by_beat(beat).beat_unit
                 spacing = q * (duration / beat_unit) ** a
                 left = monotonic_interpolation(beat, beats, offsets, use_highest=True)
                 right = monotonic_interpolation(beat+duration, beats, offsets)
@@ -745,6 +802,7 @@ class MainPayload:
                 hit.append(bb)
                 beat += duration
             if right < self.renderer.widget.width:
+                beat_unit = view.by_beat(beat).beat_unit
                 #if beat <= self.loco:
                 #    ctx.rectangle(right, 150, self.renderer.widget.width - right, (high_bound - low_bound)*5)
                 #    ctx.stroke()
@@ -859,12 +917,12 @@ class NoteTool:
         self.payload = payload
         self.document = document
 
-    def hover_segment(self, bb, beat, seg_index, spacing, x, y):
+    def hover_segment(self, bb, beat, voice, seg_index, spacing, x, y):
         pass
 
-    def button_down_segment(self, bb, beat, seg_index, spacing, x, y, button):
+    def button_down_segment(self, bb, beat, voice, seg_index, spacing, x, y, button):
         position = self.payload.location_as_position(x, y)
-        seg = self.document.track.voices[0].segments[seg_index]
+        seg = voice.segments[seg_index]
         if button == 1:
             if not any(pitch.position == position for pitch in seg.notes):
                 seg.notes.append(entities.Pitch(position))
