@@ -197,6 +197,21 @@ def app(editor):
     widget = gui.ui.get().widget
     components.label(status.value, 0, widget.height - 3)
 
+    @gui.listen(gui.e_key_down)
+    def _down_(key, repeat, modifier):
+        if repeat == 0:
+            @editor.plugin.event
+            def _event_():
+                buf = editor.plugin.inputs['In']
+                editor.plugin.push_midi_event(buf, [0x91, key % 128, 0xFF])
+
+    @gui.listen(gui.e_key_up)
+    def _up_(key, modifier):
+        @editor.plugin.event
+        def _event_():
+            buf = editor.plugin.inputs['In']
+            editor.plugin.push_midi_event(buf, [0x81, key % 128, 0xFF])
+
 class StaffLayout:
     def __init__(self, y, staff, voices):
         assert isinstance(staff, entities.Staff)
@@ -353,16 +368,10 @@ def beatline(layouts, track):
             beat += float(seg.duration)
         # If rest positions are left over, fill them using the last known note position
         for beat, rest_seg in rest_positions:
-            if rest_seg not in empty_segment_position:
-                empty_segment_position[rest_seg] = []
             if last_note_position is not None:
+                if rest_seg not in empty_segment_position:
+                    empty_segment_position[rest_seg] = []
                 empty_segment_position[rest_seg].append(last_note_position)
-            else:
-                # TODO: Handle this one as a special case.
-                #       Otherwise it will go funny in block boundaries.
-                # Default to center if no notes were found
-                i = (staff.top*6 + staff.bot*6) + block.clef + 1
-                empty_segment_position[rest_seg].append(i)
     empty_segment_position = dict((seg, mean(positions)) for seg, positions in empty_segment_position.items())
 
     # Events on the line
@@ -391,12 +400,12 @@ def beatline(layouts, track):
             duration = seg.duration
             while remain < duration:
                 if remain > 0:
-                    insert_event(beat, E_SEGMENT, (remain, seg, layout))
+                    insert_event(beat, E_SEGMENT, (remain, seg, layout, voice))
                     duration -= remain
                     beat += float(remain)
                 remain, _ = beats_in_this_measure(layout, beat)
             if duration != 0: # seg.duration <= remain
-                insert_event(beat, E_SEGMENT, (duration, seg, layout))
+                insert_event(beat, E_SEGMENT, (duration, seg, layout, voice))
                 remain -= duration
                 beat += float(duration)
     def frange(start, stop, step):
@@ -431,6 +440,10 @@ def beatline(layouts, track):
     barlines = []
     blocks = []
     segments = []
+
+    trajectories = []
+    for voice in track.voices:
+        trajectories.append((voice.uid, [], []))
 
     # "Efficient algorithms for music engraving,
     #  focusing on correctness"
@@ -468,11 +481,25 @@ def beatline(layouts, track):
             barlines.append((False, x, y0, y1))
             push0 = 10
         if which == E_SEGMENT:
-            duration, seg, layout = value
+            duration, seg, layout, voice = value
             tie = len(seg_xs.get(seg, []))
-            segments.append((x, tie, duration, seg, layout))
+            segments.append((beat, x, tie, duration, seg, layout))
+            if len(seg.notes) > 0:
+                for voice_uid, xs, ys in trajectories:
+                    if voice_uid == voice.uid:
+                        p = mean(p.position for p in seg.notes)
+                        y = layout.note_position(beat, p)
+                        xs.append(x)
+                        ys.append(y)
+                    
             resolution.insert_in_list(seg_xs, seg, (beat, x))
 
+    mouse_x = gui.state(0)
+    mouse_y = gui.state(0)
+    @gui.listen(gui.e_motion)
+    def _motion_(x, y):
+        mouse_x.lazy(x)
+        mouse_y.lazy(y)
 
     @gui.drawing
     def _draw_lines_(ui, comp):
@@ -490,7 +517,34 @@ def beatline(layouts, track):
         for layout, x, block, smear in blocks:
             staff_block(ctx, layout, x+10, block, smear)
 
-        for x, tie, duration, seg, layout in segments:
+        ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
+        ctx.set_dash([4, 2])
+        closest_y = None
+        closest_z = None
+        distance = 1000000
+        for voice_uid, xs, ys in trajectories:
+            for i, (x,y) in enumerate(zip(xs, ys)):
+                if i == 0:
+                    ctx.move_to(x, y)
+                else:
+                    ctx.line_to(x, y)
+            ctx.stroke()
+            y = monotonic_interpolation(mouse_x.value, xs, ys)
+            z = monotonic_interpolation(mouse_x.value, xs, xs)
+            d = (y - mouse_y.value)**2 + (z - mouse_x.value)**2
+            if d < distance:
+                distance = d
+                closest_y = y
+                closest_z = z
+                
+        if closest_y is not None:
+            ctx.move_to(closest_z, closest_y)
+            ctx.line_to(mouse_x.value, mouse_y.value)
+            ctx.stroke()
+
+        ctx.set_dash([])
+
+        for beat, x, tie, duration, seg, layout in segments:
             ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
             beat_unit = layout.by_beat(beat).beat_unit
             cat = resolution.categorize_note_duration(duration / beat_unit)
@@ -583,6 +637,21 @@ def beatline(layouts, track):
                         ctx.line_to(x + 5 + 5, high - 30 + d * 4 + 8)
                         ctx.stroke()
 
+def monotonic_interpolation(value, sequence, interpolant, use_highest=False):
+    li = bisect.bisect_left(sequence, value)
+    ri = bisect.bisect_right(sequence, value)
+    if li < len(sequence) and sequence[li] == value:
+        if use_highest:
+            return interpolant[ri-1]
+        else:
+            return interpolant[li]
+    lowi = max(0, li - 1)
+    uppi = min(len(sequence) - 1, ri)
+    if sequence[uppi] != sequence[lowi]:
+        t = (value - sequence[lowi]) / (sequence[uppi] - sequence[lowi])
+    else:
+        t = 0
+    return interpolant[lowi]*(1-t) + interpolant[uppi]*t
 
     #    x += 20
     #    # bar line
@@ -591,21 +660,6 @@ def beatline(layouts, track):
     #    ctx.line_to(x, view.graph_point(staff.bot*12 + 3))
     #    ctx.stroke()
 
-    #    def monotonic_interpolation(value, sequence, interpolant, use_highest=False):
-    #        li = bisect.bisect_left(sequence, value)
-    #        ri = bisect.bisect_right(sequence, value)
-    #        if li < len(sequence) and sequence[li] == value:
-    #            if use_highest:
-    #                return interpolant[ri-1]
-    #            else:
-    #                return interpolant[li]
-    #        lowi = max(0, li - 1)
-    #        uppi = min(len(sequence) - 1, ri)
-    #        if sequence[uppi] != sequence[lowi]:
-    #            t = (value - sequence[lowi]) / (sequence[uppi] - sequence[lowi])
-    #        else:
-    #            t = 0
-    #        return interpolant[lowi]*(1-t) + interpolant[uppi]*t
 
     #    # TODO: Come up with better way to broadcast layout details.
     #    def location_as_position(x, y):
@@ -1780,37 +1834,6 @@ class SplittingTool:
                 ctx.set_font_size(12)
                 ctx.move_to(self.x + self.width - 5 - ex.width, self.level + 12)
                 ctx.show_text('3'*int(triplet))
-
-class StaffView:
-    __slots__ = [
-        'staff',
-        'blocks',
-        'reference',
-        'left_margin',
-        'highest_beat',
-        'y',
-        'height'
-    ]
-    def __init__(self, staff, y):
-        assert isinstance(staff, entities.Staff)
-        self.staff = staff
-        self.blocks = entities.smear(staff.blocks)
-        self.highest_beat = 0.0
-        self.y = y
-
-    def by_beat(self, beat):
-        return entities.by_beat(self.blocks, beat)
-
-    def raw_by_beat(self, beat):
-        return entities.by_beat(self.staff.blocks, beat)
-
-    def graph_point(self, index):
-        return self.reference - (index - self.staff.bot*12)*5
-
-    def note_position(self, beat, position):
-        clef = self.by_beat(beat).clef
-        return self.reference - (position - self.staff.bot*12 - clef)*5
-
 
 if __name__=='__main__':
     Editor().ui()
