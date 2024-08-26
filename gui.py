@@ -158,6 +158,12 @@ class UIState:
     def set_state(self, value):
         self.composition.set_state(self.key, value)
 
+    def lazy(self, value):
+        old = self.composition.state[self.key]
+        self.composition.state[self.key] = value
+        if old != value:
+            self.composition.set_dirty()
+
     value = property(get_state, set_state)
 
 def state(initial):
@@ -188,6 +194,7 @@ def ui_context(handle):
     finally:
         ui.reset(token)
 
+e_update = object()
 e_motion = object()
 e_button_down = object()
 e_button_up = object()
@@ -215,7 +222,12 @@ class GUI:
         self.renderer.flip()
 
     def update(self):
-        pass
+        comp = self.composer.composition
+        for this in comp.preorder():
+            for event, _, handler in this.listeners:
+                if event == e_update:
+                    handler()
+        self.widget.exposed = self.widget.exposed or comp.dirty
 
     def mouse_motion(self, x, y):
         with ui_context(self):
