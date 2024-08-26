@@ -28,7 +28,10 @@ class Composition:
         # The parts that makes this GUI
         self.drawings = []
         self.listeners = []
-        self.shape = Hit()
+        if parent is None or parent.parent is None:
+            self.shape = Hit()
+        else:
+            self.shape = Hidden()
 
     def memoize(self):
         for child in self.children:
@@ -77,14 +80,19 @@ class Composition:
                 selection = child.hit(x, y) or selection
             return selection
 
-    def reshape(self, shape):
-        if self.fresh:
-            self.shape = shape
-
-    def listen(self, event):
+    def listen(self, event, original=False):
+        #key = self.get_callsite_key(2 + depth)
+        #print('format', format_key(key))
         def _decorator_(fn):
-            if self.fresh:
-                self.listeners.append((event, fn))
+            #if self.fresh:
+            self.listeners.append((event, original, fn))
+            #else:
+            #    for i, (_, k, _) in enumerate(self.listeners):
+            #        print('candinate', format_key(k))
+            #        if key == k:
+            #            self.listeners[i] = (event, key, fn)
+            #            return
+            #    assert False, "listener panic"
         return _decorator_
 
     def preorder(self):
@@ -107,6 +115,9 @@ def composition_context(comp, memo):
         current_composition.reset(token0)
         ui_memo.reset(token1)
 
+def format_key(key):
+    return f"{key[0].co_filename}:{key[1]}"
+
 @contextmanager
 def composition_frame(args, kwargs):
     props = get_properties(args, kwargs)
@@ -114,20 +125,24 @@ def composition_frame(args, kwargs):
     key = comp.get_callsite_key(4)
     previous = ui_memo.get().get(key)
     if previous is None or previous.props != props or previous.dirty:
+        #print(f"{format_key(key)} recomposed")
         this = Composition(comp, key, props, {} if previous is None else previous.state)
         comp.children.append(this)
         with composition_context(this, dict() if previous is None else dict(previous.memoize())):
-            yield this, True
+            assert current_composition.get() == this
+            yield this
     else:
+        #print(f"{format_key(key)} retained {previous}")
         previous.fresh = False
         previous.parent = comp
         comp.children.append(previous)
-        yield previous, False
+        previous.listeners = list(filter(lambda v: v[1], previous.listeners))
+        yield previous
 
 def composable(fn):
     def wrapper(*args, **kwargs):
-        with composition_frame(args, kwargs) as (comp, refresh):
-            if refresh:
+        with composition_frame(args, kwargs) as comp:
+            if comp.fresh:
                 fn(*args, **kwargs)
             return comp
     return wrapper
@@ -208,7 +223,7 @@ class GUI:
             this = comp.hit(x, y)
             handled = False
             while this is not None and not handled:
-                for event, handler in this.listeners:
+                for event, _, handler in this.listeners:
                     if event == e_motion:
                         handler(x, y)
                         handled = True
@@ -221,7 +236,7 @@ class GUI:
             this = comp.hit(x, y)
             handled = False
             while this is not None and not handled:
-                for event, handler in this.listeners:
+                for event, _, handler in this.listeners:
                     if event == e_button_down:
                         handler(x, y, button)
                         handled = True
@@ -239,7 +254,7 @@ class GUI:
             key = self.button_presses.pop(button, None)
             for this in comp.preorder():
                 if this.key == key:
-                    for event, handler in this.listeners:
+                    for event, _, handler in this.listeners:
                         if event == e_button_up:
                             handler(x, y, button)
             self.widget.exposed = self.widget.exposed or comp.dirty
@@ -249,7 +264,7 @@ class GUI:
             comp = self.composer.composition
             for this in comp.preorder():
                 if self.focus == this.key:
-                    for event, handler in this.listeners:
+                    for event, _, handler in this.listeners:
                         if event == e_text:
                             handler(text)
             self.widget.exposed = self.widget.exposed or comp.dirty
@@ -259,7 +274,7 @@ class GUI:
             comp = self.composer.composition
             for this in comp.preorder():
                 if self.focus == this.key:
-                    for event, handler in this.listeners:
+                    for event, _, handler in this.listeners:
                         if event == e_key_down:
                             handler(sym, repeat, modifiers)
             self.widget.exposed = self.widget.exposed or comp.dirty
@@ -269,7 +284,7 @@ class GUI:
             comp = self.composer.composition
             for this in comp.preorder():
                 if self.focus == this.key:
-                    for event, handler in this.listeners:
+                    for event, _, handler in this.listeners:
                         if event == e_key_up:
                             handler(sym, modifiers)
             self.widget.exposed = self.widget.exposed or comp.dirty
@@ -285,15 +300,15 @@ def drawing(func):
     return func
 
 def listen(event):
-    return current_composition.get().listen(event)
+    return current_composition.get().listen(event, original=True)
 
 def shape(shape):
     current_composition.get().shape = shape
 
 #@contextmanager
 def workspace(color=(1,1,1,1), font_family=None):
-#    with composition_frame((color, font_family), {}) as (comp, refresh):
-#        if refresh:
+#    with composition_frame((color, font_family), {}) as comp:
+#        if comp.fresh:
             @drawing
             def _workspace_(ui, _):
                 ctx = ui.ctx
@@ -360,3 +375,13 @@ class Box(Hit):
         ix = self.x <= x < self.x + self.width
         iy = self.y <= y < self.y + self.height
         return ix and iy
+
+class Hidden(Hit):
+    def __init__(self, children=None):
+        super().__init__(children)
+
+    def trace(self, ctx):
+        pass
+
+    def test(self, x, y):
+        return False
