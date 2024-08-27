@@ -5,6 +5,7 @@ import sdl2
 def label(text, x, y, font_size=20):
     @gui.drawing
     def _draw_(ui, comp):
+        ui.ctx.set_source_rgba(0,0,0,1)
         ui.ctx.set_font_size(font_size)
         ui.ctx.move_to(x, y)
         ui.ctx.show_text(text)
@@ -153,6 +154,7 @@ def textbox(text, change_text, font_size=20):
         #    self.width = text_width
 
     @gui.listen(gui.e_motion)
+    @gui.listen(gui.e_dragging)
     def _motion_(x, y):
         if dragging.value:
             pos.value = position_to_cursor(x)

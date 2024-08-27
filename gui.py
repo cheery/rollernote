@@ -93,6 +93,7 @@ class Composition:
             #            self.listeners[i] = (event, key, fn)
             #            return
             #    assert False, "listener panic"
+            return fn
         return _decorator_
 
     def preorder(self):
@@ -196,6 +197,9 @@ def ui_context(handle):
 
 e_update = object()
 e_motion = object()
+e_entering = object()
+e_dragging = object()
+e_leaving = object()
 e_button_down = object()
 e_button_up = object()
 e_key_down = object()
@@ -214,6 +218,7 @@ class GUI:
         self.kwargs = kwargs
         self.focus = None
         self.button_presses = {}
+        self.under_motion = None
 
     def draw(self):
         with ui_context(self):
@@ -233,14 +238,36 @@ class GUI:
         with ui_context(self):
             comp = self.composer.composition
             this = comp.hit(x, y)
-            handled = False
-            while this is not None and not handled:
-                for event, _, handler in this.listeners:
-                    if event == e_motion:
-                        handler(x, y)
-                        handled = True
+            handled_by = None
+            if len(self.button_presses) > 0 and self.under_motion is not None:
+                for that in comp.preorder():
+                    if that.key == self.under_motion:
+                        for event, _, handler in that.listeners:
+                            if event == e_dragging:
+                                handler(x,y)
+                                handled_by = that.key
+            while this is not None and handled_by is None:
+                if this.key != self.under_motion:
+                    for event, _, handler in this.listeners:
+                        if event == e_entering:
+                            handler(x, y)
+                            handled_by = this.key
+                if handled_by is None:
+                    for event, _, handler in this.listeners:
+                        if event == e_entering:
+                            handled_by = this
+                        elif event == e_motion:
+                            handler(x, y)
+                            handled_by = this.key
                 this = this.parent
-            self.widget.exposed = self.widget.exposed or comp.dirty
+            if handled_by != self.under_motion and self.under_motion is not None:
+                for that in comp.preorder():
+                    if that.key == self.under_motion:
+                        for event, _, handler in that.listeners:
+                            if event == e_leaving:
+                                handler(x,y)
+            self.under_motion = handled_by
+        self.widget.exposed = self.widget.exposed or comp.dirty
 
     def mouse_button_down(self, x, y, button):
         with ui_context(self):
