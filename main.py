@@ -68,6 +68,7 @@ def vu_meter(vol):
 def app(editor): 
     gui.workspace(color=(1,1,1,1), font_family='FreeSerif')
     status = gui.state("program started")
+    tool = gui.state(plot_tool)
 
     # Editor history
     history = editor.history
@@ -156,14 +157,15 @@ def app(editor):
 
     splitbutton = components.button("split", font_size=32)
     splitbutton.shape = gui.Box(152+32*3, 52, 32*2, 32)
-#        def _click_(x, y, button):
-#            self.tool = SplittingTool(self.editor.document)
+    @splitbutton.listen(gui.e_button_down)
+    def _splitbutton_down_(x, y, button):
+        tool.value = split_tool
 
     plotbutton = components.button("plot", font_size=32)
     plotbutton.shape = gui.Box(172+32*6, 52, 32*2, 32)
-#        def _click_(x, y, button):
-#            self.tool = NoteTool(self, self.editor.document)
-
+    @plotbutton.listen(gui.e_button_down)
+    def _plotbutton_down_(x, y, button):
+        tool.value = plot_tool
 
     meter = vu_meter(editor.transport.volume_meter)
     meter.shape = gui.Box(10, 10, 20, 90)
@@ -192,7 +194,7 @@ def app(editor):
     for staff in document.track.graphs:
         layouts[staff.uid] = layout = StaffLayout(y_base, staff, document.track.voices)
         y_base += layout.height
-    beatline(layouts, document.track)
+    beatline(layouts, document.track, tool.value)
 
     widget = gui.ui.get().widget
     components.label(status.value, 0, widget.height - 3)
@@ -277,7 +279,7 @@ class StaffLayout:
         return width
        
 @gui.composable
-def beatline(layouts, track):
+def beatline(layouts, track, tool_app):
     widget = gui.ui.get().widget
     gui.shape(gui.Box(0, 150, widget.width, widget.height - 170))
 
@@ -443,7 +445,9 @@ def beatline(layouts, track):
 
     trajectories = []
     for voice in track.voices:
-        trajectories.append((voice.uid, [], []))
+        trajectories.append((voice.staff_uid, voice.uid, [], []))
+
+    last_beat = max((l.last_beat for l in layouts.values()), default=0.0)
 
     # "Efficient algorithms for music engraving,
     #  focusing on correctness"
@@ -485,7 +489,7 @@ def beatline(layouts, track):
             tie = len(seg_xs.get(seg, []))
             segments.append((beat, x, tie, duration, seg, layout))
             if len(seg.notes) > 0:
-                for voice_uid, xs, ys in trajectories:
+                for staff_uid, voice_uid, xs, ys in trajectories:
                     if voice_uid == voice.uid:
                         p = mean(p.position for p in seg.notes)
                         y = layout.note_position(beat, p)
@@ -493,13 +497,10 @@ def beatline(layouts, track):
                         ys.append(y)
                     
             resolution.insert_in_list(seg_xs, seg, (beat, x))
-
-    mouse_x = gui.state(0)
-    mouse_y = gui.state(0)
-    @gui.listen(gui.e_motion)
-    def _motion_(x, y):
-        mouse_x.lazy(x)
-        mouse_y.lazy(y)
+    if beat < last_beat:
+        x += q * (last_beat - beat) ** a
+        offsets.append(x)
+        beats.append(last_beat)
 
     @gui.drawing
     def _draw_lines_(ui, comp):
@@ -517,31 +518,15 @@ def beatline(layouts, track):
         for layout, x, block, smear in blocks:
             staff_block(ctx, layout, x+10, block, smear)
 
-        ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
+        ctx.set_source_rgba(1.0, 0.0, 0.0, 0.4)
         ctx.set_dash([4, 2])
-        closest_y = None
-        closest_z = None
-        distance = 1000000
-        for voice_uid, xs, ys in trajectories:
+        for _, voice_uid, xs, ys in trajectories:
             for i, (x,y) in enumerate(zip(xs, ys)):
                 if i == 0:
                     ctx.move_to(x, y)
                 else:
                     ctx.line_to(x, y)
             ctx.stroke()
-            y = monotonic_interpolation(mouse_x.value, xs, ys)
-            z = monotonic_interpolation(mouse_x.value, xs, xs)
-            d = (y - mouse_y.value)**2 + (z - mouse_x.value)**2
-            if d < distance:
-                distance = d
-                closest_y = y
-                closest_z = z
-                
-        if closest_y is not None:
-            ctx.move_to(closest_z, closest_y)
-            ctx.line_to(mouse_x.value, mouse_y.value)
-            ctx.stroke()
-
         ctx.set_dash([])
 
         for beat, x, tie, duration, seg, layout in segments:
@@ -637,6 +622,189 @@ def beatline(layouts, track):
                         ctx.line_to(x + 5 + 5, high - 30 + d * 4 + 8)
                         ctx.stroke()
 
+    for graph_uid, layout in layouts.items():
+        tool_app(
+          graph_uid,
+          layout,
+          seg_xs,
+          offsets,
+          beats,
+          trajectories,
+          track,
+        )
+
+def location_as_position(layout, offsets, beats, x, y):
+    beat = monotonic_interpolation(x, offsets, beats)
+    clef = entities.by_beat(layout.smeared, beat).clef
+    return beat, round((layout.reference - y) / 5) + layout.staff.bot*12 + clef
+
+def nearest_voice(trajectories, ix, iy, current_staff_uid):
+    closest = None
+    closest_y = None
+    closest_z = None
+    distance = None
+    for staff_uid, voice_uid, xs, ys in trajectories:
+        if current_staff_uid == staff_uid:
+            y = monotonic_interpolation(ix, xs, ys)
+            z = monotonic_interpolation(ix, xs, xs)
+            d = (y - iy)**2 + (z - ix)**2
+            if distance is None or d < distance:
+                distance = d
+                closest_y = y
+                closest_z = z
+                closest = voice_uid
+    return closest, closest_z, closest_y
+
+def get_segment(refbeat, track, voice_uid):
+    for voice in track.voices:
+        if voice.uid == voice_uid:
+            beat = 0.0
+            for seg in voice.segments:
+                if 0 <= refbeat - beat < float(seg.duration):
+                    return beat, seg
+                beat += float(seg.duration)
+    if beat <= refbeat:
+        return beat, None
+
+@gui.composable
+def plot_tool(staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
+    _ui = gui.ui.get()
+    _comp = gui.current_composition.get()
+    gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+
+    voice_lock = gui.state(False)
+    mouse_x = gui.state(0)
+    mouse_y = gui.state(0)
+    nearest = gui.state((None, None, None))
+    beat_position = gui.state(None)
+    @gui.listen(gui.e_motion)
+    def _motion_(x, y):
+        mouse_x.lazy(x)
+        mouse_y.lazy(y)
+        if not voice_lock.value:
+            nearest.value = nearest_voice(trajectories, mouse_x.value, mouse_y.value, layout.staff.uid)
+        for voice in track.voices:
+            if voice.staff_uid != staff_uid and nearest.value[0] == voice.uid:
+                nearest.value = (None, None, None)
+
+        beat_position.value = location_as_position(
+          layout, offsets, beats, mouse_x.value, mouse_y.value)
+
+    @gui.listen(gui.e_button_down)
+    def _down_(x, y, button):
+        if beat_position.value and nearest.value[0] is not None:
+            refbeat, position = beat_position.value
+            _, seg = get_segment(refbeat, track, nearest.value[0])
+            if button == 1:
+                if not any(pitch.position == position for pitch in seg.notes):
+                    seg.notes.append(entities.Pitch(position))
+                    _comp.set_dirty()
+                    beat_position.value = None
+            if button == 2:
+                for pitch in seg.notes:
+                    if pitch.position == position:
+                        seg.notes.remove(pitch)
+                        _comp.set_dirty()
+                        beat_position.value = None
+                        break
+            if button == 3:
+                voice_lock.value = not voice_lock.value
+
+    @gui.drawing
+    def _draw_(ui, comp):
+        ctx = ui.ctx
+        ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
+        if voice_lock.value:
+            ctx.set_source_rgba(0.0, 0.0, 1.0, 1.0)
+        for staff_uid, voice_uid, xs, ys in trajectories:
+            if nearest.value[0] == voice_uid:
+                for i, (x,y) in enumerate(zip(xs, ys)):
+                    if i == 0:
+                        ctx.move_to(x, y)
+                    else:
+                        ctx.line_to(x, y)
+                ctx.stroke()
+        if beat_position.value:
+            beat, position = beat_position.value
+            x = mouse_x.value
+            y = layout.note_position(beat, position)
+            ctx.arc(x, y, 5, 0, 2*math.pi)
+            ctx.fill()
+
+@gui.composable
+def split_tool(staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
+    _ui = gui.ui.get()
+    gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+
+    voice_lock = gui.state(False)
+    mouse_x = gui.state(0)
+    mouse_y = gui.state(0)
+    nearest = gui.state((None, None, None))
+    bseg = gui.state((0.0, None, 0, 0))
+    beat_position = gui.state(None)
+    @gui.listen(gui.e_motion)
+    def _motion_(x, y):
+        mouse_x.lazy(x)
+        mouse_y.lazy(y)
+        if not voice_lock.value:
+            nearest.value = nearest_voice(trajectories, mouse_x.value, mouse_y.value, layout.staff.uid)
+        for voice in track.voices:
+            if voice.staff_uid != staff_uid and nearest.value[0] == voice.uid:
+                nearest.value = (None, None, None)
+
+        beat_position.value = location_as_position(
+          layout, offsets, beats, mouse_x.value, mouse_y.value)
+
+        x1 = offsets[0]
+        for voice in track.voices:
+            if voice.uid == nearest.value[0]:
+                beat = 0.0
+                for seg in voice.segments:
+                    x0 = monotonic_interpolation(beat, beats, offsets, True)
+                    x1 = monotonic_interpolation(beat + float(seg.duration), beats, offsets, True)
+                    if x0 < mouse_x.value <= x1:
+                        bseg.value = beat, seg, x0, x1
+                    beat += float(seg.duration)
+                if x1 <= mouse_x.value:
+                    bseg.value = beat, None, x1, _ui.widget.width
+        if bseg.value[2] < bseg.value[3]:
+           pass # TODO: cutting behavior.
+
+    @gui.listen(gui.e_button_down)
+    def _down_(x, y, button):
+        if beat_position.value and nearest.value[0] is not None:
+            refbeat, position = beat_position.value
+            if button == 3:
+                voice_lock.value = not voice_lock.value
+            print(bseg.value)
+
+    @gui.drawing
+    def _draw_(ui, comp):
+        ctx = ui.ctx
+        ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
+        if voice_lock.value:
+            ctx.set_source_rgba(0.0, 0.0, 1.0, 1.0)
+        for staff_uid, voice_uid, xs, ys in trajectories:
+            if nearest.value[0] == voice_uid:
+                for i, (x,y) in enumerate(zip(xs, ys)):
+                    if i == 0:
+                        ctx.move_to(x, y)
+                    else:
+                        ctx.line_to(x, y)
+                ctx.stroke()
+        if bseg.value[3] > bseg.value[2]:
+            beat, seg, x0, x1 = bseg.value
+            for staff_uid, voice_uid, xs, ys in trajectories:
+                if nearest.value[0] == voice_uid:
+                     ctx.set_source_rgba(1.0, 0.0, 1.0, 0.75)
+                     y0 = monotonic_interpolation(x0, xs, ys)
+                     y1 = monotonic_interpolation(x1, xs, ys)
+                     ctx.move_to(x0, y0 + 5)
+                     ctx.line_to(x1, y1 + 5)
+                     ctx.line_to(x1, y1 - 5)
+                     ctx.line_to(x0, y0 - 5)
+                     ctx.fill()
+
 def monotonic_interpolation(value, sequence, interpolant, use_highest=False):
     li = bisect.bisect_left(sequence, value)
     ri = bisect.bisect_right(sequence, value)
@@ -653,86 +821,6 @@ def monotonic_interpolation(value, sequence, interpolant, use_highest=False):
         t = 0
     return interpolant[lowi]*(1-t) + interpolant[uppi]*t
 
-    #    x += 20
-    #    # bar line
-    #    ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
-    #    ctx.move_to(x, view.graph_point(staff.top*12 - 1))
-    #    ctx.line_to(x, view.graph_point(staff.bot*12 + 3))
-    #    ctx.stroke()
-
-
-    #    # TODO: Come up with better way to broadcast layout details.
-    #    def location_as_position(x, y):
-    #        beat = monotonic_interpolation(x, offsets, beats)
-    #        for view in views.values():
-    #            clef = entities.by_beat(view.blocks, beat).clef
-    #            if view.y <= y < view.y + view.height:
-    #                return round((view.reference - y) / 5) + staff.bot*12 + clef
-    #    self.location_as_position = location_as_position
-
-    #    def mk_cb(bb, beat, voice, seg_index, spacing):
-    #        def _hover_(x,y):
-    #            return self.tool.hover_segment(bb, beat, voice, seg_index, spacing, x, y)
-    #        bb.on_hover = _hover_
-    #        def _button_down_(x,y,button):
-    #            return self.tool.button_down_segment(bb, beat, voice, seg_index, spacing, x, y, button)
-    #        bb.on_button_down = _button_down_
-
-    #    for voice in document.track.voices:
-    #        view = views[voice.staff_uid]
-    #        beat = 0.0
-    #        right = monotonic_interpolation(0.0, beats, offsets)
-    #        for index, seg in enumerate(voice.segments):
-    #            duration = float(seg.duration)
-    #            beat_unit = view.by_beat(beat).beat_unit
-    #            spacing = q * (duration / beat_unit) ** a
-    #            left = monotonic_interpolation(beat, beats, offsets, use_highest=True)
-    #            right = monotonic_interpolation(beat+duration, beats, offsets)
-    #            right = max(right, left + spacing)
-    #            #if beat <= self.loco < beat + duration:
-    #            #    ctx.rectangle(left, 150, zzz-left, (high_bound - low_bound)*5 )
-    #            #    ctx.stroke()
-    #            #low = view.graph_point(staff.top*12 - 1)
-    #            #high = view.graph_point(staff.bot*12 + 3)
-    #            low = view.y
-    #            high = view.y + view.height
-    #            bb = gui.Box(left, low, right-left, high - low )
-    #            mk_cb(bb, beat, voice, index, spacing)
-    #            hit.append(bb)
-    #            beat += duration
-    #        if right < self.renderer.widget.width:
-    #            beat_unit = view.by_beat(beat).beat_unit
-    #            #if beat <= self.loco:
-    #            #    ctx.rectangle(right, 150, self.renderer.widget.width - right, (high_bound - low_bound)*5)
-    #            #    ctx.stroke()
-    #            # On terminal segment, we give a spacing for a single beat and use it for letting user
-    #            # subdivide the terminal segment and create new segments that way.
-    #            spacing = q * (1.0 / beat_unit) ** a
-    #            #low = view.graph_point(staff.top*12 - 1)
-    #            #high = view.graph_point(staff.bot*12 + 3)
-    #            low = view.y
-    #            high = view.y + view.height
-    #            bb = gui.Box(right, low, self.renderer.widget.width - right, high - low)
-    #            mk_cb(bb, beat, voice, -1, spacing)
-    #            hit.append(bb)
-
-    #    self.tool.draw(ctx, hit)
-    #    if self.dialog is not None:
-    #        self.dialog.draw()
-
-
-
-
-
-
-
-
-
-#    def __init__(self, staff, y):
-#        self.highest_beat = 0.0
-#        self.y = y
-
-# TODO: partition this into pieces.
 def staff_block(ctx, layout, x, block, smear):
     staff = layout.staff
     x0 = x
@@ -1703,30 +1791,6 @@ class MainPayload:
 
     def close(self):
         self.renderer.close()
-
-class NoteTool:
-    def __init__(self, payload, document):
-        self.payload = payload
-        self.document = document
-
-    def hover_segment(self, bb, beat, voice, seg_index, spacing, x, y):
-        pass
-
-    def button_down_segment(self, bb, beat, voice, seg_index, spacing, x, y, button):
-        position = self.payload.location_as_position(x, y)
-        seg = voice.segments[seg_index]
-        if button == 1:
-            if not any(pitch.position == position for pitch in seg.notes):
-                seg.notes.append(entities.Pitch(position))
-                return True
-        if button == 3:
-            for pitch in seg.notes:
-                if pitch.position == position:
-                    seg.notes.remove(pitch)
-                    return True
-
-    def draw(self, ctx, hit):
-        pass
 
 # TODO: Figure out where beat unit can be received from.
 class SplittingTool:

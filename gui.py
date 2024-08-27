@@ -100,10 +100,10 @@ class Composition:
         for child in self.children:
             yield from child.preorder()
 
-def get_properties(args, kwargs):
+def get_properties(fn, args, kwargs):
     """Organize the arguments to allow their quick identification"""
     pargs = tuple(sorted(kwargs.items(), key=lambda item: item[0]))
-    return (args, pargs)
+    return (fn, args, pargs)
 
 @contextmanager
 def composition_context(comp, memo):
@@ -119,8 +119,8 @@ def format_key(key):
     return f"{key[0].co_filename}:{key[1]}"
 
 @contextmanager
-def composition_frame(args, kwargs):
-    props = get_properties(args, kwargs)
+def composition_frame(fn, args, kwargs):
+    props = get_properties(fn, args, kwargs)
     comp = current_composition.get()
     key = comp.get_callsite_key(4)
     previous = ui_memo.get().get(key)
@@ -141,7 +141,7 @@ def composition_frame(args, kwargs):
 
 def composable(fn):
     def wrapper(*args, **kwargs):
-        with composition_frame(args, kwargs) as comp:
+        with composition_frame(fn, args, kwargs) as comp:
             if comp.fresh:
                 fn(*args, **kwargs)
             return comp
@@ -319,7 +319,7 @@ def shape(shape):
 
 #@contextmanager
 def workspace(color=(1,1,1,1), font_family=None):
-#    with composition_frame((color, font_family), {}) as comp:
+#    with composition_frame(None, (color, font_family), {}) as comp:
 #        if comp.fresh:
             @drawing
             def _workspace_(ui, _):
