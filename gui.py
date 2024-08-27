@@ -174,6 +174,49 @@ def state(initial):
         comp.state[key] = initial
     return UIState(comp, key)
 
+class UIStateBundle:
+    __slots__ = ['_composition', '_key', '_lazy']
+    def __init__(self, _composition, _key, _lazy):
+        self._composition = _composition
+        self._key = _key
+        self._lazy = _lazy
+
+    def __getattr__(self, name):
+        try:
+            return self._composition.state[self._key][name]
+        except KeyError:
+            raise AttributeError
+
+    def __setattr__(self, name, value):
+        try:
+            super().__setattr__(name, value)
+        except AttributeError:
+            bundle = self._composition.state[self._key]
+            try:
+                old = bundle[name]
+                bundle[name] = value
+                if not self._lazy or old != value:
+                   self._composition.set_dirty()
+            except KeyError:
+                raise AttributeError
+
+def bundle(**kwargs):
+    comp = current_composition.get()
+    key = comp.get_callsite_key()
+    if key not in comp.state:
+        comp.state[key] = kwargs
+    return UIStateBundle(comp, key, False)
+
+def lazybundle(**kwargs):
+    comp = current_composition.get()
+    key = comp.get_callsite_key()
+    if key not in comp.state:
+        comp.state[key] = kwargs
+    return UIStateBundle(comp, key, True)
+
+def setter(bundle, name):
+    return lambda value: setattr(bundle, name, value)
+
 class Composer:
     def __init__(self, scene):
         self.scene = scene

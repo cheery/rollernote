@@ -23,10 +23,12 @@ def vu_meter(vol):
             return min(1.0, max(0.0, 1 - (dbfs / -96)))
         else:
             return 0.0
-    vol0 = gui.state(0.0)
-    vol1 = gui.state(0.0)
-    clip0 = gui.state(False)
-    clip1 = gui.state(False)
+    this = gui.lazybundle(
+        vol0 = 0.0,
+        vol1 = 0.0,
+        clip0 = False,
+        clip1 = False
+    )
 
     @gui.drawing
     def _draw_(ui, comp):
@@ -36,17 +38,17 @@ def vu_meter(vol):
         bb.trace(ctx)
         ctx.fill()
         ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
-        h0 = to_scaler(vol0.value) * (bb.height - 10)
+        h0 = to_scaler(this.vol0) * (bb.height - 10)
         ctx.rectangle(bb.x+1, bb.y+bb.height - h0,
                       bb.width // 2 - 2, h0)
         ctx.fill()
-        h1 = to_scaler(vol1.value) * (bb.height - 10)
+        h1 = to_scaler(this.vol1) * (bb.height - 10)
         ctx.rectangle(bb.x+bb.width//2+1, bb.y+bb.height - h1, 8, h1)
         ctx.fill()
         ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
-        if clip0.value:
+        if this.clip0:
             ctx.rectangle(bb.x, bb.y, bb.width//2, 10)
-        if clip1.value:
+        if this.clip1:
             ctx.rectangle(bb.x+bb.width//2, bb.y, bb.width//2, 10)
         ctx.fill()
 
@@ -58,17 +60,20 @@ def vu_meter(vol):
 
     @gui.listen(gui.e_update)
     def _update_():
-        vol0.lazy(vol.volume0)
-        vol1.lazy(vol.volume1)
-        clip1.lazy(vol.clipping1)
-        clip0.lazy(vol.clipping0)
-        clip1.lazy(vol.clipping1)
+        this.vol0 = vol.volume0
+        this.vol1 = vol.volume1
+        this.clip0 = vol.clipping0
+        this.clip1 = vol.clipping1
 
 @gui.composable
 def app(editor): 
     gui.workspace(color=(1,1,1,1), font_family='FreeSerif')
-    status = gui.state("program started")
-    tool = gui.state(plot_tool)
+    this = gui.lazybundle(
+        status = "program started",
+        tool = plot_tool,
+        counter = 0,
+        text = "foobar",
+    )
 
     # Editor history
     history = editor.history
@@ -78,28 +83,28 @@ def app(editor):
     @undo.listen(gui.e_motion)
     def _undo_status_(x, y):
         if len(history.undo_stack) > 0:
-            status.lazy(f"undo: {history.undo_stack[-1].name}")
+            this.status = f"undo: {history.undo_stack[-1].name}"
     @undo.listen(gui.e_button_down)
     def _undo_down_(x, y, button):
         if len(history.undo_stack) > 0:
-             status.value = f"undone: {history.undo_stack[-1].name}"
-             history.undo()
-             undo.set_dirty()
-             redo.set_dirty()
+            this.status = f"undone: {history.undo_stack[-1].name}"
+            history.undo()
+            undo.set_dirty()
+            redo.set_dirty()
 
     redo = components.button(chr(0x21B7), font_size=24, disabled=len(history.redo_stack) == 0)
     redo.shape = gui.Box(133, 10, 32, 32)
     @redo.listen(gui.e_motion)
     def _redo_status_(x, y):
         if len(history.redo_stack) > 0:
-            status.lazy(f"redo: {history.redo_stack[-1].name}")
+            this.status = f"redo: {history.redo_stack[-1].name}"
     @redo.listen(gui.e_button_down)
     def _redo_down_(x, y, button):
         if len(history.redo_stack) > 0:
-             status.value = f"redone: {history.redo_stack[-1].name}"
-             history.redo()
-             undo.set_dirty()
-             redo.set_dirty()
+            this.status = f"redone: {history.redo_stack[-1].name}"
+            history.redo()
+            undo.set_dirty()
+            redo.set_dirty()
 
     play = components.button(chr(0x25B6), font_size=32)
     play.shape = gui.Box(100, 52, 32, 32)
@@ -159,13 +164,13 @@ def app(editor):
     splitbutton.shape = gui.Box(152+32*3, 52, 32*2, 32)
     @splitbutton.listen(gui.e_button_down)
     def _splitbutton_down_(x, y, button):
-        tool.value = split_tool
+        this.tool = split_tool
 
     plotbutton = components.button("plot", font_size=32)
     plotbutton.shape = gui.Box(172+32*6, 52, 32*2, 32)
     @plotbutton.listen(gui.e_button_down)
     def _plotbutton_down_(x, y, button):
-        tool.value = plot_tool
+        this.tool = plot_tool
 
     meter = vu_meter(editor.transport.volume_meter)
     meter.shape = gui.Box(10, 10, 20, 90)
@@ -178,14 +183,12 @@ def app(editor):
         if plugin.widget is None:
             editor.widget(plugin.name, 120, 70, lv2.UIPayload, plugin)
 
-    counter = gui.state(0)
-    hmm = components.button(f"hello {counter.value}")
+    hmm = components.button(f"hello {this.counter}")
     hmm.shape = gui.Box(310, 22, 100, 20)
     @hmm.listen(gui.e_button_down)
     def _click_(x, y, button):
-        counter.value += 1
-    src = gui.state('foobar')
-    haa = components.textbox(src.value, src.set_state)
+        this.counter += 1
+    haa = components.textbox(this.text, gui.setter(this, 'text'))
     haa.shape = gui.Box(200, 22, 100, 20)
 
     document = editor.document
@@ -193,11 +196,11 @@ def app(editor):
     y_base = 150
     for staff in document.track.graphs:
         layouts[staff.uid] = layout = StaffLayout(y_base, staff, document.track.voices)
-        y_base += layout.height
-    beatline(layouts, document.track, tool.value)
+        y_base += layout.height + 10
+    beatline(layouts, document.track, this.tool)
 
     widget = gui.ui.get().widget
-    components.label(status.value, 0, widget.height - 3)
+    components.label(this.status, 0, widget.height - 3)
 
     @gui.listen(gui.e_key_down)
     def _down_(key, repeat, modifier):
@@ -282,8 +285,28 @@ class StaffLayout:
 def beatline(layouts, track, tool_app):
     widget = gui.ui.get().widget
     gui.shape(gui.Box(0, 150, widget.width, widget.height - 170))
+    this = gui.lazybundle(
+        scroll_x_anchor = None,
+        scroll_x = 0,
+    )
 
-    x0 = max(layout.left_margin for layout in layouts.values())
+    # Scrolling behavior
+    @gui.listen(gui.e_motion)
+    @gui.listen(gui.e_dragging)
+    def _motion_(x, y):
+        if this.scroll_x_anchor is not None:
+            this.scroll_x += x - this.scroll_x_anchor
+            this.scroll_x_anchor = x
+
+    @gui.listen(gui.e_button_down)
+    def _down_(x, y, button):
+        this.scroll_x_anchor = x
+
+    @gui.listen(gui.e_button_up)
+    def _up_(x, y, button):
+        this.scroll_x_anchor = None
+
+    x0 = this.scroll_x + max(layout.left_margin for layout in layouts.values())
 
     @gui.drawing
     def _draw_(ui, comp):
@@ -310,7 +333,7 @@ def beatline(layouts, track, tool_app):
             major_text = resolution.pitch_name(major, key, show_octave=False)
             minor_text = resolution.pitch_name(minor, key, show_octave=False)
             ctx.set_font_size(10)
-            ctx.move_to(35, layout.y + 9)
+            ctx.move_to(this.scroll_x + 35, layout.y + 9)
             ctx.show_text(f"{major_text} {minor_text}m")
 
             # Initial pitch markings
@@ -319,7 +342,7 @@ def beatline(layouts, track, tool_app):
             for i in range(0, layout.span, 2):
                 position = i + layout.margin_bot*12 + clef
                 t = resolution.pitch_name(entities.Pitch(position), key)
-                ctx.move_to(10, layout.note_position(0.0, position)+4)
+                ctx.move_to(this.scroll_x + 10, layout.note_position(0.0, position)+4)
                 ctx.show_text(t)
 
             for layout in layouts.values():
@@ -536,7 +559,8 @@ def beatline(layouts, track, tool_app):
 
         for beat, x, tie, duration, seg, layout in segments:
             ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
-            beat_unit = layout.by_beat(beat).beat_unit
+            block = layout.by_beat(beat)
+            beat_unit = block.beat_unit
             cat = resolution.categorize_note_duration(duration / beat_unit)
             if cat is None:
                 if len(seg.notes) == 0:
@@ -552,7 +576,10 @@ def beatline(layouts, track, tool_app):
                 cat = resolution.categorize_note_duration(d)
             base, dots, triplet = cat
             if len(seg.notes) == 0:
-                t = empty_segment_position[seg]
+                try:
+                    t = empty_segment_position[seg]
+                except KeyError:
+                    t = (layout.staff.top*6 + layout.staff.bot*6) + block.clef + 1
                 t = (t - t % 12) - 6
                 y = layout.note_position(beat, t)
                 ctx.set_font_size(50)
@@ -571,12 +598,12 @@ def beatline(layouts, track, tool_app):
                 ctx.show_text(c)
                 if triplet:
                     ctx.move_to(x, 135)
-                    ctx.line_to(x + 5, 150 + k + 5)
-                    ctx.line_to(x + 5, 150 + k - 5)
-                    ctx.line_to(x, 150 + k)
+                    ctx.line_to(x + 5, y + 5)
+                    ctx.line_to(x + 5, y - 5)
+                    ctx.line_to(x, y)
                     ctx.stroke()
                 for dot in range(dots):
-                    ctx.arc(x + 16 + dot*5, 150 + k + 3, 2, 0, 2*math.pi)
+                    ctx.arc(x + 16 + dot*5, y + 3, 2, 0, 2*math.pi)
                     ctx.fill()
             for pitch in seg.notes:
                     y = layout.note_position(beat, pitch.position)
