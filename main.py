@@ -9,7 +9,6 @@ import gui
 import math
 import resolution
 import bisect
-import dialogs
 import random
 import components
 from fractions import Fraction
