@@ -1122,21 +1122,16 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
         this.voice_uid = nearest[0]
 
         for voice in track.voices:
-            print('bp', beatpoint)
             if this.voice_uid == voice.uid:
                 beat = 0.0
                 i = 0
                 for seg in voice.segments:
-                    print('beat', beat)
                     if beatpoint < beat + float(seg.duration) / 2:
                         break
                     beat += float(seg.duration)
                     i += 1
-                print('seg', this.seg_index)
                 this.beat = beat
                 this.seg_index = i
-                print('seg', this.seg_index)
-
 
     @gui.listen(gui.e_key_down)
     def _down_(key, repeat, modifier):
@@ -1159,6 +1154,7 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
             def midi_event(m, plugin):
                 @plugin.event
                 def _event_():
+                    buf = plugin.inputs['In']
                     plugin.push_midi_event(buf, [0x91, m, 0xFF])
             block = layout.by_beat(this.beat)
             key = resolution.canon_key(block.canonical_key)
@@ -1229,6 +1225,7 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
             def midi_event(m, plugin):
                 @plugin.event
                 def _event_():
+                    buf = plugin.inputs['In']
                     plugin.push_midi_event(buf, [0x81, m, 0xFF])
             for m, plugin in this.playing:
                 midi_event(m, plugin)
