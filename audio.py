@@ -4,6 +4,59 @@ import lilv
 import numpy
 import resolution
 import math
+import wave
+
+class DeviceOutput:
+    def __init__(self, transport, block_length=1024):
+        self.transport = transport
+        self.block_length = block_length
+        self.audio_loop_c = sdl2.SDL_AudioCallback(self.audio_loop)
+        wanted = sdl2.SDL_AudioSpec(44100, sdl2.AUDIO_F32, 2, self.block_length)
+        wanted.callback = self.audio_loop_c
+        wanted.userdata = None
+
+        self.audio = sdl2.SDL_OpenAudio(ctypes.byref(wanted), None)
+        sdl2.SDL_PauseAudio(0)
+
+        self.chan0 = numpy.zeros(self.block_length, numpy.float32)
+        self.chan1 = numpy.zeros(self.block_length, numpy.float32)
+
+    def audio_loop(self, _, stream, length):
+        now = sdl2.SDL_GetTicks64() / 1000.0
+        self.chan0.fill(0)
+        self.chan1.fill(0)
+        self.transport.run(now, self.chan0, self.chan1)
+        data = numpy.dstack([self.chan0, self.chan1]).flatten()
+        ctypes.memmove(stream, data.ctypes.data, min(self.block_length*8, length))
+
+    def close(self):
+        sdl2.SDL_PauseAudio(1)
+
+class WAVOutput:
+    def __init__(self, transport, filename, block_length=1024):
+        self.transport = transport
+        self.filename = filename
+        self.block_length = block_length
+        self.file = wave.open(filename, 'w')
+        self.file.setnchannels(2)
+        self.file.setsampwidth(2) # 16-bit
+        self.file.setframerate(44100)
+        self.time = 0.0
+        self.chan0 = numpy.zeros(self.block_length, numpy.float32)
+        self.chan1 = numpy.zeros(self.block_length, numpy.float32)
+
+    def write_frame(self):
+        self.chan0.fill(0)
+        self.chan1.fill(0)
+        self.transport.run(self.time, self.chan0, self.chan1)
+        #stereo_wave = np.vstack((sine_wave_left, sine_wave_right)).T
+        data = numpy.dstack([self.chan0, self.chan1]).flatten()
+        data = (data * 32767).astype(numpy.int16) # To 16-bit PCM format
+        self.file.writeframes(data.tobytes())
+        self.time += self.block_length / 44100
+
+    def close(self):
+        self.file.close()
 
 class Transport:
     def __init__(self, plugins):
@@ -11,24 +64,20 @@ class Transport:
         self.plugins = plugins
         self.time = 0.0
         self.live_voices = set()
-
+        self.volume0 = 0.0
+        self.volume1 = 0.0
         self.volume_meter = Meter()
 
-        self.audio_loop_c = sdl2.SDL_AudioCallback(self.audio_loop)
-        wanted = sdl2.SDL_AudioSpec(48000, sdl2.AUDIO_F32, 2, self.block_length)
-        wanted.callback = self.audio_loop_c
-        wanted.userdata = None
+    # We'd need better signaling from our plugins to tell whether they are idle or not.
+    def is_idle(self):
+        return len(self.live_voices) == 0 and self.volume0 + self.volume1 == 0
 
-        self.audio = sdl2.SDL_OpenAudio(ctypes.byref(wanted), None)
-        sdl2.SDL_PauseAudio(0)
-
-    def audio_loop(self, _, stream, length):
-        plugins = list(self.plugins.plugins)
+    def run(self, now, audio0, audio1):
+        plugins = self.plugins
         for plugin in plugins:
             for e in plugin.pending_events:
                 e()
             plugin.pending_events.clear()
-        now = sdl2.SDL_GetTicks64() / 1000.0
 
         # TODO: Get the key from correct sources.
         key = resolution.canon_key(0)
@@ -63,9 +112,8 @@ class Transport:
                 lv.current += 1
             else:
                 still_live.add(lv)
+        self.live_voices = still_live
 
-        audio0 = numpy.zeros(self.block_length, numpy.float32)
-        audio1 = numpy.zeros(self.block_length, numpy.float32)
         for plugin in plugins:
             plugin.instance.run(self.block_length)
             audio0 += plugin.audio_outputs[0][1]
@@ -74,13 +122,12 @@ class Transport:
         meter = self.volume_meter
         r0 = math.sqrt(sum(audio0*audio0) / self.block_length)
         r1 = math.sqrt(sum(audio1*audio1) / self.block_length)
+        self.volume0 = r0
+        self.volume1 = r1
         meter.volume0 = max(r0, meter.volume0*meter.decay)
         meter.volume1 = max(r1, meter.volume1*meter.decay)
         meter.clipping0 = meter.clipping0 or max(abs(audio0)) > 1.0
         meter.clipping1 = meter.clipping1 or max(abs(audio1)) > 1.0
-
-        data = numpy.dstack([audio0, audio1]).flatten()
-        ctypes.memmove(stream, data.ctypes.data, min(self.block_length*8, length))
 
         for plugin in plugins:
             for data in plugin.inputs.values():
@@ -89,11 +136,7 @@ class Transport:
                 #seq[0].atom.type = plugin.get_urid("http://lv2plug.in/ns/ext/atom#Sequence")
                 #seq[0].body.unit = plugin.get_urid('https://lv2plug.in/ns/ext/time#beat')
                 #seq[0].body.pad  = 0
-
         self.time = now
-
-    def close(self):
-        sdl2.SDL_PauseAudio(1)
 
 class Meter:
     def __init__(self):

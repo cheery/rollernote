@@ -11,6 +11,7 @@ import resolution
 import bisect
 import random
 import components
+import subprocess
 from fractions import Fraction
 
 @gui.composable
@@ -116,6 +117,30 @@ def app(editor):
             for voice in editor.document.track.voices
         ])
 
+    record = components.button('wav', font_size=16)
+    record.shape = gui.Box(58, 52, 32, 32)
+    @record.listen(gui.e_button_down)
+    def _record_down_(x, y, button):
+        # TODO: Open a dialog
+        instrument = editor.document.instrument
+        instrument.patch, instrument.data = editor.plugin.save()
+        plugin = editor.plugins.plugin(editor.document.instrument.plugin)
+        if len(editor.document.instrument.patch) > 0:
+            plugin.load(editor.document.instrument.patch, editor.document.instrument.data)
+        transport = audio.Transport([plugin])
+        bpm = audio.LinearEnvelope([ (0, 80, 0) ])
+        assert bpm.check_positiveness()
+        transport.live_voices.update([
+            audio.LiveVoice(plugin, voice.segments, bpm)
+            for voice in editor.document.track.voices
+        ])
+        output = audio.WAVOutput(transport, 'temp.wav')
+        while not transport.is_idle():
+            output.write_frame()
+        output.close()
+        plugin.close()
+        subprocess.run(["ffmpeg", "-i", "temp.wav", "temp.mp3"])
+
     save = components.button("save", font_size=32)
     save.shape = gui.Box(142, 52, 32*3, 32)
     @save.listen(gui.e_button_down)
@@ -130,18 +155,17 @@ def app(editor):
     def _new_down_(x, y, button):
         # TODO: Also clean up audio params!
         sdl2.SDL_PauseAudio(1)
-        for plugin in list(editor.plugins.plugins):
+        for plugin in editor.transport.plugins:
             plugin.close()
-        sdl2.SDL_PauseAudio(0)
         editor.document = entities.Document(
             track = entities.Track(
                 graphs = [
                     entities.Staff(100, 3, 2, [
                         entities.StaffBlock(
                             beat = 0,
-                            beats_in_measure = random.choice([3,4]),
+                            beats_in_measure = 4, #random.choice([3,4]),
                             beat_unit = 4,
-                            canonical_key = random.randrange(-7, 8),
+                            canonical_key = 0, #random.randrange(-7, 8),
                             clef = 3,
                             mode = None
                         )
@@ -158,6 +182,8 @@ def app(editor):
             )
         )
         editor.plugin = editor.plugins.plugin(editor.document.instrument.plugin)
+        editor.transport.plugins = [editor.plugin]
+        sdl2.SDL_PauseAudio(0)
 
     splitbutton = components.button("split", font_size=32)
     splitbutton.shape = gui.Box(152+32*3, 52, 32*2, 32)
@@ -1253,7 +1279,8 @@ class Editor:
         #print(list(self.plugin.control_outputs.keys()))
         #print(list(self.plugin.inputs.keys()))
         #print(list(self.plugin.outputs.keys()))
-        self.transport = audio.Transport(self.plugins)
+        self.transport = audio.Transport([self.plugin])
+        self.audio_output = audio.DeviceOutput(self.transport)
         if len(self.document.instrument.patch) > 0:
             self.plugin.load(self.document.instrument.patch, self.document.instrument.data)
         self.running = False
@@ -1317,7 +1344,7 @@ class Editor:
                     if event.window.event == sdl2.video.SDL_WINDOWEVENT_CLOSE:
                         if widget.payload.closing():
                             if widget is root:
-                                self.transport.close()
+                                self.audio_output.close()
                                 for widget in list(self.widgets.values()):
                                     widget.payload.close()
                                     widget.window.close()
@@ -1329,8 +1356,7 @@ class Editor:
                                 self.widgets.pop(widget.uid)
 
         sdl2.SDL_StopTextInput()
-        for plugin in list(self.plugins.plugins):
-            plugin.close()
+        self.plugins.close()
         sdl2.ext.quit()
 
 class Widget:

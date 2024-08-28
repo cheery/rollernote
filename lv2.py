@@ -22,6 +22,10 @@ class Plugins:
         self.plugins.add(plugin)
         return plugin
 
+    def close(self):
+        for plugin in list(self.plugins):
+            plugin.close()
+
 class Plugin:
     def __init__(self, plugins, uri):
         self.widget = None
@@ -68,7 +72,7 @@ class Plugin:
         uri_c = plugins.world.new_uri(uri)
         self.desc = plugins.world.get_all_plugins()[uri_c]
         self.name = str(self.desc.get_name())
-        self.instance = lilv.Instance(self.desc, 48000.0, self.features.array())
+        self.instance = lilv.Instance(self.desc, 44100.0, self.features.array())
         self.instance.activate()
 
         state = self.instance.instance[0].lv2_descriptor[0].extension_data(
@@ -229,6 +233,8 @@ class Plugin:
         self.pending_events.append(fn)
 
     def close(self):
+        if self.widget is not None:
+            self.widget.close()
         self.instance.deactivate()
         del self.instance
         self.plugins.plugins.discard(self)
