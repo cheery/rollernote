@@ -977,6 +977,9 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
     @gui.listen(gui.e_button_down)
     def _button_down_(x, y, button):
         beatpoint = monotonic_interpolation(x, offsets, beats)
+        nearest = nearest_voice(trajectories, x, y, layout.staff.uid)
+        this.voice_uid = nearest[0]
+
         for voice in track.voices:
             print('bp', beatpoint)
             if this.voice_uid == voice.uid:
