@@ -316,18 +316,21 @@ class GUI:
         with ui_context(self):
             comp = self.composer.composition
             this = comp.hit(x, y)
-            handled = False
-            while this is not None and not handled:
+            handled_by = None
+            focus_by = None
+            while this is not None and (handled_by is None or focus_by is None):
                 for event, _, handler in this.listeners:
                     if event == e_button_down:
                         handler(x, y, button)
-                        handled = True
+                        handled_by = this.key
                     if event in keyboad_events:
-                        self.focus = this.key
                         this.set_dirty() # Give it chance to react on focus change.
-                if handled:
-                    self.button_presses[button] = this.key
+                        focus_by = this.key
                 this = this.parent
+            if handled_by is not None:
+                self.button_presses[button] = handled_by
+            if focus_by is not None:
+                self.focus = focus_by
             self.widget.exposed = self.widget.exposed or comp.dirty
 
     def mouse_button_up(self, x, y, button):

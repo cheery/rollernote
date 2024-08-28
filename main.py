@@ -166,10 +166,16 @@ def app(editor):
         this.tool = split_tool
 
     plotbutton = components.button("plot", font_size=32)
-    plotbutton.shape = gui.Box(172+32*6, 52, 32*2, 32)
+    plotbutton.shape = gui.Box(172+32*5, 52, 32*2, 32)
     @plotbutton.listen(gui.e_button_down)
     def _plotbutton_down_(x, y, button):
         this.tool = plot_tool
+
+    inputbutton = components.button("input", font_size=32)
+    inputbutton.shape = gui.Box(182+32*7, 52, 32*2, 32)
+    @inputbutton.listen(gui.e_button_down)
+    def _inputbutton_down_(x, y, button):
+        this.tool = input_tool
 
     meter = vu_meter(editor.transport.volume_meter)
     meter.shape = gui.Box(10, 10, 20, 90)
@@ -196,7 +202,7 @@ def app(editor):
     for staff in document.track.graphs:
         layouts[staff.uid] = layout = StaffLayout(y_base, staff, document.track.voices)
         y_base += layout.height + 10
-    beatline(layouts, document.track, this.tool)
+    beatline(editor, layouts, document.track, this.tool)
 
     widget = gui.ui.get().widget
     components.label(this.status, 0, widget.height - 3)
@@ -281,7 +287,7 @@ class StaffLayout:
         return width
        
 @gui.composable
-def beatline(layouts, track, tool_app):
+def beatline(editor, layouts, track, tool_app):
     widget = gui.ui.get().widget
     gui.shape(gui.Box(0, 150, widget.width, widget.height - 170))
     this = gui.lazybundle(
@@ -655,6 +661,7 @@ def beatline(layouts, track, tool_app):
 
     for graph_uid, layout in layouts.items():
         tool_app(
+          editor,
           graph_uid,
           layout,
           seg_xs,
@@ -698,7 +705,7 @@ def get_segment(refbeat, track, voice_uid):
         return beat, None
 
 @gui.composable
-def plot_tool(staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
+def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
     _ui = gui.ui.get()
     _comp = gui.current_composition.get()
     gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
@@ -768,7 +775,7 @@ def plot_tool(staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
             ctx.fill()
 
 @gui.composable
-def split_tool(staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
+def split_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
     _ui = gui.ui.get()
     gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
 
@@ -926,6 +933,222 @@ def split_tool(staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
                     ctx.set_font_size(12)
                     ctx.move_to(x2 - 5 - ex.width, level + 12)
                     ctx.show_text('3'*int(triplet))
+
+@gui.composable
+def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
+    _ui = gui.ui.get()
+    gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+    first_voice_uid = None
+    first_beat = 0.0
+    first_index = 0
+    for voice in track.voices:
+        if voice.staff_uid == staff_uid:
+            first_voice_uid = voice.uid
+            for seg in voice.segments:
+                first_beat += float(seg.duration)
+                first_index += 1
+            break
+
+    this = gui.lazybundle(
+        document = editor.document,
+        voice_uid = first_voice_uid,
+        seg_index = first_index,
+        beat      = first_beat,
+        stencil   = [],
+        accidental = None,
+        playing = [],
+        time_start = None,
+        duration = 1,
+    )
+    if this.document != editor.document:
+        this.document = editor.document
+        this.voice_uid = first_voice_uid
+        this.seg_index = first_index
+        this.beat = first_beat
+    def add_or_remove(position):
+        for note in this.stencil:
+            if note.position == position:
+                this.stencil.remove(note)
+                this._composition.set_dirty()
+                return
+        this.stencil.append(entities.Pitch(position, this.accidental))
+        this._composition.set_dirty()
+
+    @gui.listen(gui.e_button_down)
+    def _button_down_(x, y, button):
+        beatpoint = monotonic_interpolation(x, offsets, beats)
+        for voice in track.voices:
+            print('bp', beatpoint)
+            if this.voice_uid == voice.uid:
+                beat = 0.0
+                i = 0
+                for seg in voice.segments:
+                    print('beat', beat)
+                    if beatpoint < beat + float(seg.duration) / 2:
+                        break
+                    beat += float(seg.duration)
+                    i += 1
+                print('seg', this.seg_index)
+                this.beat = beat
+                this.seg_index = i
+                print('seg', this.seg_index)
+
+
+    @gui.listen(gui.e_key_down)
+    def _down_(key, repeat, modifier):
+        block = layout.by_beat(this.beat)
+        i = (layout.staff.top*6 + layout.staff.bot*6) + block.clef + 1
+        matrix = [
+            sdl2.SDLK_v, sdl2.SDLK_b, sdl2.SDLK_n, sdl2.SDLK_m,
+            sdl2.SDLK_g, sdl2.SDLK_h, sdl2.SDLK_j, sdl2.SDLK_k, sdl2.SDLK_l,
+            sdl2.SDLK_y, sdl2.SDLK_u, sdl2.SDLK_i, sdl2.SDLK_o,
+            sdl2.SDLK_7, sdl2.SDLK_8, sdl2.SDLK_9, sdl2.SDLK_0,
+        ]
+        if key in matrix:
+            add_or_remove(i + matrix.index(key) - 8)
+        ac_matrix = [ sdl2.SDLK_c, sdl2.SDLK_d, sdl2.SDLK_f, sdl2.SDLK_r, sdl2.SDLK_t ]
+        if key in ac_matrix:
+            accidental = ac_matrix.index(key) - 2
+            this.accidental = None if this.accidental == accidental else accidental
+
+        if repeat == 0 and key == sdl2.SDLK_p:
+            @editor.plugin.event
+            def _event_():
+                block = layout.by_beat(this.beat)
+                key = resolution.canon_key(block.canonical_key)
+                this.playing = []
+                for pitch in list(this.stencil):
+                    buf = editor.plugin.inputs['In']
+                    m = resolution.resolve_pitch(pitch, key)
+                    editor.plugin.push_midi_event(buf, [0x91, m, 0xFF])
+                    this.playing.append(m)
+
+        if repeat == 0 and key == sdl2.SDLK_q:
+            this.time_start = editor.time
+
+        if key == sdl2.SDLK_a:
+            this.duration /= 2
+
+        if key == sdl2.SDLK_w:
+            this.duration *= 2
+
+        seg = entities.VoiceSegment(
+            notes = list(this.stencil),
+            duration = this.duration
+        )
+        if key == sdl2.SDLK_1:
+            for voice in track.voices:
+                if this.voice_uid == voice.uid:
+                    voice.segments[this.seg_index:this.seg_index] = [seg]
+                    this.seg_index += 1
+                    this.beat += seg.duration
+            this._composition.set_dirty()
+        if key == sdl2.SDLK_2:
+            for voice in track.voices:
+                if this.voice_uid == voice.uid:
+                    voice.segments[this.seg_index:this.seg_index+1] = [seg]
+                    this.seg_index += 1
+                    this.beat += seg.duration
+            this._composition.set_dirty()
+        if key == sdl2.SDLK_3:
+            for voice in track.voices:
+                if this.voice_uid == voice.uid and this.seg_index < len(voice.segments):
+                    seg.duration = voice.segments[this.seg_index].duration
+                    voice.segments[this.seg_index:this.seg_index+1] = [seg]
+                    this.seg_index += 1
+                    this.beat += seg.duration
+            this._composition.set_dirty()
+        if key == sdl2.SDLK_4:
+            for voice in track.voices:
+                if this.voice_uid == voice.uid and this.seg_index < len(voice.segments):
+                    seg.notes = voice.segments[this.seg_index].notes
+                    voice.segments[this.seg_index:this.seg_index+1] = [seg]
+                    this.seg_index += 1
+                    this.beat += seg.duration
+            this._composition.set_dirty()
+        if key == sdl2.SDLK_LEFT:
+            for voice in track.voices:
+                if this.voice_uid == voice.uid and this.seg_index > 0:
+                    this.seg_index -= 1
+                    this.beat -= voice.segments[this.seg_index].duration
+        if key == sdl2.SDLK_RIGHT:
+            for voice in track.voices:
+                if this.voice_uid == voice.uid and this.seg_index < len(voice.segments):
+                    this.beat += voice.segments[this.seg_index].duration
+                    this.seg_index += 1
+
+    @gui.listen(gui.e_key_up)
+    def _up_(key, modifier):
+        if key == sdl2.SDLK_p:
+            @editor.plugin.event
+            def _event_():
+                for m in this.playing:
+                    buf = editor.plugin.inputs['In']
+                    editor.plugin.push_midi_event(buf, [0x81, m, 0xFF])
+        if key == sdl2.SDLK_q:
+            this.time_start = None
+
+    @gui.listen(gui.e_update)
+    def _update_():
+        if this.time_start is not None:
+            block = layout.by_beat(this.beat)
+            time = editor.time
+            this.duration = resolution.quantize_fraction((time - this.time_start) / 10) * block.beat_unit
+
+    @gui.drawing
+    def _draw_(ui, comp):
+        ctx = ui.ctx
+        if ui.focus == comp.key:
+            ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
+            x = monotonic_interpolation(this.beat, beats, offsets, True)
+            y0 = layout.graph_point(layout.staff.top*12 - 1)
+            y1 = layout.graph_point(layout.staff.bot*12 + 3)
+            ctx.move_to(x,y0 - 20)
+            ctx.line_to(x,y1 + 20)
+            ctx.stroke()
+
+            for pitch in this.stencil:
+                y = layout.note_position(this.beat, pitch.position)
+                ctx.arc(x, y, 5, 0, math.pi*2)
+                ctx.fill()
+                if pitch.accidental is not None:
+                    ctx.set_font_size(25)
+                    xt = ctx.text_extents(resolution.char_accidental[pitch.accidental])
+                    ctx.move_to(x - 8 - xt.width, y + 5)
+                    ctx.show_text(resolution.char_accidental[pitch.accidental])
+
+            ctx.set_font_size(10)
+            ctx.set_source_rgba(0.0, 0.0, 1.0, 1.0)
+            ctx.move_to(x + 10,y0 - 10)
+            if this.accidental is not None:
+                ctx.show_text(resolution.char_accidental[this.accidental])
+
+            tab = {
+                Fraction(2,1): chr(119132),
+                Fraction(1,1): chr(119133),
+                Fraction(1,2): chr(119134),
+                Fraction(1,4): chr(119135),
+                Fraction(1,8): chr(119136),
+                Fraction(1,16): chr(119137),
+                Fraction(1,32): chr(119138),
+                Fraction(1,64): chr(119139),
+                Fraction(1,128): chr(119140),
+            }
+            ctx.set_font_size(25)
+            block = layout.by_beat(this.beat)
+            cat = resolution.categorize_note_duration(this.duration / block.beat_unit)
+            if cat is not None:
+                base, dots, triplet = cat
+                ctx.move_to(x + 15, y0 - 10)
+                if base > 2:
+                    text = (tab[Fraction(1,base.denominator)] + '.'*dots) * base.numerator
+                else:
+                    text = tab[base] + '.'*dots
+                ctx.show_text(text)
+                ctx.set_font_size(12)
+                ctx.move_to(x + 15, y0 + 2)
+                ctx.show_text('3'*int(triplet))
+                ctx.set_font_size(25)
 
 def monotonic_interpolation(value, sequence, interpolant, use_highest=False):
     li = bisect.bisect_left(sequence, value)

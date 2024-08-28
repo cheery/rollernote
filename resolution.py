@@ -2,7 +2,7 @@ from fractions import Fraction
 import entities
 
 char_accidental = {
-    2: chr(119083),
+   -2: chr(119083),
    -1: chr(0x266d),
     0: chr(0x266e),
    +1: chr(0x266f),
