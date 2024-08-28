@@ -67,6 +67,15 @@ class Transport:
         self.volume0 = 0.0
         self.volume1 = 0.0
         self.volume_meter = Meter()
+        self.currently_playing = None
+        self.loop = False
+
+    def play(self, bpm, voices, plugin):
+        self.currently_playing = bpm, voices, plugin
+        self.live_voices.update([
+            LiveVoice(plugin, voice.segments, bpm)
+            for voice in voices
+        ])
 
     # We'd need better signaling from our plugins to tell whether they are idle or not.
     def is_idle(self):
@@ -78,6 +87,11 @@ class Transport:
             for e in plugin.pending_events:
                 e()
             plugin.pending_events.clear()
+
+        if len(self.live_voices) == 0 and self.loop and self.currently_playing:
+            self.play(*self.currently_playing)
+        elif len(self.live_voices) == 0 and not self.loop:
+            self.currently_playing = None
 
         # TODO: Get the key from correct sources.
         key = resolution.canon_key(0)

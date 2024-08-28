@@ -13,6 +13,47 @@ import random
 import components
 import subprocess
 from fractions import Fraction
+import colorsys
+
+def golden_ratio_color(index, saturation=0.7, lightness=0.5, alpha=1.0):
+    """
+    Generate an approximately evenly distributed color based on the index.
+
+    Parameters:
+    - index: int, the index of the color to generate.
+    - saturation: float, the saturation of the color (0.0 to 1.0, default is 0.7).
+    - lightness: float, the lightness of the color (0.0 to 1.0, default is 0.5).
+    - alpha: float, the alpha transparency of the color (0.0 to 1.0, default is 1.0).
+
+    Returns:
+    - tuple (r, g, b, a): The color in (R, G, B, A) format.
+    """
+    golden_ratio_conjugate = 0.61803398875
+    hue = (index * golden_ratio_conjugate) % 1.0
+    r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+    return (r, g, b, alpha)
+
+def golden_ratio_color_varying(index, alpha=1.0):
+    """
+    Generate an approximately evenly distributed color with varying lightness and saturation based on the index.
+
+    Parameters:
+    - index: int, the index of the color to generate.
+    - alpha: float, the alpha transparency of the color (0.0 to 1.0, default is 1.0).
+
+    Returns:
+    - tuple (r, g, b, a): The color in (R, G, B, A) format.
+    """
+    golden_ratio_conjugate = 0.61803398875
+    hue = (index * golden_ratio_conjugate) % 1.0
+    
+    # Vary saturation and lightness slightly based on index
+    lightness = 0.55 - 0.2 * ((index % 5) - 2) / 4.0
+    # Saturation varies between 0.6 and 0.8
+    saturation = 1.0 - 0.3 * ((index % 3) - 1) / 2.0
+    
+    r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+    return (r, g, b, alpha)
 
 @gui.composable
 def vu_meter(vol):
@@ -73,7 +114,20 @@ def app(editor):
         tool = plot_tool,
         counter = 0,
         text = "foobar",
+        looping = False,
     )
+
+    @gui.drawing
+    def _draw_(ui, comp):
+        for i in range(10):
+            for j in range(10):
+                k = i + j*10
+                ui.ctx.set_source_rgba(*golden_ratio_color(k, 1.0, 0.5))
+                ui.ctx.rectangle(500 + 10*i, 10*j, 10, 10)
+                ui.ctx.fill()
+                ui.ctx.set_source_rgba(*golden_ratio_color_varying(k))
+                ui.ctx.rectangle(650 + 10*i, 10*j, 10, 10)
+                ui.ctx.fill()
 
     # Editor history
     history = editor.history
@@ -112,10 +166,20 @@ def app(editor):
     def _play_down_(x, y, button):
         bpm = audio.LinearEnvelope([ (0, 80, 0) ])
         assert bpm.check_positiveness()
-        editor.transport.live_voices.update([
-            audio.LiveVoice(editor.plugin, voice.segments, bpm)
-            for voice in editor.document.track.voices
-        ])
+        editor.transport.play(bpm, editor.document.track.voices, editor.plugin)
+
+    #looper = components.button('loop=on' if this.looping else 'loop=off', font_size=16)
+    #looper.shape = gui.Box(58, 10, 32, 32)
+    #@looper.listen(gui.e_button_down)
+    #def _looper_down_(x, y, button):
+    #    this.looping = not this.looping
+
+    looper = components.button('loop=on' if this.looping else 'loop=off', font_size=16)
+    looper.shape = gui.Box(38, 10, 52, 32)
+    @looper.listen(gui.e_button_down)
+    def _looper_down_(x, y, button):
+        this.looping = not this.looping
+        editor.transport.loop = this.looping
 
     record = components.button('wav', font_size=16)
     record.shape = gui.Box(58, 52, 32, 32)
@@ -130,10 +194,7 @@ def app(editor):
         transport = audio.Transport([plugin])
         bpm = audio.LinearEnvelope([ (0, 80, 0) ])
         assert bpm.check_positiveness()
-        transport.live_voices.update([
-            audio.LiveVoice(plugin, voice.segments, bpm)
-            for voice in editor.document.track.voices
-        ])
+        transport.play(bpm, editor.document.track.voices, plugin)
         output = audio.WAVOutput(transport, 'temp.wav')
         while not transport.is_idle():
             output.write_frame()
