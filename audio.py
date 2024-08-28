@@ -5,6 +5,7 @@ import numpy
 import resolution
 import math
 import wave
+import entities
 
 class DeviceOutput:
     def __init__(self, transport, block_length=1024):
@@ -70,10 +71,10 @@ class Transport:
         self.currently_playing = None
         self.loop = False
 
-    def play(self, bpm, voices, plugin):
-        self.currently_playing = bpm, voices, plugin
+    def play(self, bpm, voices, staves):
+        self.currently_playing = bpm, voices, staves
         self.live_voices.update([
-            LiveVoice(plugin, voice.segments, bpm)
+            LiveVoice(staves[voice.staff_uid], voice.segments, bpm)
             for voice in voices
         ])
 
@@ -82,8 +83,7 @@ class Transport:
         return len(self.live_voices) == 0 and self.volume0 + self.volume1 == 0
 
     def run(self, now, audio0, audio1):
-        plugins = self.plugins
-        for plugin in plugins:
+        for plugin in self.plugins.values():
             for e in plugin.pending_events:
                 e()
             plugin.pending_events.clear()
@@ -94,41 +94,50 @@ class Transport:
             self.currently_playing = None
 
         # TODO: Get the key from correct sources.
-        key = resolution.canon_key(0)
         still_live = set()
         for lv in self.live_voices:
-            buf = lv.plugin.inputs['In']
             if lv.current == -1: # new voice
+                key = lv.get_key()
                 lv.current = 0
                 lv.next_vseg = now + lv.bpm.area(lv.beat,
                                                  float(lv.voice[0].duration),
                                                  lambda bpm: 60 / bpm)
                 lv.beat += float(lv.voice[0].duration)
                 for note in lv.voice[0].notes:
-                    mp = resolution.resolve_pitch(note, key)
-                    lv.plugin.push_midi_event(buf, [0x90, mp, 0xFF])
-                    lv.live_notes.append(mp)
+                    if note.instrument_uid is None:
+                        continue
+                    plugin = self.plugins[note.instrument_uid]
+                    buf = plugin.inputs['In']
+                    mp = resolution.resolve_pitch(note.pitch, key)
+                    plugin.push_midi_event(buf, [0x90, mp, 0xFF])
+                    lv.live_notes.append((mp, plugin))
                 still_live.add(lv)
             elif lv.next_vseg <= now:
-                for mp in lv.live_notes:
-                    lv.plugin.push_midi_event(buf, [0x80, mp, 0xFF])
+                for mp, plugin in lv.live_notes:
+                    buf = plugin.inputs['In']
+                    plugin.push_midi_event(buf, [0x80, mp, 0xFF])
                 lv.live_notes = []
                 if lv.current + 1 < len(lv.voice):
+                    key = lv.get_key()
                     lv.next_vseg += lv.bpm.area(lv.beat,
                                                 float(lv.voice[lv.current+1].duration),
                                                 lambda bpm: 60 / bpm)
                     lv.beat += float(lv.voice[lv.current+1].duration)
                     for note in lv.voice[lv.current+1].notes:
-                        mp = resolution.resolve_pitch(note, key)
-                        lv.plugin.push_midi_event(buf, [0x90, mp, 0xFF])
-                        lv.live_notes.append(mp)
+                        if note.instrument_uid is None:
+                            continue
+                        plugin = self.plugins[note.instrument_uid]
+                        buf = plugin.inputs['In']
+                        mp = resolution.resolve_pitch(note.pitch, key)
+                        plugin.push_midi_event(buf, [0x90, mp, 0xFF])
+                        lv.live_notes.append((mp, plugin))
                     still_live.add(lv)
                 lv.current += 1
             else:
                 still_live.add(lv)
         self.live_voices = still_live
 
-        for plugin in plugins:
+        for plugin in self.plugins.values():
             plugin.instance.run(self.block_length)
             audio0 += plugin.audio_outputs[0][1]
             audio1 += plugin.audio_outputs[1][1]
@@ -143,7 +152,7 @@ class Transport:
         meter.clipping0 = meter.clipping0 or max(abs(audio0)) > 1.0
         meter.clipping1 = meter.clipping1 or max(abs(audio1)) > 1.0
 
-        for plugin in plugins:
+        for plugin in self.plugins.values():
             for data in plugin.inputs.values():
                 seq = ctypes.cast(ctypes.pointer(data), ctypes.POINTER(lilv.LV2_Atom_Sequence))
                 seq[0].atom.size = 8
@@ -197,11 +206,15 @@ class LinearEnvelope:
         return positive
 
 class LiveVoice:
-    def __init__(self, plugin, voice, bpm, beat=0.0, current=-1, next_vseg=0.0):
-        self.plugin = plugin
+    def __init__(self, staff, voice, bpm, beat=0.0, current=-1, next_vseg=0.0):
+        self.smeared = entities.smear(staff.blocks)
         self.voice = voice
         self.bpm = bpm
         self.beat = beat
         self.current = current
         self.next_vseg = next_vseg
         self.live_notes = []
+
+    def get_key(self):
+        block = entities.by_beat(self.smeared, self.beat)
+        return resolution.canon_key(block.canonical_key)

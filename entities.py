@@ -5,38 +5,70 @@
 from fractions import Fraction
 import zipfile, json, io
 import bisect
+import random
 
 class Document:
-    def __init__(self, track, instrument):
+    def __init__(self, track, instruments, next_uid):
         self.track = track
-        self.instrument = instrument
+        self.instruments = instruments
+        self.next_uid = next_uid
+
+    def init_plugins(self, pluginhost):
+        plugins = {}
+        for instrument in self.instruments:
+            plugins[instrument.uid] = plugin = pluginhost.plugin(instrument.plugin)
+            if len(instrument.patch) > 0:
+                plugin.restore(instrument.patch, instrument.data)
+        return plugins
+
+    def store_plugins(self, plugins):
+        for instrument in self.instruments:
+            i = f"instrument.{instrument.uid}"
+            instrument.patch, instrument.data = plugins[instrument.uid].store(i)
 
 def load_document(filename):
     with zipfile.ZipFile(filename, 'r') as zf:
+        with zf.open('document.json', 'r') as fd:
+            document_json = json.load(io.TextIOWrapper(fd, 'utf-8'))
         with zf.open('track.json', 'r') as fd:
             track_json = json.load(io.TextIOWrapper(fd, 'utf-8'))
-        with zf.open('instrument.json', 'r') as fd:
-            instrument_json = json.load(io.TextIOWrapper(fd, 'utf-8'))
-            instrument = Instrument.from_json(instrument_json, zf)
+        instruments = []
+        for uid in document_json['instrument_uids']:
+            with zf.open(f'instrument.{uid}.json', 'r') as fd:
+                instrument_json = json.load(io.TextIOWrapper(fd, 'utf-8'))
+                instrument = Instrument.from_json(instrument_json, zf)
+                instrument.uid = uid
+            instruments.append(instrument)
     return Document(
         track = Track.from_json(track_json),
-        instrument = instrument,
+        instruments = instruments,
+        next_uid = UidGenerator(document_json['next_uid']),
     )
 
 def save_document(filename, document):
     with zipfile.ZipFile(filename, 'w') as zf:
+        with zf.open('document.json', 'w') as fd:
+            document_json = {
+                'instrument_uids': [i.uid for i in document.instruments],
+                'next_uid': document.next_uid.next_uid,
+            }
+            json.dump(
+                document_json,
+                io.TextIOWrapper(fd, 'utf-8'),
+                sort_keys=True, indent=2)
         with zf.open('track.json', 'w') as fd:
             json.dump(
                 document.track.as_json(),
                 io.TextIOWrapper(fd, 'utf-8'),
                 sort_keys=True, indent=2)
-        with zf.open('instrument.json', 'w') as fd:
-            json.dump(
-                document.instrument.as_json(),
-                io.TextIOWrapper(fd, 'utf-8'),
-                sort_keys=True, indent=2)
-        for path, content in document.instrument.data.items():
-            zf.writestr(path, content)
+        for instrument in document.instruments:
+            with zf.open(f'instrument.{instrument.uid}.json', 'w') as fd:
+                json.dump(
+                    instrument.as_json(),
+                    io.TextIOWrapper(fd, 'utf-8'),
+                    sort_keys=True, indent=2)
+            for path, content in instrument.data.items():
+                zf.writestr(path, content)
 
 class Track:
     def __init__(self, graphs, voices):
@@ -173,29 +205,23 @@ class VoiceSegment:
     @staticmethod
     def from_json(record):
         numerator, denominator = record['duration']
-        def note_from_json(note):
-            position, accidental = note['pitch']
-            return Pitch(position, accidental)
         return VoiceSegment(
-            notes = [note_from_json(note) for note in record['notes']],
+            notes = [Note.from_json(note) for note in record['notes']],
             duration = Fraction(numerator, denominator)
         )
 
     def as_json(self):
         return {
             'duration': self.duration.as_integer_ratio(),
-            'notes': [
-               {
-                   'pitch': note.to_pair()
-               }
-               for note in self.notes]
+            'notes': [note.to_json() for note in self.notes]
         }
 
 class Instrument:
-    def __init__(self, plugin, patch, data):
+    def __init__(self, plugin, patch, data, uid):
         self.plugin = plugin
         self.patch = patch
         self.data = data
+        self.uid = uid
 
     @staticmethod
     def from_json(record, zf):
@@ -207,12 +233,33 @@ class Instrument:
             plugin = record['plugin'],
             patch = patch,
             data = data,
+            uid = record['uid'],
         )
 
     def as_json(self):
         return {
             'plugin': self.plugin,
             'patch': self.patch,
+            'uid': self.uid,
+        }
+
+class Note:
+    def __init__(self, pitch, instrument_uid):
+        self.pitch = pitch
+        self.instrument_uid = instrument_uid
+
+    @staticmethod
+    def from_json(record):
+        position, accidental = record['pitch']
+        return Note(
+            pitch = Pitch(position, accidental),
+            instrument_uid = record['instrument_uid'],
+        )
+        
+    def to_json(self):
+        return {
+            'pitch': self.pitch.to_pair(),
+            'instrument_uid': self.instrument_uid,
         }
 
 class Pitch:
@@ -234,3 +281,12 @@ class Pitch:
 
     def __hash__(self):
         return hash(self.to_pair())
+
+class UidGenerator:
+    def __init__(self, next_uid):
+        self.next_uid = next_uid
+
+    def __call__(self):
+        uid = self.next_uid
+        self.next_uid += random.randint(1, 100)
+        return uid

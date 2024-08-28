@@ -2,6 +2,7 @@ from fractions import Fraction
 from entities import *
 
 document = Document(
+  next_uid = UidGenerator(1500),
   track = Track(
     graphs = [
       Staff(100, 3, 2, [
@@ -39,42 +40,45 @@ document = Document(
     ],
     voices = [
       Voice(300, 100, [
-        VoiceSegment([Pitch(32, +1)], Fraction(4)),
-        VoiceSegment([Pitch(32)], Fraction(2)),
-        VoiceSegment([Pitch(32)], Fraction(1)),
-        VoiceSegment([Pitch(32)], Fraction(1)),
-        VoiceSegment([Pitch(36)], Fraction(1)),
-        VoiceSegment([Pitch(38)], Fraction(1)),
-        VoiceSegment([Pitch(40)], Fraction(1, 2)),
+        VoiceSegment([Note(Pitch(32, +1), 600)], Fraction(4)),
+        VoiceSegment([Note(Pitch(32), 600)], Fraction(2)),
+        VoiceSegment([Note(Pitch(32), 600)], Fraction(1)),
+        VoiceSegment([Note(Pitch(32), 600)], Fraction(1)),
+        VoiceSegment([Note(Pitch(36), 600)], Fraction(1)),
+        VoiceSegment([Note(Pitch(38), 600)], Fraction(1)),
+        VoiceSegment([Note(Pitch(40), 600)], Fraction(1, 2)),
         VoiceSegment([],         Fraction(1, 2)),
-        VoiceSegment([Pitch(34, -1)], Fraction(1)),
-        VoiceSegment([Pitch(35)], Fraction(1, 2)),
-        VoiceSegment([Pitch(36)], Fraction(1, 4)),
-        VoiceSegment([Pitch(37)], Fraction(1, 8)),
-        VoiceSegment([Pitch(37)], Fraction(1, 16)),
-        VoiceSegment([Pitch(37), Pitch(30)], Fraction(3, 16)),
-        VoiceSegment([Pitch(37)], Fraction(1, 4) + Fraction(1, 8) + Fraction(1, 16)),
-        VoiceSegment([Pitch(37)], Fraction(1, 3)),
+        VoiceSegment([Note(Pitch(34, -1), 600)], Fraction(1)),
+        VoiceSegment([Note(Pitch(35), 600)], Fraction(1, 2)),
+        VoiceSegment([Note(Pitch(36), 600)], Fraction(1, 4)),
+        VoiceSegment([Note(Pitch(37), 600)], Fraction(1, 8)),
+        VoiceSegment([Note(Pitch(37), 600)], Fraction(1, 16)),
+        VoiceSegment([Note(Pitch(37), 600), Note(Pitch(30), 600)], Fraction(3, 16)),
+        VoiceSegment([Note(Pitch(37), 600)], Fraction(1, 4) + Fraction(1, 8) + Fraction(1, 16)),
+        VoiceSegment([Note(Pitch(37), 600)], Fraction(1, 3)),
       ]),
       Voice(400, 100, [
-        VoiceSegment([Pitch(24)], Fraction(2)),
-        VoiceSegment([Pitch(25)], Fraction(2)),
-        VoiceSegment([Pitch(26)], Fraction(2)),
-        VoiceSegment([Pitch(27)], Fraction(2)),
+        VoiceSegment([Note(Pitch(24), 600)], Fraction(2)),
+        VoiceSegment([Note(Pitch(25), 600)], Fraction(2)),
+        VoiceSegment([Note(Pitch(26), 600)], Fraction(2)),
+        VoiceSegment([Note(Pitch(27), 600)], Fraction(2)),
       ]),
       Voice(500, 200, [
-        VoiceSegment([Pitch(24)], Fraction(2)),
-        VoiceSegment([Pitch(25)], Fraction(2)),
-        VoiceSegment([Pitch(26)], Fraction(2)),
-        VoiceSegment([Pitch(27)], Fraction(2)),
+        VoiceSegment([Note(Pitch(24), 600)], Fraction(2)),
+        VoiceSegment([Note(Pitch(25), 600)], Fraction(2)),
+        VoiceSegment([Note(Pitch(26), 600)], Fraction(2)),
+        VoiceSegment([Note(Pitch(27), 600)], Fraction(2)),
       ]),
     ]
   ),
-  instrument = Instrument(
+  instruments = [
+    Instrument(
       plugin = "https://surge-synthesizer.github.io/lv2/surge-xt",
       patch = {},
-      data = {}
-  ),
+      data = {},
+      uid = 600,
+    ),
+  ]
 )
 
 save_document('document.mide.zip', document)

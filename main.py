@@ -15,6 +15,7 @@ import subprocess
 from fractions import Fraction
 import colorsys
 
+#                                        1.0            0.5
 def golden_ratio_color(index, saturation=0.7, lightness=0.5, alpha=1.0):
     """
     Generate an approximately evenly distributed color based on the index.
@@ -115,19 +116,19 @@ def app(editor):
         counter = 0,
         text = "foobar",
         looping = False,
+        instrument_uid = None,
     )
 
-    @gui.drawing
-    def _draw_(ui, comp):
-        for i in range(10):
-            for j in range(10):
-                k = i + j*10
-                ui.ctx.set_source_rgba(*golden_ratio_color(k, 1.0, 0.5))
-                ui.ctx.rectangle(500 + 10*i, 10*j, 10, 10)
-                ui.ctx.fill()
-                ui.ctx.set_source_rgba(*golden_ratio_color_varying(k))
-                ui.ctx.rectangle(650 + 10*i, 10*j, 10, 10)
-                ui.ctx.fill()
+    #@gui.drawing
+    #def _draw_(ui, comp):
+    #    for i in range(50):
+    #        k = i
+    #        ui.ctx.set_source_rgba(*golden_ratio_color(k, 1.0, 0.5))
+    #        ui.ctx.rectangle(500 + 10*i, 10, 10, 10)
+    #        ui.ctx.fill()
+    #        ui.ctx.set_source_rgba(*golden_ratio_color_varying(k))
+    #        ui.ctx.rectangle(500 + 10*i, 20, 10, 10)
+    #        ui.ctx.fill()
 
     # Editor history
     history = editor.history
@@ -166,7 +167,8 @@ def app(editor):
     def _play_down_(x, y, button):
         bpm = audio.LinearEnvelope([ (0, 80, 0) ])
         assert bpm.check_positiveness()
-        editor.transport.play(bpm, editor.document.track.voices, editor.plugin)
+        editor.transport.play(bpm, editor.document.track.voices,
+            dict((s.uid, s) for s in editor.document.track.graphs))
 
     #looper = components.button('loop=on' if this.looping else 'loop=off', font_size=16)
     #looper.shape = gui.Box(58, 10, 32, 32)
@@ -186,28 +188,25 @@ def app(editor):
     @record.listen(gui.e_button_down)
     def _record_down_(x, y, button):
         # TODO: Open a dialog
-        instrument = editor.document.instrument
-        instrument.patch, instrument.data = editor.plugin.save()
-        plugin = editor.plugins.plugin(editor.document.instrument.plugin)
-        if len(editor.document.instrument.patch) > 0:
-            plugin.load(editor.document.instrument.patch, editor.document.instrument.data)
-        transport = audio.Transport([plugin])
+        document.store_plugins(editor.transport.plugins)
+        transport = audio.Transport(document.init_plugins(editor.pluginhost))
         bpm = audio.LinearEnvelope([ (0, 80, 0) ])
         assert bpm.check_positiveness()
-        transport.play(bpm, editor.document.track.voices, plugin)
+        transport.play(bpm, editor.document.track.voices,
+            dict((s.uid, s) for s in editor.document.track.graphs))
         output = audio.WAVOutput(transport, 'temp.wav')
         while not transport.is_idle():
             output.write_frame()
         output.close()
-        plugin.close()
-        subprocess.run(["ffmpeg", "-i", "temp.wav", "temp.mp3"])
+        for plugin in transport.plugins.values():
+            plugin.close()
+        subprocess.run(["ffmpeg", "-i", "-y", "-nostdin", "temp.wav", "temp.mp3"])
 
     save = components.button("save", font_size=32)
     save.shape = gui.Box(142, 52, 32*3, 32)
     @save.listen(gui.e_button_down)
     def _save_down_(x, y, button):
-        instrument = editor.document.instrument
-        instrument.patch, instrument.data = editor.plugin.save()
+        document.store_plugins(editor.transport.plugins)
         entities.save_document('document.mide.zip', editor.document)
  
     new = components.button("new", font_size=32)
@@ -216,7 +215,7 @@ def app(editor):
     def _new_down_(x, y, button):
         # TODO: Also clean up audio params!
         sdl2.SDL_PauseAudio(1)
-        for plugin in editor.transport.plugins:
+        for plugin in editor.transport.plugins.values():
             plugin.close()
         editor.document = entities.Document(
             track = entities.Track(
@@ -236,14 +235,11 @@ def app(editor):
                     entities.Voice(200, 100, [])
                 ]
             ),
-            instrument = entities.Instrument(
-                plugin = "https://surge-synthesizer.github.io/lv2/surge-xt",
-                patch = {},
-                data = {}
-            )
+            instruments = [],
+            next_uid = entities.UidGenerator(300),
         )
-        editor.plugin = editor.plugins.plugin(editor.document.instrument.plugin)
-        editor.transport.plugins = [editor.plugin]
+        editor.transport.plugins = {}
+        editor.transport.live_voices.clear()
         sdl2.SDL_PauseAudio(0)
 
     splitbutton = components.button("split", font_size=32)
@@ -267,13 +263,47 @@ def app(editor):
     meter = vu_meter(editor.transport.volume_meter)
     meter.shape = gui.Box(10, 10, 20, 90)
 
-    openplugin = components.button(editor.plugin.name, font_size=10)
-    openplugin.shape = gui.Box(10, 110, 80, 15)
-    @openplugin.listen(gui.e_button_down)
-    def _openplugin_down_(x, y, button):
-        plugin = editor.plugin
-        if plugin.widget is None:
-            editor.widget(plugin.name, 120, 70, lv2.UIPayload, plugin)
+    def instrument_button(x, y, instrument):
+        plugin = editor.transport.plugins[instrument.uid]
+        label = f"{instrument.uid}: {plugin.name}"
+        openplugin = components.button(label, font_size=10)
+        openplugin.shape = gui.Box(x, y, 80, 15)
+        @openplugin.listen(gui.e_button_down)
+        def _openplugin_down_(x, y, button):
+            if plugin.widget is None:
+                editor.widget(label, 120, 70, lv2.UIPayload, plugin)
+
+        selected = instrument.uid == this.instrument_uid
+        select = components.button("X" if selected else "", font_size=10, disabled=selected)
+        select.shape = gui.Box(x+80, y, 15, 15)
+        @select.listen(gui.e_button_down)
+        def _select_down_(x, y, button):
+            this.instrument_uid = instrument.uid
+
+    for i, instrument in enumerate(editor.document.instruments):
+        instrument_button(500, 10 + i*20, instrument)
+    @gui.drawing
+    def _draw_instrument_colors_(ui, comp):
+        for i, instrument in enumerate(editor.document.instruments):
+            ui.ctx.set_source_rgba(*golden_ratio_color_varying(i))
+            ui.ctx.rectangle(490, 9 + i*20, 10, 17)
+            ui.ctx.fill()
+
+    def add_instrument(x, y, uri, name):
+        label = f"+ {name}"
+        new_instrument = components.button(label, font_size=10)
+        new_instrument.shape = gui.Box(x, y, 80, 15)
+        @new_instrument.listen(gui.e_button_down)
+        def _new_instrument_down_(x, y, button):
+            uid = editor.document.next_uid()
+            editor.document.instruments.append(entities.Instrument(uri, {}, {}, uid))
+            plugin = editor.pluginhost.plugin(uri)
+            editor.transport.plugins[uid] = plugin
+            new_instrument.set_dirty()
+    
+    for i, (uri, name) in enumerate(editor.pluginhost.list_instrument_plugins()):
+        add_instrument(800, 10 + i*20, uri, name)
+
 
     hmm = components.button(f"hello {this.counter}")
     hmm.shape = gui.Box(310, 22, 100, 20)
@@ -284,12 +314,17 @@ def app(editor):
     haa.shape = gui.Box(200, 22, 100, 20)
 
     document = editor.document
+
+    icolors = {}
+    for i, instrument in enumerate(document.instruments):
+        icolors[instrument.uid] = golden_ratio_color_varying(i)
+
     layouts = {}
     y_base = 150
     for staff in document.track.graphs:
         layouts[staff.uid] = layout = StaffLayout(y_base, staff, document.track.voices)
         y_base += layout.height + 10
-    beatline(editor, layouts, document.track, this.tool)
+    beatline(editor, layouts, document.track, this.tool, this.instrument_uid, icolors)
 
     widget = gui.ui.get().widget
     components.label(this.status, 0, widget.height - 3)
@@ -297,17 +332,21 @@ def app(editor):
     @gui.listen(gui.e_key_down)
     def _down_(key, repeat, modifier):
         if repeat == 0:
-            @editor.plugin.event
-            def _event_():
-                buf = editor.plugin.inputs['In']
-                editor.plugin.push_midi_event(buf, [0x91, key % 128, 0xFF])
+            pass
+            #@editor.plugin.event
+            #def _event_():
+            #    pass # TODO: fix
+                #buf = editor.plugin.inputs['In']
+                #editor.plugin.push_midi_event(buf, [0x91, key % 128, 0xFF])
 
     @gui.listen(gui.e_key_up)
     def _up_(key, modifier):
-        @editor.plugin.event
-        def _event_():
-            buf = editor.plugin.inputs['In']
-            editor.plugin.push_midi_event(buf, [0x81, key % 128, 0xFF])
+        pass
+        #@editor.plugin.event
+        #def _event_():
+        #    pass # TODO: fix
+            #buf = editor.plugin.inputs['In']
+            #editor.plugin.push_midi_event(buf, [0x81, key % 128, 0xFF])
 
 class StaffLayout:
     def __init__(self, y, staff, voices):
@@ -322,7 +361,8 @@ class StaffLayout:
                 beat = 0.0
                 for seg in voice.segments:
                     block = entities.by_beat(smeared, beat)
-                    for pitch in seg.notes:
+                    for note in seg.notes:
+                        pitch = note.pitch
                         offset = pitch.position - staff.bot*12 - block.clef
                         lowest = min(lowest, offset)
                         highest = max(highest, offset)
@@ -374,7 +414,7 @@ class StaffLayout:
         return width
        
 @gui.composable
-def beatline(editor, layouts, track, tool_app):
+def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
     widget = gui.ui.get().widget
     gui.shape(gui.Box(0, 150, widget.width, widget.height - 170))
     this = gui.lazybundle(
@@ -469,7 +509,7 @@ def beatline(editor, layouts, track, tool_app):
                 # Store empty segment for later processing
                 rest_positions.append((beat, seg))
             else:
-                note_position = mean(pitch.position for pitch in seg.notes)
+                note_position = mean(note.pitch.position for note in seg.notes)
 
                 # Assign this position to previous empty segments
                 for _, rest_seg in rest_positions:
@@ -606,7 +646,7 @@ def beatline(editor, layouts, track, tool_app):
             if len(seg.notes) > 0:
                 for staff_uid, voice_uid, xs, ys in trajectories:
                     if voice_uid == voice.uid:
-                        p = mean(p.position for p in seg.notes)
+                        p = mean(note.pitch.position for note in seg.notes)
                         y = layout.note_position(beat, p)
                         xs.append(x)
                         ys.append(y)
@@ -658,7 +698,7 @@ def beatline(editor, layouts, track, tool_app):
                 if len(seg.notes) == 0:
                     t = empty_segment_position[seg]
                 else:
-                    t = mean(pitch.position for pitch in seg.notes)
+                    t = mean(note.pitch.position for note in seg.notes)
                 t = (t - t % 12) - 6
                 y = layout.note_position(beat, t)
                 ctx.set_font_size(10)
@@ -697,7 +737,9 @@ def beatline(editor, layouts, track, tool_app):
                 for dot in range(dots):
                     ctx.arc(x + 16 + dot*5, y + 3, 2, 0, 2*math.pi)
                     ctx.fill()
-            for pitch in seg.notes:
+            for note in seg.notes:
+                    ctx.set_source_rgba(0,0,0,1)
+                    pitch = note.pitch
                     y = layout.note_position(beat, pitch.position)
                     # TODO: render accidental only when it changes in measure.
                     if pitch.accidental is not None:
@@ -729,9 +771,13 @@ def beatline(editor, layouts, track, tool_app):
                                      x-8, 8 + y + 3,
                                      x-8, 0 + y + 3)
                         ctx.stroke()
+                    ctx.set_source_rgba(*icolors.get(note.instrument_uid, (0.25,0.25,0.25,1.0)))
+                    ctx.arc(x - 2, y + 2, 3, 0, 2*math.pi)
+                    ctx.fill()
+            ctx.set_source_rgba(0,0,0,1)
             if len(seg.notes) > 0:
-                high = min(layout.note_position(beat, p.position) for p in seg.notes)
-                low = max(layout.note_position(beat, p.position) for p in seg.notes)
+                high = min(layout.note_position(beat, note.pitch.position) for note in seg.notes)
+                low = max(layout.note_position(beat, note.pitch.position) for note in seg.notes)
                 if high < low:
                     ctx.move_to(x + 5, high)
                     ctx.line_to(x + 5, low)
@@ -756,6 +802,8 @@ def beatline(editor, layouts, track, tool_app):
           beats,
           trajectories,
           track,
+          instrument_uid,
+          icolors,
         )
 
 def location_as_position(layout, offsets, beats, x, y):
@@ -792,7 +840,7 @@ def get_segment(refbeat, track, voice_uid):
         return beat, None
 
 @gui.composable
-def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
+def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
     _ui = gui.ui.get()
     _comp = gui.current_composition.get()
     gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
@@ -826,14 +874,16 @@ def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, t
             refbeat, position = beat_position.value
             _, seg = get_segment(refbeat, track, nearest.value[0])
             if button == 1 and seg is not None:
-                if not any(pitch.position == position for pitch in seg.notes):
-                    seg.notes.append(entities.Pitch(position))
+                if not any(note.pitch.position == position for note in seg.notes):
+                    seg.notes.append(entities.Note(
+                        entities.Pitch(position),
+                        instrument_uid))
                     _comp.set_dirty()
                     beat_position.value = None
             if button == 2 and seg is not None:
-                for pitch in seg.notes:
-                    if pitch.position == position:
-                        seg.notes.remove(pitch)
+                for note in seg.notes:
+                    if note.pitch.position == position:
+                        seg.notes.remove(note)
                         _comp.set_dirty()
                         beat_position.value = None
                         break
@@ -855,6 +905,7 @@ def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, t
                         ctx.line_to(x, y)
                 ctx.stroke()
         if beat_position.value:
+            ctx.set_source_rgba(*icolors.get(instrument_uid, (0.25,0.25,0.25,1.0)))
             beat, position = beat_position.value
             x = mouse_x.value
             y = layout.note_position(beat, position)
@@ -862,7 +913,7 @@ def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, t
             ctx.fill()
 
 @gui.composable
-def split_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
+def split_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
     _ui = gui.ui.get()
     gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
 
@@ -1022,7 +1073,7 @@ def split_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
                     ctx.show_text('3'*int(triplet))
 
 @gui.composable
-def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track):
+def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
     _ui = gui.ui.get()
     gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
     first_voice_uid = None
@@ -1054,11 +1105,13 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
         this.beat = first_beat
     def add_or_remove(position):
         for note in this.stencil:
-            if note.position == position:
+            if note.pitch.position == position:
                 this.stencil.remove(note)
                 this._composition.set_dirty()
                 return
-        this.stencil.append(entities.Pitch(position, this.accidental))
+        this.stencil.append(entities.Note(
+            entities.Pitch(position, this.accidental),
+            instrument_uid))
         this._composition.set_dirty()
 
     @gui.listen(gui.e_button_down)
@@ -1102,16 +1155,18 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
             this.accidental = None if this.accidental == accidental else accidental
 
         if repeat == 0 and key == sdl2.SDLK_p:
-            @editor.plugin.event
-            def _event_():
-                block = layout.by_beat(this.beat)
-                key = resolution.canon_key(block.canonical_key)
-                this.playing = []
-                for pitch in list(this.stencil):
-                    buf = editor.plugin.inputs['In']
-                    m = resolution.resolve_pitch(pitch, key)
-                    editor.plugin.push_midi_event(buf, [0x91, m, 0xFF])
-                    this.playing.append(m)
+            def midi_event(m, plugin):
+                @plugin.event
+                def _event_():
+                    plugin.push_midi_event(buf, [0x91, m, 0xFF])
+            block = layout.by_beat(this.beat)
+            key = resolution.canon_key(block.canonical_key)
+            this.playing = []
+            for note in list(this.stencil):
+                plugin = editor.transport.plugins[note.instrument_uid]
+                m = resolution.resolve_pitch(note.pitch, key)
+                midi_event(m, plugin)
+                this.playing.append((m, plugin))
 
         if repeat == 0 and key == sdl2.SDLK_q:
             this.time_start = editor.time
@@ -1170,11 +1225,12 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
     @gui.listen(gui.e_key_up)
     def _up_(key, modifier):
         if key == sdl2.SDLK_p:
-            @editor.plugin.event
-            def _event_():
-                for m in this.playing:
-                    buf = editor.plugin.inputs['In']
-                    editor.plugin.push_midi_event(buf, [0x81, m, 0xFF])
+            def midi_event(m, plugin):
+                @plugin.event
+                def _event_():
+                    plugin.push_midi_event(buf, [0x81, m, 0xFF])
+            for m, plugin in this.playing:
+                midi_event(m, plugin)
         if key == sdl2.SDLK_q:
             this.time_start = None
 
@@ -1197,7 +1253,9 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
             ctx.line_to(x,y1 + 20)
             ctx.stroke()
 
-            for pitch in this.stencil:
+            for note in this.stencil:
+                ctx.set_source_rgba(*icolors.get(note.instrument_uid, (0.25,0.25,0.25,1.0)))
+                pitch = note.pitch
                 y = layout.note_position(this.beat, pitch.position)
                 ctx.arc(x, y, 5, 0, math.pi*2)
                 ctx.fill()
@@ -1331,19 +1389,10 @@ class Editor:
         self.document = entities.load_document('document.mide.zip')
         self.history = commands.History(self.document)
         self.history.do(commands.DemoCommand())
-        self.plugins = lv2.Plugins()
-        #print(list(self.plugins.list_instrument_plugins()))
-        self.plugin = self.plugins.plugin(self.document.instrument.plugin)
-        #print([x[0] for x in self.plugin.audio_inputs])
-        #print([x[0] for x in self.plugin.audio_outputs])
-        #print(list(self.plugin.control_inputs.keys()))
-        #print(list(self.plugin.control_outputs.keys()))
-        #print(list(self.plugin.inputs.keys()))
-        #print(list(self.plugin.outputs.keys()))
-        self.transport = audio.Transport([self.plugin])
+        self.pluginhost = lv2.PluginHost()
+        self.transport = audio.Transport(
+            self.document.init_plugins(self.pluginhost))
         self.audio_output = audio.DeviceOutput(self.transport)
-        if len(self.document.instrument.patch) > 0:
-            self.plugin.load(self.document.instrument.patch, self.document.instrument.data)
         self.running = False
         self.time = 0.0
         self.widgets = dict()
@@ -1417,7 +1466,7 @@ class Editor:
                                 self.widgets.pop(widget.uid)
 
         sdl2.SDL_StopTextInput()
-        self.plugins.close()
+        self.pluginhost.close()
         sdl2.ext.quit()
 
 class Widget:

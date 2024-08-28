@@ -5,7 +5,7 @@ import os
 import numpy
 import sdl2
 
-class Plugins:
+class PluginHost:
     def __init__(self):
         self.world = lilv.World()
         self.ns = self.world.ns
@@ -156,7 +156,7 @@ class Plugin:
     def urid_map_hook(self, data, uri):
         return self.get_urid(uri.decode("utf-8"))
 
-    def load(self, patch, data):
+    def restore(self, patch, data):
         custom_data = None
         @lilv.LV2_State_Retrieve_Function
         def retrieve_hook(_, key, size_p, type_p, flags_p):
@@ -179,7 +179,7 @@ class Plugin:
                         None)
         assert k == 0
 
-    def save(self, name = 'instrument'):
+    def store(self, name = 'instrument'):
         patch = {}
         data = {}
         @lilv.LV2_State_Store_Function
