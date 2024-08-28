@@ -281,12 +281,12 @@ def app(editor):
             this.instrument_uid = instrument.uid
 
     for i, instrument in enumerate(editor.document.instruments):
-        instrument_button(500, 10 + i*20, instrument)
+        instrument_button(500 + 120*(i//7), 10 + (i%7)*20, instrument)
     @gui.drawing
     def _draw_instrument_colors_(ui, comp):
         for i, instrument in enumerate(editor.document.instruments):
             ui.ctx.set_source_rgba(*golden_ratio_color_varying(i))
-            ui.ctx.rectangle(490, 9 + i*20, 10, 17)
+            ui.ctx.rectangle(490 + 120*(i//7), 9 + (i%7)*20, 10, 17)
             ui.ctx.fill()
 
     def add_instrument(x, y, uri, name):
@@ -295,14 +295,15 @@ def app(editor):
         new_instrument.shape = gui.Box(x, y, 80, 15)
         @new_instrument.listen(gui.e_button_down)
         def _new_instrument_down_(x, y, button):
+            sdl2.SDL_PauseAudio(1)
             uid = editor.document.next_uid()
             editor.document.instruments.append(entities.Instrument(uri, {}, {}, uid))
             plugin = editor.pluginhost.plugin(uri)
             editor.transport.plugins[uid] = plugin
             new_instrument.set_dirty()
-    
+            sdl2.SDL_PauseAudio(0)
     for i, (uri, name) in enumerate(editor.pluginhost.list_instrument_plugins()):
-        add_instrument(800, 10 + i*20, uri, name)
+        add_instrument(1200 - 90, 10 + i*20, uri, name)
 
 
     hmm = components.button(f"hello {this.counter}")
