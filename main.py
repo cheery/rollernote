@@ -56,6 +56,9 @@ def golden_ratio_color_varying(index, alpha=1.0):
     r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
     return (r, g, b, alpha)
 
+e_dialog_open = object()
+e_document_change = object()
+
 @gui.composable
 def vu_meter(vol):
     comp = gui.current_composition.get()
@@ -117,6 +120,8 @@ def app(editor):
         text = "foobar",
         looping = False,
         instrument_uid = None,
+        dialog = None,
+        dialog_args = [],
     )
 
     #@gui.drawing
@@ -223,9 +228,9 @@ def app(editor):
                     entities.Staff(100, 3, 2, [
                         entities.StaffBlock(
                             beat = 0,
-                            beats_in_measure = 4, #random.choice([3,4]),
+                            beats_in_measure = random.choice([3,4]),
                             beat_unit = 4,
-                            canonical_key = 0, #random.randrange(-7, 8),
+                            canonical_key = random.randrange(-7, 8),
                             clef = 3,
                             mode = None
                         )
@@ -348,6 +353,19 @@ def app(editor):
         #    pass # TODO: fix
             #buf = editor.plugin.inputs['In']
             #editor.plugin.push_midi_event(buf, [0x81, key % 128, 0xFF])
+
+    if this.dialog is not None:
+        this.dialog(*this.dialog_args)
+
+    @gui.listen(e_dialog_open)
+    def _dialog_open_(dialog, args):
+        this.dialog = dialog
+        this.dialog_args = args
+
+    @gui.listen(components.e_dialog_leave)
+    def _dialog_leave_():
+        this.dialog = None
+        this.dialog_args = []
 
 class StaffLayout:
     def __init__(self, y, staff, voices):
@@ -806,6 +824,63 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
           instrument_uid,
           icolors,
         )
+
+        staff_app(layout, x0)
+
+    comp = gui.current_composition.get()
+    @gui.listen(e_document_change)
+    def _document_change_():
+        comp.set_dirty()
+
+@gui.composable
+def staff_app(layout, x0):
+    _ui = gui.ui.get()
+    comp = gui.current_composition.get()
+    gui.shape(gui.Box(0, layout.y, x0, layout.height))
+    @gui.listen(gui.e_button_down)
+    def _button_down_(x, y, button):
+        _ui.custom_event(e_dialog_open, comp, staff_dialog, [layout.staff])
+
+@gui.composable
+def staff_dialog(staff):
+    with components.dialog():
+        def changer(obj, attr, range=(0,100)):
+            def _change_(text):
+                try:
+                    i = int(text.strip())
+                    if range[0] <= i <= range[1]:
+                        setattr(obj, attr, i)
+                    gui.broadcast(e_document_change)
+                except ValueError:
+                    pass
+            return _change_
+
+        t = components.textbox(str(staff.top), changer(staff, 'top'))
+        t.shape = gui.Box(200, 200, 64, 20)
+        u = components.textbox(str(staff.bot), changer(staff, 'bot'))
+        u.shape = gui.Box(200, 230, 64, 20)
+        initial = staff.blocks[0]
+        bm = components.textbox(str(initial.beats_in_measure),
+                               changer(initial, 'beats_in_measure', (1,100)))
+        bm.shape = gui.Box(274, 200, 32, 20)
+        bu = components.textbox(str(initial.beat_unit),
+                               changer(initial, 'beat_unit', (1,128)))
+        bu.shape = gui.Box(274, 230, 32, 20)
+        ck = components.textbox(str(initial.canonical_key),
+                               changer(initial, 'canonical_key', (-7,+7)))
+        ck.shape = gui.Box(316, 200, 32, 20)
+        c = components.textbox(str(initial.clef),
+                               changer(initial, 'clef', (-100, +100)))
+        c.shape = gui.Box(316, 230, 32, 20)
+        def change_mode(text):
+            if text in ['major', 'minor']:
+                initial.mode = text
+                gui.broadcast(e_document_change)
+            elif text == "":
+                initial.mode = None
+                gui.broadcast(e_document_change)
+        m = components.textbox(str(initial.mode or ""), change_mode)
+        m.shape = gui.Box(358, 230, 32*2, 20)
 
 def location_as_position(layout, offsets, beats, x, y):
     beat = monotonic_interpolation(x, offsets, beats)

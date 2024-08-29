@@ -120,10 +120,10 @@ def format_key(key):
     return f"{key[0].co_filename}:{key[1]}"
 
 @contextmanager
-def composition_frame(fn, args, kwargs):
+def composition_frame(fn, args, kwargs, d=0):
     props = get_properties(fn, args, kwargs)
     comp = current_composition.get()
-    key = comp.get_callsite_key(4)
+    key = comp.get_callsite_key(4+d)
     previous = ui_memo.get().get(key)
     if previous is None or previous.props != props or previous.dirty:
         #print(f"{format_key(key)} recomposed")
@@ -320,10 +320,10 @@ class GUI:
             focus_by = None
             while this is not None and (handled_by is None or focus_by is None):
                 for event, _, handler in this.listeners:
-                    if event == e_button_down:
+                    if event == e_button_down and handled_by is None:
                         handler(x, y, button)
                         handled_by = this.key
-                    if event in keyboad_events:
+                    if event in keyboad_events and focus_by is None:
                         this.set_dirty() # Give it chance to react on focus change.
                         focus_by = this.key
                 this = this.parent
@@ -374,6 +374,23 @@ class GUI:
                             handler(sym, modifiers)
             self.widget.exposed = self.widget.exposed or comp.dirty
 
+    # We assume we're in custom context.
+    def custom_global_event(self, e_event, *args):
+        comp = self.composer.composition
+        for this in comp.preorder():
+            for event, _, handler in this.listeners:
+                if event == e_event:
+                    handler(*args)
+
+    def custom_event(self, e_event, this, *args):
+        handled_by = None
+        while this is not None and handled_by is None:
+            for event, _, handler in this.listeners:
+                if event == e_event:
+                    handler(*args)
+                    handled_by = this.key
+            this = this.parent
+
     def closing(self):
         return True
 
@@ -389,6 +406,12 @@ def listen(event):
 
 def shape(shape):
     current_composition.get().shape = shape
+
+def broadcast(e_event, *args):
+    ui.get().custom_global_event(e_event, *args)
+
+def inform(e_event, this, *args):
+    ui.get().custom_event(e_event, this, *args)
 
 #@contextmanager
 def workspace(color=(1,1,1,1), font_family=None):
