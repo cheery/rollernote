@@ -160,6 +160,14 @@ def categorize_note_duration(fraction):
             if fraction == total:
                 return base_note, n+1, False
 
+def build_note_duration(base_note, dots, tri):
+    if tri:
+        return base_note * 2 / 3
+    total = base_note
+    for n in range(0, dots):
+        total += base_note / (2**(n+1))
+    return total
+
 def generate_all_note_durations():
     for i in range(10):
         base_note = Fraction(4) / (2**i)

@@ -1348,7 +1348,9 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
         accidental = None,
         playing = [],
         time_start = None,
-        duration = 1,
+        base_note = Fraction(1, 4),
+        dots = 0,
+        tri = False,
     )
     if this.document != editor.document:
         this.document = editor.document
@@ -1432,10 +1434,19 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
             this.time_start = editor.time
 
         if key == sdl2.SDLK_a:
-            this.duration /= 2
+            this.base_note /= 2
 
         if key == sdl2.SDLK_w:
-            this.duration *= 2
+            this.base_note *= 2
+
+        if key == sdl2.SDLK_z and this.dots > 0:
+            this.dots -= 1
+
+        if key == sdl2.SDLK_x:
+            this.dots += 1
+
+        if key == sdl2.SDLK_e:
+            this.tri = not this.tri
 
         if key == sdl2.SDLK_z:
             this.stencil = []
@@ -1457,7 +1468,7 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
 
         seg = entities.VoiceSegment(
             notes = list(this.stencil),
-            duration = this.duration
+            duration = resolution.build_note_duration(this.base_note, this.dots, this.tri),
         )
         if key == sdl2.SDLK_1:
             for voice in track.voices:
@@ -1523,7 +1534,10 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
         if this.time_start is not None:
             block = layout.by_beat(this.beat)
             time = editor.time
-            this.duration = resolution.quantize_fraction((time - this.time_start) / 10) * block.beat_unit
+            duration = resolution.quantize_fraction((time - this.time_start) / 10)
+            cat = resolution.categorize_note_duration(duration)
+            if cat:
+                this.base_note, this.dots, this.tri = cat
 
     @gui.drawing
     def _draw_(ui, comp):
@@ -1571,9 +1585,12 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
             }
             ctx.set_font_size(25)
             block = layout.by_beat(this.beat)
-            cat = resolution.categorize_note_duration(this.duration / block.beat_unit)
-            if cat is not None:
-                base, dots, triplet = cat
+            #cat = resolution.categorize_note_duration(this.duration / block.beat_unit)
+            #if cat is not None:
+            if True:
+                base, dots, triplet = this.base_note, this.dots, this.tri
+                if triplet:
+                    dots = 0
                 ctx.move_to(x + 15, y0 - 10)
                 if base > 2:
                     text = (tab[Fraction(1,base.denominator)] + '.'*dots) * base.numerator
