@@ -126,17 +126,6 @@ def app(editor):
         dialog_args = [],
     )
 
-    #@gui.drawing
-    #def _draw_(ui, comp):
-    #    for i in range(50):
-    #        k = i
-    #        ui.ctx.set_source_rgba(*golden_ratio_color(k, 1.0, 0.5))
-    #        ui.ctx.rectangle(500 + 10*i, 10, 10, 10)
-    #        ui.ctx.fill()
-    #        ui.ctx.set_source_rgba(*golden_ratio_color_varying(k))
-    #        ui.ctx.rectangle(500 + 10*i, 20, 10, 10)
-    #        ui.ctx.fill()
-
     # Editor history
     history = editor.history
 
@@ -172,10 +161,13 @@ def app(editor):
     play.shape = gui.Box(100, 52, 32, 32)
     @play.listen(gui.e_button_down)
     def _play_down_(x, y, button):
-        bpm = audio.LinearEnvelope([ (0, beats_per_minute, 0) ])
-        assert bpm.check_positiveness()
-        editor.transport.play(bpm, editor.document.track.voices,
-            dict((s.uid, s) for s in editor.document.track.graphs))
+        if button == 1:
+            bpm = audio.LinearEnvelope([ (0, beats_per_minute, 0) ])
+            assert bpm.check_positiveness()
+            editor.transport.play(bpm, editor.document.track.voices,
+                dict((s.uid, s) for s in editor.document.track.graphs))
+        if button == 3:
+            this.tool = transport_tool
 
     #looper = components.button('loop=on' if this.looping else 'loop=off', font_size=16)
     #looper.shape = gui.Box(58, 10, 32, 32)
@@ -196,7 +188,7 @@ def app(editor):
     def _record_down_(x, y, button):
         # TODO: Open a dialog
         document.store_plugins(editor.transport.plugins)
-        transport = audio.Transport(document.init_plugins(editor.pluginhost))
+        transport = audio.Transport(document.init_plugins(editor.pluginhost), document.mutes)
         bpm = audio.LinearEnvelope([ (0, beats_per_minute, 0) ])
         assert bpm.check_positiveness()
         transport.play(bpm, editor.document.track.voices,
@@ -283,7 +275,21 @@ def app(editor):
         select.shape = gui.Box(x+80, y, 15, 15)
         @select.listen(gui.e_button_down)
         def _select_down_(x, y, button):
-            this.instrument_uid = instrument.uid
+            if button == 1:
+                this.instrument_uid = instrument.uid
+            if button == 2:
+                mute = editor.document.mutes.get(instrument.uid, 0)
+                if mute == -1:
+                    editor.document.mutes.pop(instrument.uid, None)
+                else:
+                    editor.document.mutes[instrument.uid] = -1
+            if button == 3:
+                mute = editor.document.mutes.get(instrument.uid, 0)
+                if mute == 1:
+                    editor.document.mutes.pop(instrument.uid, None)
+                else:
+                    editor.document.mutes[instrument.uid] = 1
+            select.set_dirty()
 
     for i, instrument in enumerate(editor.document.instruments):
         instrument_button(500 + 120*(i//7), 10 + (i%7)*20, instrument)
@@ -293,6 +299,17 @@ def app(editor):
             ui.ctx.set_source_rgba(*golden_ratio_color_varying(i))
             ui.ctx.rectangle(490 + 120*(i//7), 9 + (i%7)*20, 10, 17)
             ui.ctx.fill()
+            mute = editor.document.mutes.get(instrument.uid, 0)
+            if mute < 0:
+                ui.ctx.set_source_rgba(0,0,0,1)
+                ui.ctx.set_font_size(20)
+                ui.ctx.move_to(490 - 5 + 120*(i//7), 9 + (i%7)*20 + 16)
+                ui.ctx.show_text('S')
+            elif mute > 0:
+                ui.ctx.set_source_rgba(0,0,0,1)
+                ui.ctx.set_font_size(20)
+                ui.ctx.move_to(490 - 5 + 120*(i//7), 9 + (i%7)*20 + 16)
+                ui.ctx.show_text('M')
 
     def add_instrument(x, y, uri, name):
         label = f"+ {name}"
@@ -551,9 +568,18 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
                 ctx.line_to(x0, layout.graph_point(layout.staff.bot*12 + 3))
                 ctx.stroke()
 
+                mute = editor.document.mutes.get(layout.staff.uid, 0)
+                ctx.set_font_size(20)
+                ctx.move_to(x0, layout.y + 20)
+                ctx.show_text(['solo', '', 'mute'][mute+1])
+                ctx.stroke()
+
+            ui.ctx.reset_clip()
             for beat, x in this.beatballs:
                 ctx.arc(x, 150 - 25 * abs(math.sin(beat * math.pi)), 5, 0, 2*math.pi)
                 ctx.stroke()
+            comp.shape.trace(ctx)
+            ctx.clip()
 
     # Spacing configuration for note heads
     p = 20 # width of 1/128th beat note
@@ -749,9 +775,11 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
         for layout, x, block, smear in blocks:
             staff_block(ctx, layout, x+10, block, smear)
 
-        ctx.set_source_rgba(1.0, 0.0, 0.0, 0.4)
         ctx.set_dash([4, 2])
         for _, voice_uid, xs, ys in trajectories:
+            mute = editor.document.mutes.get(voice_uid, 0)
+            color = [(1,1,0), (1,0,0), (0, 0, 0)][mute+1]
+            ctx.set_source_rgb(*color)
             for i, (x,y) in enumerate(zip(xs, ys)):
                 if i == 0:
                     ctx.move_to(x, y)
@@ -877,7 +905,7 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
           icolors,
         )
 
-        staff_app(layout, x0)
+        staff_app(editor, layout, x0)
 
     comp = gui.current_composition.get()
     @gui.listen(e_document_change)
@@ -889,13 +917,27 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
     comp.post_drawings.append(_draw_)
 
 @gui.composable
-def staff_app(layout, x0):
+def staff_app(editor, layout, x0):
     _ui = gui.ui.get()
     comp = gui.current_composition.get()
     gui.shape(gui.Box(0, layout.y, x0, layout.height))
     @gui.listen(gui.e_button_down)
     def _button_down_(x, y, button):
-        _ui.custom_event(e_dialog_open, comp, staff_dialog, [layout.staff])
+        if button == 1:
+            _ui.custom_event(e_dialog_open, comp, staff_dialog, [layout.staff])
+        if button == 2:
+            mute = editor.document.mutes.get(layout.staff.uid, 0)
+            if mute == -1:
+                editor.document.mutes.pop(layout.staff.uid, None)
+            else:
+                editor.document.mutes[layout.staff.uid] = -1
+        if button == 3:
+            mute = editor.document.mutes.get(layout.staff.uid, 0)
+            if mute == 1:
+                editor.document.mutes.pop(layout.staff.uid, None)
+            else:
+                editor.document.mutes[layout.staff.uid] = 1
+        comp.set_dirty()
 
 @gui.composable
 def staff_dialog(editor, staff):
@@ -984,6 +1026,55 @@ def get_segment(refbeat, track, voice_uid):
         return beat, None
 
 @gui.composable
+def transport_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
+    _ui = gui.ui.get()
+    _comp = gui.current_composition.get()
+    gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+    this = gui.lazybundle(
+        mouse_x = 0,
+        mouse_y = 0,
+        beat = 0
+    )
+    @gui.listen(gui.e_motion)
+    def _motion_(x, y):
+        this.mouse_x = x
+        this.mouse_y = y
+        this.beat = round(monotonic_interpolation(x, offsets, beats))
+
+    @gui.listen(gui.e_button_down)
+    def _down_(x, y, button):
+        if button == 1:
+            editor.transport.play_start = this.beat
+        if button == 2:
+            editor.transport.play_start = None
+            editor.transport.play_end = None
+        if button == 3:
+            editor.transport.play_end = this.beat
+        _comp.set_dirty()
+
+    @gui.drawing
+    def _draw_(ui, comp):
+        ctx = ui.ctx
+        x = monotonic_interpolation(this.beat, beats, offsets, True)
+        ctx.set_source_rgba(1,0,0,1)
+        ctx.move_to(x, layout.y)
+        ctx.line_to(x, layout.y+layout.height)
+        ctx.stroke()
+
+        if editor.transport.play_start is not None:
+            ctx.set_source_rgba(0,0,0,0.7)
+            x0 = monotonic_interpolation(0.0, beats, offsets, True)
+            x1 = monotonic_interpolation(editor.transport.play_start, beats, offsets, True)
+            ctx.rectangle(x0, layout.y, x1 - x0, layout.height)
+            ctx.fill()
+        if editor.transport.play_end is not None:
+            ctx.set_source_rgba(0,0,0,0.7)
+            x2 = monotonic_interpolation(editor.transport.play_end, beats, offsets, True)
+            x3 = monotonic_interpolation(layout.last_beat, beats, offsets, True)
+            ctx.rectangle(x2, layout.y, x3 - x2, layout.height)
+            ctx.fill()
+
+@gui.composable
 def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
     _ui = gui.ui.get()
     _comp = gui.current_composition.get()
@@ -1006,6 +1097,23 @@ def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, t
 
         beat_position.value = location_as_position(
           layout, offsets, beats, mouse_x.value, mouse_y.value)
+
+    @gui.listen(gui.e_key_down)
+    def _keydown_(key, repeat, modifier):
+        if nearest.value[0] is not None:
+            if key == sdl2.SDLK_m:
+                mute = editor.document.mutes.get(nearest.value[0], 0)
+                if mute == 1:
+                    editor.document.mutes.pop(nearest.value[0], None)
+                else:
+                    editor.document.mutes[nearest.value[0]] = 1
+            if key == sdl2.SDLK_s:
+                mute = editor.document.mutes.get(nearest.value[0], 0)
+                if mute == -1:
+                    editor.document.mutes.pop(nearest.value[0], None)
+                else:
+                    editor.document.mutes[nearest.value[0]] = -1
+
     @gui.listen(gui.e_leaving)
     def _leaving_(x, y):
         nearest.value = (None, None, None)
@@ -1570,7 +1678,8 @@ class Editor:
         self.history.do(commands.DemoCommand())
         self.pluginhost = lv2.PluginHost()
         self.transport = audio.Transport(
-            self.document.init_plugins(self.pluginhost))
+            self.document.init_plugins(self.pluginhost),
+            self.document.mutes)
         self.audio_output = audio.DeviceOutput(self.transport)
         self.running = False
         self.time = 0.0
@@ -1586,7 +1695,6 @@ class Editor:
         sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO | sdl2.SDL_INIT_AUDIO)
 
         root = self.widget("rollernote", 1200, 700, gui.GUI, app, self)
-        #root = self.widget("rollernote", 1200, 700, MainPayload, self)
         sdl2.SDL_StartTextInput()
 
         while self.running:

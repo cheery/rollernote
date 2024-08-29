@@ -60,8 +60,9 @@ class WAVOutput:
         self.file.close()
 
 class Transport:
-    def __init__(self, plugins):
+    def __init__(self, plugins, mutes):
         self.block_length = 1024
+        self.mutes = mutes
         self.plugins = plugins
         self.time = 0.0
         self.live_voices = set()
@@ -70,20 +71,42 @@ class Transport:
         self.volume_meter = Meter()
         self.currently_playing = None
         self.loop = False
+        self.play_start = None
+        self.play_end   = None
 
     def play(self, bpm, voices, staves):
         self.currently_playing = bpm, voices, staves
         self.live_voices.update([
-            LiveVoice(staves[voice.staff_uid], voice.segments, bpm)
+            LiveVoice(staves[voice.staff_uid], voice, bpm)
             for voice in voices
             if len(voice.segments) > 0
         ])
+
+    def init_livevoice(self, lv, now):
+        vseg = now
+        beat = 0.0
+        start = self.play_start or 0.0
+        for i, seg in enumerate(lv.voice.segments):
+            if beat <= start < beat + float(seg.duration):
+                break
+            beat += float(seg.duration)
+        offset = start - beat
+        remaining = float(seg.duration) - offset
+        if self.play_end is not None:
+            remaining = min(remaining, self.play_end - beat)
+        lv.last_vseg = now
+        lv.last_beat = lv.beat = start
+        lv.current = i
+        lv.next_vseg = now + lv.bpm.area(lv.beat, remaining, lambda bpm: 60 / bpm)
+        lv.beat += remaining
 
     # We'd need better signaling from our plugins to tell whether they are idle or not.
     def is_idle(self):
         return len(self.live_voices) == 0 and self.volume0 + self.volume1 == 0
 
     def run(self, now, audio0, audio1):
+        mutelevel = min(self.mutes.get(uid, 0) for uid in self.plugins)
+        mutelevel = min(0, mutelevel)
         for plugin in self.plugins.values():
             for e in plugin.pending_events:
                 e()
@@ -94,48 +117,49 @@ class Transport:
         elif len(self.live_voices) == 0 and not self.loop:
             self.currently_playing = None
 
-        # TODO: Get the key from correct sources.
+        def get_mutelevel(lv):
+            return self.mutes.get(lv.voice.staff_uid, 0)*2 + self.mutes.get(lv.voice.uid, 0)
+        mutelevel2 = min(map(get_mutelevel, self.live_voices), default=0)
+        mutelevel2 = min(0, mutelevel2)
+
         still_live = set()
         for lv in self.live_voices:
             if lv.current == -1: # new voice
+                self.init_livevoice(lv, now)
                 key = lv.get_key()
-                lv.last_vseg = now
-                lv.last_beat = lv.beat
-                lv.current = 0
-                lv.next_vseg = now + lv.bpm.area(lv.beat,
-                                                 float(lv.voice[0].duration),
-                                                 lambda bpm: 60 / bpm)
-                lv.beat += float(lv.voice[0].duration)
-                for note in lv.voice[0].notes:
-                    if note.instrument_uid is None:
-                        continue
-                    plugin = self.plugins[note.instrument_uid]
-                    buf = plugin.inputs['In']
-                    mp = resolution.resolve_pitch(note.pitch, key)
-                    plugin.push_midi_event(buf, [0x90, mp, 0xFF])
-                    lv.live_notes.append((mp, plugin))
-                still_live.add(lv)
-            elif lv.next_vseg <= now:
-                for mp, plugin in lv.live_notes:
-                    buf = plugin.inputs['In']
-                    plugin.push_midi_event(buf, [0x80, mp, 0xFF])
-                lv.live_notes = []
-                if lv.current + 1 < len(lv.voice):
-                    lv.last_vseg = lv.next_vseg
-                    lv.last_beat = lv.beat
-                    key = lv.get_key()
-                    lv.next_vseg += lv.bpm.area(lv.beat,
-                                                float(lv.voice[lv.current+1].duration),
-                                                lambda bpm: 60 / bpm)
-                    lv.beat += float(lv.voice[lv.current+1].duration)
-                    for note in lv.voice[lv.current+1].notes:
-                        if note.instrument_uid is None:
+                if mutelevel2 == get_mutelevel(lv):
+                    for note in lv.voice.segments[lv.current].notes:
+                        if note.instrument_uid is None or mutelevel != self.mutes.get(note.instrument_uid, 0):
                             continue
                         plugin = self.plugins[note.instrument_uid]
                         buf = plugin.inputs['In']
                         mp = resolution.resolve_pitch(note.pitch, key)
                         plugin.push_midi_event(buf, [0x90, mp, 0xFF])
                         lv.live_notes.append((mp, plugin))
+                still_live.add(lv)
+            elif lv.next_vseg <= now:
+                for mp, plugin in lv.live_notes:
+                    buf = plugin.inputs['In']
+                    plugin.push_midi_event(buf, [0x80, mp, 0xFF])
+                lv.live_notes = []
+                if lv.current + 1 < len(lv.voice.segments) and (self.play_end is None or lv.beat < self.play_end):
+                    lv.last_vseg = lv.next_vseg
+                    lv.last_beat = lv.beat
+                    remaining = float(lv.voice.segments[lv.current+1].duration)
+                    if self.play_end is not None:
+                        remaining = min(remaining, self.play_end - lv.beat)
+                    lv.beat += remaining
+                    key = lv.get_key()
+                    lv.next_vseg += lv.bpm.area(lv.last_beat, lv.beat - lv.last_beat, lambda bpm: 60 / bpm)
+                    if mutelevel2 == get_mutelevel(lv):
+                        for note in lv.voice.segments[lv.current+1].notes:
+                            if note.instrument_uid is None or mutelevel != self.mutes.get(note.instrument_uid, 0):
+                                continue
+                            plugin = self.plugins[note.instrument_uid]
+                            buf = plugin.inputs['In']
+                            mp = resolution.resolve_pitch(note.pitch, key)
+                            plugin.push_midi_event(buf, [0x90, mp, 0xFF])
+                            lv.live_notes.append((mp, plugin))
                     still_live.add(lv)
                 lv.current += 1
             else:

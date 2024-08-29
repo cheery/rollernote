@@ -12,6 +12,7 @@ class Document:
         self.track = track
         self.instruments = instruments
         self.next_uid = next_uid
+        self.mutes = {}
 
     def init_plugins(self, pluginhost):
         plugins = {}
