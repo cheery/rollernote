@@ -97,8 +97,44 @@ def graph_from_json(record):
             bot = record['bot'],
             blocks = [StaffBlock.from_json(a) for a in record['blocks']],
         )
+    elif record['type'] == 'chord_progression':
+        return ChordProgression(
+            uid = record['uid'],
+            segments = [ChordProgressionSegment.from_json(a) for a in record['segments']],
+        )
     else:
        raise ValueError
+
+class ChordProgression:
+    def __init__(self, uid, segments):
+        self.uid = uid
+        self.segments = segments
+
+    def as_json(self):
+        return {
+            'type': 'chord_progression',
+            'uid': self.uid,
+            'segments': [seg.as_json() for seg in self.segments],
+        }
+
+class ChordProgressionSegment:
+    def __init__(self, nth, duration):
+        self.nth = nth
+        self.duration = duration
+
+    @staticmethod
+    def from_json(record):
+        numerator, denominator = record['duration']
+        return ChordProgressionSegment(
+            nth = record['nth'],
+            duration = Fraction(numerator, denominator),
+        )
+
+    def as_json(self):
+        return {
+            'nth': self.nth,
+            'duration': self.duration.as_integer_ratio()
+        }
 
 class Staff:
     def __init__(self, uid, top, bot, blocks):

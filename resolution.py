@@ -26,7 +26,7 @@ def canon_key(index):
 def tonic(canonical_key, index=0):
     nkey = [i % 12 for i in canon_key(canonical_key)]
     k = base_key[index]
-    return entities.Pitch(nkey.index((canonical_key * 7 + k) % 12))
+    return nkey.index((canonical_key * 7 + k) % 12)
 
 # The pitch representation is contextual,
 # next function converts the pitch to canonical representation.

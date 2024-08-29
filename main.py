@@ -344,8 +344,13 @@ def app(editor):
 
     layouts = {}
     y_base = 150
-    for staff in document.track.graphs:
-        layouts[staff.uid] = layout = StaffLayout(y_base, staff, document.track.voices)
+    for graph in document.track.graphs:
+        if isinstance(graph, entities.Staff):
+            layouts[graph.uid] = layout = StaffLayout(y_base, graph, document.track.voices)
+        elif isinstance(graph, entities.ChordProgression):
+            layouts[graph.uid] = layout = ChordProgressionLayout(y_base, graph)
+        else:
+            assert False
         y_base += layout.height + 10
     beatline(editor, layouts, document.track, this.tool, this.instrument_uid, icolors)
 
@@ -366,6 +371,13 @@ def app(editor):
                             mode = None
                         )
                     ]))
+
+    add_cp = components.button("add chord prog.")
+    add_cp.shape = gui.Box(116, widget.height - 40, 128, 20)
+    @add_cp.listen(gui.e_button_down)
+    def _add_cp_(x,y,button):
+        editor.document.track.graphs.append(
+            entities.ChordProgression(editor.document.next_uid(), []))
 
     components.label(this.status, 0, widget.height - 3)
 
@@ -465,6 +477,13 @@ class StaffLayout:
         if block.beats_in_measure is not None or block.beat_unit is not None:
             width += 30
         return width
+
+class ChordProgressionLayout:
+    def __init__(self, y, cp):
+        self.y = y
+        self.height = 20
+        self.cp = cp
+        self.last_beat = sum(float(seg.duration) for seg in cp.segments)
        
 @gui.composable
 def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
@@ -514,11 +533,12 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
         this.scroll_x_anchor = None
         this.scroll_y_anchor = None
 
-    x0 = this.scroll_x + max(layout.left_margin for layout in layouts.values())
+    x0 = this.scroll_x + max(layout.left_margin for layout in layouts.values() if isinstance(layout, StaffLayout))
 
     for layout in layouts.values():
         layout.y += this.scroll_y
-        layout.reference += this.scroll_y
+        if isinstance(layout, StaffLayout):
+            layout.reference += this.scroll_y
 
     @gui.drawing
     def _draw_(ui, comp):
@@ -527,6 +547,13 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
         ctx.clip()
         ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
         for layout in layouts.values():
+            if isinstance(layout, ChordProgressionLayout):
+                ctx.set_dash([4,2])
+                ctx.move_to(0, layout.y+layout.height)
+                ctx.line_to(ui.widget.width, layout.y+layout.height)
+                ctx.stroke()
+                ctx.set_dash([])
+                continue
             # Staff lines
             # These are rendered without refering
             # to anything else but staff.top and staff.bot and margins
@@ -542,8 +569,8 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
             key = resolution.canon_key(canon_key)
 
             # Major/Minor letters above the 'clef'
-            major = resolution.tonic(canon_key)
-            minor = resolution.tonic(canon_key, 5)
+            major = entities.Pitch(resolution.tonic(canon_key))
+            minor = entities.Pitch(resolution.tonic(canon_key, 5))
             major_text = resolution.pitch_name(major, key, show_octave=False)
             minor_text = resolution.pitch_name(minor, key, show_octave=False)
             ctx.set_font_size(10)
@@ -560,6 +587,8 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
                 ctx.show_text(t)
 
             for layout in layouts.values():
+                if isinstance(layout, ChordProgressionLayout):
+                    continue
                 block = layout.by_beat(0.0)
                 staff_block(ctx, layout, x0 - layout.left_margin + 35, block, block)
                 # bar
@@ -628,6 +657,7 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
 
     # Events on the line
     events = []
+    E_CHORD_PROGRESSION_SEGMENT = 3
     E_SEGMENT = 2
     E_BLOCK = 1
     E_BARLINE = 0
@@ -667,16 +697,22 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
             current += step
     # Inserting blocks into event stream
     for layout in layouts.values():
-        previous = layout.smeared[0]
-        for i, smear in enumerate(layout.smeared[1:], 1):
-            for stop in frange(previous.beat + previous.beats_in_measure, smear.beat, previous.beats_in_measure):
+        if isinstance(layout, StaffLayout):
+            previous = layout.smeared[0]
+            for i, smear in enumerate(layout.smeared[1:], 1):
+                for stop in frange(previous.beat + previous.beats_in_measure, smear.beat, previous.beats_in_measure):
+                    insert_event(stop, E_BARLINE, layout)
+                block = layout.staff.blocks[i]
+                unusual = (smear.beat - previous.beat) % previous.beats_in_measure != 0
+                insert_event(block.beat, E_BLOCK, (layout, block, smear, unusual))
+                previous = smear
+            for stop in frange(previous.beat + previous.beats_in_measure, layout.last_beat, previous.beats_in_measure):
                 insert_event(stop, E_BARLINE, layout)
-            block = layout.staff.blocks[i]
-            unusual = (smear.beat - previous.beat) % previous.beats_in_measure != 0
-            insert_event(block.beat, E_BLOCK, (layout, block, smear, unusual))
-            previous = smear
-        for stop in frange(previous.beat + previous.beats_in_measure, layout.last_beat, previous.beats_in_measure):
-            insert_event(stop, E_BARLINE, layout)
+        elif isinstance(layout, ChordProgressionLayout):
+            beat = 0.0
+            for seg in layout.cp.segments:
+                insert_event(beat, E_CHORD_PROGRESSION_SEGMENT, (layout, seg))
+                beat += float(seg.duration)
 
     x = x0 + 20
     # Layout data to draw ties
@@ -692,6 +728,7 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
     barlines = []
     blocks = []
     segments = []
+    chord_progression_segments = []
 
     trajectories = []
     for voice in track.voices:
@@ -705,7 +742,7 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
         if which == E_BLOCK and push0 > 0:
             x += push0
             push0 = 0
-        if which == E_SEGMENT and push0 + push1 > 0:
+        if which in [E_SEGMENT, E_CHORD_PROGRESSION_SEGMENT] and push0 + push1 > 0:
             x += push0 + push1
             push0 = push1 = 0
             offsets.append(x)
@@ -734,6 +771,9 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
             y1 = layout.graph_point(layout.staff.bot*12 + 3)
             barlines.append((False, x, y0, y1))
             push0 = 10
+        if which == E_CHORD_PROGRESSION_SEGMENT:
+            layout, seg = value
+            chord_progression_segments.append((beat, seg, layout, x))
         if which == E_SEGMENT:
             duration, seg, layout, voice = value
             tie = len(seg_xs.get(seg, []))
@@ -787,6 +827,39 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
                     ctx.line_to(x, y)
             ctx.stroke()
         ctx.set_dash([])
+
+        for beat, seg, layout, x0 in chord_progression_segments:
+            ctx.set_source_rgba(0,0,0,1)
+            ctx.move_to(x0, layout.y+layout.height)
+            ctx.show_text(str(seg.nth))
+            if editor.document.mutes.get(layout.cp.uid, 0) > 0:
+                continue
+            x1 = monotonic_interpolation(beat + float(seg.duration), beats, offsets, False)
+            for staff in layouts.values():
+                if isinstance(staff, StaffLayout):
+                    block = staff.by_beat(beat)
+                    if block.mode in ['minor', 'major']:
+                        ton = resolution.tonic(block.canonical_key, {'minor': 5, 'major': 0}[block.mode])
+                        low = staff.margin_bot*12 + block.clef
+                        high = staff.margin_top*12 + block.clef
+                        for pos in range(low, high+1):
+                            win = False
+                            if pos % 7 == (ton + seg.nth - 1) % 7:
+                                win = True
+                                ctx.set_source_rgba(0,0,1,0.2)
+                            if pos % 7 == (ton + seg.nth + 1) % 7:
+                                win = True
+                                ctx.set_source_rgba(1,0,0,0.2)
+                            if pos % 7 == (ton + seg.nth + 3) % 7:
+                                win = True
+                                ctx.set_source_rgba(0,1,0,0.2)
+                            if win:
+                                y = staff.note_position(beat, pos)
+                                ctx.move_to(x0, y+2)
+                                ctx.line_to(x1, y+2)
+                                ctx.line_to(x1, y-2)
+                                ctx.line_to(x0, y-2)
+                                ctx.fill()
 
         for beat, x, tie, duration, seg, layout in segments:
             ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
@@ -921,6 +994,16 @@ def staff_app(editor, layout, x0):
     _ui = gui.ui.get()
     comp = gui.current_composition.get()
     gui.shape(gui.Box(0, layout.y, x0, layout.height))
+    if isinstance(layout, ChordProgressionLayout):
+        @gui.listen(gui.e_button_down)
+        def _button_down_(x, y, button):
+            if button == 3:
+                mute = editor.document.mutes.get(layout.cp.uid, 0)
+                if mute == 1:
+                    editor.document.mutes.pop(layout.cp.uid, None)
+                else:
+                    editor.document.mutes[layout.cp.uid] = 1
+        return
     @gui.listen(gui.e_button_down)
     def _button_down_(x, y, button):
         if button == 1:
@@ -1030,6 +1113,8 @@ def transport_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectori
     _ui = gui.ui.get()
     _comp = gui.current_composition.get()
     gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+    if isinstance(layout, ChordProgressionLayout):
+        return
     this = gui.lazybundle(
         mouse_x = 0,
         mouse_y = 0,
@@ -1079,6 +1164,8 @@ def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, t
     _ui = gui.ui.get()
     _comp = gui.current_composition.get()
     gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+    if isinstance(layout, ChordProgressionLayout):
+        return
 
     voice_lock = gui.state(False)
     mouse_x = gui.state(0)
@@ -1168,6 +1255,9 @@ def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, t
 def split_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
     _ui = gui.ui.get()
     gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+
+    if isinstance(layout, ChordProgressionLayout):
+        return
 
     voice_lock = gui.state(False)
     mouse_x = gui.state(0)
@@ -1328,6 +1418,118 @@ def split_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
 def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
     _ui = gui.ui.get()
     gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+    if isinstance(layout, ChordProgressionLayout):
+        this = gui.lazybundle(
+            document = editor.document,
+            seg_index = 0,
+            beat = 0.0,
+            base_note = Fraction(1, 4),
+            dots = 0,
+            tri = False,
+        )
+        if this.document != editor.document:
+            this.seg_index = 0
+            this.beat = 0
+        @gui.listen(gui.e_button_down)
+        def _button_down_(x, y, button):
+            if button == 1:
+                beatpoint = monotonic_interpolation(x, offsets, beats)
+                beat = 0.0
+                i = 0
+                for seg in layout.cp.segments:
+                    if beatpoint < beat + float(seg.duration) / 2:
+                        break
+                    beat += float(seg.duration)
+                    i += 1
+                this.beat = beat
+                this.seg_index = i
+        @gui.listen(gui.e_key_down)
+        def _down_(key, repeat, modifier):
+            if key == sdl2.SDLK_a:
+                this.base_note /= 2
+            if key == sdl2.SDLK_w:
+                this.base_note *= 2
+            if key == sdl2.SDLK_z and this.dots > 0:
+                this.dots -= 1
+            if key == sdl2.SDLK_x:
+                this.dots += 1
+            if key == sdl2.SDLK_e:
+                this.tri = not this.tri
+            if key == sdl2.SDLK_BACKSPACE:
+                if this.seg_index > 0:
+                    seg = layout.cp.segments[this.seg_index-1]
+                    layout.cp.segments[this.seg_index-1:this.seg_index] = []
+                    this.seg_index -= 1
+                    this.beat -= float(seg.duration)
+                    this._composition.set_dirty()
+            nth = None
+            duration = resolution.build_note_duration(this.base_note, this.dots, this.tri) * 4
+            if key == sdl2.SDLK_1:
+                nth = 1
+            if key == sdl2.SDLK_2:
+                nth = 2
+            if key == sdl2.SDLK_3:
+                nth = 3
+            if key == sdl2.SDLK_4:
+                nth = 4
+            if key == sdl2.SDLK_5:
+                nth = 5
+            if key == sdl2.SDLK_6:
+                nth = 6
+            if key == sdl2.SDLK_7:
+                nth = 7
+            if nth is not None:
+                seg = entities.ChordProgressionSegment(nth, duration)
+                layout.cp.segments[this.seg_index:this.seg_index] = [seg]
+                this.seg_index += 1
+                this.beat += float(seg.duration)
+                this._composition.set_dirty()
+            if key == sdl2.SDLK_LEFT:
+                if this.seg_index > 0:
+                    this.seg_index -= 1
+                    this.beat -= float(layout.cp.segments[this.seg_index].duration)
+            if key == sdl2.SDLK_RIGHT:
+                if this.seg_index and this.seg_index < len(layout.cp.segments):
+                    this.beat += float(layout.cp.segments[this.seg_index].duration)
+                    this.seg_index += 1
+
+        @gui.drawing
+        def _draw_(ui, comp):
+            ctx = ui.ctx
+            if ui.focus == comp.key:
+                x = monotonic_interpolation(this.beat, beats, offsets, True)
+                ctx.move_to(x,layout.y)
+                ctx.line_to(x,layout.y+layout.height)
+                ctx.stroke()
+
+                tab = {
+                    Fraction(2,1): chr(119132),
+                    Fraction(1,1): chr(119133),
+                    Fraction(1,2): chr(119134),
+                    Fraction(1,4): chr(119135),
+                    Fraction(1,8): chr(119136),
+                    Fraction(1,16): chr(119137),
+                    Fraction(1,32): chr(119138),
+                    Fraction(1,64): chr(119139),
+                    Fraction(1,128): chr(119140),
+                }
+                ctx.set_font_size(25)
+                if True:
+                    base, dots, triplet = this.base_note, this.dots, this.tri
+                    if triplet:
+                        dots = 0
+                    ctx.move_to(x + 15, layout.y - 10)
+                    if base > 2:
+                        text = (tab[Fraction(1,base.denominator)] + '.'*dots) * base.numerator
+                    else:
+                        text = tab[base] + '.'*dots
+                    ctx.show_text(text)
+                    ctx.set_font_size(12)
+                    ctx.move_to(x + 15, layout.y + 2)
+                    ctx.show_text('3'*int(triplet))
+                    ctx.set_font_size(25)
+
+        return
     first_voice_uid = None
     first_beat = 0.0
     first_index = 0
@@ -1468,7 +1670,7 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
 
         seg = entities.VoiceSegment(
             notes = list(this.stencil),
-            duration = resolution.build_note_duration(this.base_note, this.dots, this.tri),
+            duration = resolution.build_note_duration(this.base_note, this.dots, this.tri) * block.beat_unit,
         )
         if key == sdl2.SDLK_1:
             for voice in track.voices:
