@@ -27,6 +27,7 @@ class Composition:
         self.fresh = True
         # The parts that makes this GUI
         self.drawings = []
+        self.post_drawings = []
         self.listeners = []
         if parent is None or parent.parent is None:
             self.shape = Hit()
@@ -72,6 +73,8 @@ class Composition:
             drawing(_ui, self)
         for children in self.children:
             children.draw()
+        for drawing in self.post_drawings:
+            drawing(_ui, self)
 
     def hit(self, x, y):
         if self.shape.test(x, y):
@@ -320,10 +323,10 @@ class GUI:
             focus_by = None
             while this is not None and (handled_by is None or focus_by is None):
                 for event, _, handler in this.listeners:
-                    if event == e_button_down and handled_by is None:
+                    if event == e_button_down and (handled_by is None or handled_by == this.key):
                         handler(x, y, button)
                         handled_by = this.key
-                    if event in keyboad_events and focus_by is None:
+                    if event in keyboad_events and (focus_by is None or focus_by == this.key):
                         this.set_dirty() # Give it chance to react on focus change.
                         focus_by = this.key
                 this = this.parent

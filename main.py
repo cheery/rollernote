@@ -15,6 +15,8 @@ import subprocess
 from fractions import Fraction
 import colorsys
 
+beats_per_minute = 90
+
 #                                        1.0            0.5
 def golden_ratio_color(index, saturation=0.7, lightness=0.5, alpha=1.0):
     """
@@ -170,7 +172,7 @@ def app(editor):
     play.shape = gui.Box(100, 52, 32, 32)
     @play.listen(gui.e_button_down)
     def _play_down_(x, y, button):
-        bpm = audio.LinearEnvelope([ (0, 80, 0) ])
+        bpm = audio.LinearEnvelope([ (0, beats_per_minute, 0) ])
         assert bpm.check_positiveness()
         editor.transport.play(bpm, editor.document.track.voices,
             dict((s.uid, s) for s in editor.document.track.graphs))
@@ -195,7 +197,7 @@ def app(editor):
         # TODO: Open a dialog
         document.store_plugins(editor.transport.plugins)
         transport = audio.Transport(document.init_plugins(editor.pluginhost))
-        bpm = audio.LinearEnvelope([ (0, 80, 0) ])
+        bpm = audio.LinearEnvelope([ (0, beats_per_minute, 0) ])
         assert bpm.check_positiveness()
         transport.play(bpm, editor.document.track.voices,
             dict((s.uid, s) for s in editor.document.track.graphs))
@@ -205,7 +207,7 @@ def app(editor):
         output.close()
         for plugin in transport.plugins.values():
             plugin.close()
-        subprocess.run(["ffmpeg", "-i", "-y", "-nostdin", "temp.wav", "temp.mp3"])
+        #subprocess.run(["ffmpeg", "-i", "-nostdin", "temp.wav", "temp.mp3"])
 
     save = components.button("save", font_size=32)
     save.shape = gui.Box(142, 52, 32*3, 32)
@@ -236,9 +238,7 @@ def app(editor):
                         )
                     ])
                 ],
-                voices = [
-                    entities.Voice(200, 100, [])
-                ]
+                voices = []
             ),
             instruments = [],
             next_uid = entities.UidGenerator(300),
@@ -333,6 +333,23 @@ def app(editor):
     beatline(editor, layouts, document.track, this.tool, this.instrument_uid, icolors)
 
     widget = gui.ui.get().widget
+
+    add_staff = components.button("add staff")
+    add_staff.shape = gui.Box(10, widget.height - 40, 96, 20)
+    @add_staff.listen(gui.e_button_down)
+    def _add_staff_(x,y,button):
+        editor.document.track.graphs.append(
+                    entities.Staff(editor.document.next_uid(), 3, 2, [
+                        entities.StaffBlock(
+                            beat = 0,
+                            beats_in_measure = random.choice([3,4]),
+                            beat_unit = 4,
+                            canonical_key = random.randrange(-7, 8),
+                            clef = 3,
+                            mode = None
+                        )
+                    ]))
+
     components.label(this.status, 0, widget.height - 3)
 
     @gui.listen(gui.e_key_down)
@@ -355,7 +372,7 @@ def app(editor):
             #editor.plugin.push_midi_event(buf, [0x81, key % 128, 0xFF])
 
     if this.dialog is not None:
-        this.dialog(*this.dialog_args)
+        this.dialog(editor, *this.dialog_args)
 
     @gui.listen(e_dialog_open)
     def _dialog_open_(dialog, args):
@@ -439,7 +456,25 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
     this = gui.lazybundle(
         scroll_x_anchor = None,
         scroll_x = 0,
+        scroll_y_anchor = None,
+        scroll_y = 0,
+        beatballs = [],
     )
+
+    @gui.listen(gui.e_update)
+    def _update_():
+        beatballs = []
+        for voice in list(editor.transport.live_voices):
+            if voice.next_vseg > voice.last_vseg:
+                t = (editor.time - voice.last_vseg) / (voice.next_vseg - voice.last_vseg)
+            else:
+                t = 0
+            x0 = monotonic_interpolation(voice.last_beat, beats, offsets, True)
+            x1 = monotonic_interpolation(voice.beat, beats, offsets, True)
+            beat = voice.last_beat*(1-t) + voice.beat*t
+            x = x0*(1-t) + x1*t
+            beatballs.append((beat, x))
+        this.beatballs = beatballs
 
     # Scrolling behavior
     @gui.listen(gui.e_motion)
@@ -448,20 +483,31 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
         if this.scroll_x_anchor is not None:
             this.scroll_x += x - this.scroll_x_anchor
             this.scroll_x_anchor = x
+        if this.scroll_y_anchor is not None:
+            this.scroll_y += y - this.scroll_y_anchor
+            this.scroll_y_anchor = y
 
     @gui.listen(gui.e_button_down)
     def _down_(x, y, button):
         this.scroll_x_anchor = x
+        this.scroll_y_anchor = y
 
     @gui.listen(gui.e_button_up)
     def _up_(x, y, button):
         this.scroll_x_anchor = None
+        this.scroll_y_anchor = None
 
     x0 = this.scroll_x + max(layout.left_margin for layout in layouts.values())
+
+    for layout in layouts.values():
+        layout.y += this.scroll_y
+        layout.reference += this.scroll_y
 
     @gui.drawing
     def _draw_(ui, comp):
         ctx = ui.ctx
+        comp.shape.trace(ctx)
+        ctx.clip()
         ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
         for layout in layouts.values():
             # Staff lines
@@ -503,6 +549,10 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
                 ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
                 ctx.move_to(x0, layout.graph_point(layout.staff.top*12 - 1))
                 ctx.line_to(x0, layout.graph_point(layout.staff.bot*12 + 3))
+                ctx.stroke()
+
+            for beat, x in this.beatballs:
+                ctx.arc(x, 150 - 25 * abs(math.sin(beat * math.pi)), 5, 0, 2*math.pi)
                 ctx.stroke()
 
     # Spacing configuration for note heads
@@ -684,6 +734,8 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
     @gui.drawing
     def _draw_lines_(ui, comp):
         ctx = ui.ctx
+        comp.shape.trace(ctx)
+        ctx.clip()
         for dashed, x, y0, y1 in barlines:
             if dashed:
                 ctx.set_dash([4, 2])
@@ -832,6 +884,10 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
     def _document_change_():
         comp.set_dirty()
 
+    def _draw_(ui, comp):
+        ui.ctx.reset_clip()
+    comp.post_drawings.append(_draw_)
+
 @gui.composable
 def staff_app(layout, x0):
     _ui = gui.ui.get()
@@ -842,7 +898,7 @@ def staff_app(layout, x0):
         _ui.custom_event(e_dialog_open, comp, staff_dialog, [layout.staff])
 
 @gui.composable
-def staff_dialog(staff):
+def staff_dialog(editor, staff):
     with components.dialog():
         def changer(obj, attr, range=(0,100)):
             def _change_(text):
@@ -881,6 +937,18 @@ def staff_dialog(staff):
                 gui.broadcast(e_document_change)
         m = components.textbox(str(initial.mode or ""), change_mode)
         m.shape = gui.Box(358, 230, 32*2, 20)
+
+        enabled = len(editor.document.track.graphs) > 1
+        rm_staff = components.button("remove staff", disabled = not enabled)
+        rm_staff.shape = gui.Box(220, 400, 96, 20)
+        @rm_staff.listen(gui.e_button_down)
+        def _rm_staff_(x,y,button):
+            if enabled:
+                editor.document.track.graphs.remove(staff)
+                for voice in list(editor.document.track.voices):
+                    if voice.staff_uid == staff.uid:
+                        editor.document.track.voices.remove(voice)
+                gui.inform(components.e_dialog_leave, rm_staff)
 
 def location_as_position(layout, offsets, beats, x, y):
     beat = monotonic_interpolation(x, offsets, beats)
@@ -1192,24 +1260,34 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
 
     @gui.listen(gui.e_button_down)
     def _button_down_(x, y, button):
-        beatpoint = monotonic_interpolation(x, offsets, beats)
-        nearest = nearest_voice(trajectories, x, y, layout.staff.uid)
-        this.voice_uid = nearest[0]
+        if button == 1:
+            beatpoint = monotonic_interpolation(x, offsets, beats)
+            nearest = nearest_voice(trajectories, x, y, layout.staff.uid)
+            this.voice_uid = nearest[0]
 
-        for voice in track.voices:
-            if this.voice_uid == voice.uid:
-                beat = 0.0
-                i = 0
-                for seg in voice.segments:
-                    if beatpoint < beat + float(seg.duration) / 2:
-                        break
-                    beat += float(seg.duration)
-                    i += 1
-                this.beat = beat
-                this.seg_index = i
+            for voice in track.voices:
+                if this.voice_uid == voice.uid:
+                    beat = 0.0
+                    i = 0
+                    for seg in voice.segments:
+                        if beatpoint < beat + float(seg.duration) / 2:
+                            break
+                        beat += float(seg.duration)
+                        i += 1
+                    this.beat = beat
+                    this.seg_index = i
+        if button == 3:
+            this.beat = 0.0
+            this.voice_uid = None
+            this.seg_index = 0
 
     @gui.listen(gui.e_key_down)
     def _down_(key, repeat, modifier):
+        if this.voice_uid is None:
+            uid = editor.document.next_uid()
+            track.voices.append(entities.Voice(uid, layout.staff.uid, []))
+            this.voice_uid = uid
+            this.seg_index = 0
         block = layout.by_beat(this.beat)
         i = (layout.staff.top*6 + layout.staff.bot*6) + block.clef + 1
         matrix = [
@@ -1235,6 +1313,8 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
             key = resolution.canon_key(block.canonical_key)
             this.playing = []
             for note in list(this.stencil):
+                if note.instrument_uid is None:
+                    continue
                 plugin = editor.transport.plugins[note.instrument_uid]
                 m = resolution.resolve_pitch(note.pitch, key)
                 midi_event(m, plugin)
@@ -1249,6 +1329,24 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
         if key == sdl2.SDLK_w:
             this.duration *= 2
 
+        if key == sdl2.SDLK_z:
+            this.stencil = []
+
+        if key == sdl2.SDLK_BACKSPACE:
+            for voice in track.voices:
+                if this.voice_uid == voice.uid and this.seg_index > 0:
+                    seg = voice.segments[this.seg_index-1]
+                    voice.segments[this.seg_index-1:this.seg_index] = []
+                    this.seg_index -= 1
+                    this.beat -= float(seg.duration)
+            this._composition.set_dirty()
+
+        if key == sdl2.SDLK_SPACE:
+            bpm = audio.LinearEnvelope([ (0, beats_per_minute, 0) ])
+            assert bpm.check_positiveness()
+            editor.transport.play(bpm, editor.document.track.voices,
+                dict((s.uid, s) for s in editor.document.track.graphs))
+
         seg = entities.VoiceSegment(
             notes = list(this.stencil),
             duration = this.duration
@@ -1258,14 +1356,14 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
                 if this.voice_uid == voice.uid:
                     voice.segments[this.seg_index:this.seg_index] = [seg]
                     this.seg_index += 1
-                    this.beat += seg.duration
+                    this.beat += float(seg.duration)
             this._composition.set_dirty()
         if key == sdl2.SDLK_2:
             for voice in track.voices:
                 if this.voice_uid == voice.uid:
                     voice.segments[this.seg_index:this.seg_index+1] = [seg]
                     this.seg_index += 1
-                    this.beat += seg.duration
+                    this.beat += float(seg.duration)
             this._composition.set_dirty()
         if key == sdl2.SDLK_3:
             for voice in track.voices:
@@ -1273,7 +1371,7 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
                     seg.duration = voice.segments[this.seg_index].duration
                     voice.segments[this.seg_index:this.seg_index+1] = [seg]
                     this.seg_index += 1
-                    this.beat += seg.duration
+                    this.beat += float(seg.duration)
             this._composition.set_dirty()
         if key == sdl2.SDLK_4:
             for voice in track.voices:
@@ -1281,18 +1379,23 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
                     seg.notes = voice.segments[this.seg_index].notes
                     voice.segments[this.seg_index:this.seg_index+1] = [seg]
                     this.seg_index += 1
-                    this.beat += seg.duration
+                    this.beat += float(seg.duration)
             this._composition.set_dirty()
         if key == sdl2.SDLK_LEFT:
             for voice in track.voices:
                 if this.voice_uid == voice.uid and this.seg_index > 0:
                     this.seg_index -= 1
-                    this.beat -= voice.segments[this.seg_index].duration
+                    this.beat -= float(voice.segments[this.seg_index].duration)
         if key == sdl2.SDLK_RIGHT:
             for voice in track.voices:
                 if this.voice_uid == voice.uid and this.seg_index < len(voice.segments):
-                    this.beat += voice.segments[this.seg_index].duration
+                    this.beat += float(voice.segments[this.seg_index].duration)
                     this.seg_index += 1
+        for voice in track.voices:
+            if voice.uid == this.voice_uid and len(voice.segments) == 0:
+                track.voices.remove(voice)
+                this.voice_uid = None
+                break
 
     @gui.listen(gui.e_key_up)
     def _up_(key, modifier):
@@ -1318,7 +1421,10 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
     def _draw_(ui, comp):
         ctx = ui.ctx
         if ui.focus == comp.key:
-            ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
+            if this.voice_uid is None:
+                ctx.set_source_rgba(0.0, 0.0, 1.0, 1.0)
+            else:
+                ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
             x = monotonic_interpolation(this.beat, beats, offsets, True)
             y0 = layout.graph_point(layout.staff.top*12 - 1)
             y1 = layout.graph_point(layout.staff.bot*12 + 3)

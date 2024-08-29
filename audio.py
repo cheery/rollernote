@@ -76,6 +76,7 @@ class Transport:
         self.live_voices.update([
             LiveVoice(staves[voice.staff_uid], voice.segments, bpm)
             for voice in voices
+            if len(voice.segments) > 0
         ])
 
     # We'd need better signaling from our plugins to tell whether they are idle or not.
@@ -98,6 +99,8 @@ class Transport:
         for lv in self.live_voices:
             if lv.current == -1: # new voice
                 key = lv.get_key()
+                lv.last_vseg = now
+                lv.last_beat = lv.beat
                 lv.current = 0
                 lv.next_vseg = now + lv.bpm.area(lv.beat,
                                                  float(lv.voice[0].duration),
@@ -118,6 +121,8 @@ class Transport:
                     plugin.push_midi_event(buf, [0x80, mp, 0xFF])
                 lv.live_notes = []
                 if lv.current + 1 < len(lv.voice):
+                    lv.last_vseg = lv.next_vseg
+                    lv.last_beat = lv.beat
                     key = lv.get_key()
                     lv.next_vseg += lv.bpm.area(lv.beat,
                                                 float(lv.voice[lv.current+1].duration),
@@ -210,8 +215,10 @@ class LiveVoice:
         self.smeared = entities.smear(staff.blocks)
         self.voice = voice
         self.bpm = bpm
+        self.last_beat = beat
         self.beat = beat
         self.current = current
+        self.last_vseg = next_vseg
         self.next_vseg = next_vseg
         self.live_notes = []
 
