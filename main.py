@@ -494,6 +494,8 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
         scroll_x = 0,
         scroll_y_anchor = None,
         scroll_y = 0,
+        scaling = False,
+        scaling_factor = 1.0,
         beatballs = [],
     )
 
@@ -517,16 +519,26 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
     @gui.listen(gui.e_dragging)
     def _motion_(x, y):
         if this.scroll_x_anchor is not None:
-            this.scroll_x += x - this.scroll_x_anchor
+            this.scroll_x += (x - this.scroll_x_anchor) / this.scaling_factor
             this.scroll_x_anchor = x
         if this.scroll_y_anchor is not None:
-            this.scroll_y += y - this.scroll_y_anchor
+            if this.scaling:
+                this.scroll_x -= widget.width / 2 / this.scaling_factor
+                this.scroll_y -= widget.height / 2 / this.scaling_factor
+                this.scaling_factor += (y - this.scroll_y_anchor) * 0.01
+                this.scroll_x += widget.width / 2 / this.scaling_factor
+                this.scroll_y += widget.height / 2 / this.scaling_factor
+            else:
+                this.scroll_y += (y - this.scroll_y_anchor) / this.scaling_factor
             this.scroll_y_anchor = y
 
     @gui.listen(gui.e_button_down)
     def _down_(x, y, button):
         this.scroll_x_anchor = x
         this.scroll_y_anchor = y
+        if button == 2:
+            this.scaling_factor = 1.0
+        this.scaling = (button == 3)
 
     @gui.listen(gui.e_button_up)
     def _up_(x, y, button):
@@ -545,12 +557,13 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
         ctx = ui.ctx
         comp.shape.trace(ctx)
         ctx.clip()
+        ctx.scale(this.scaling_factor, this.scaling_factor)
         ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
         for layout in layouts.values():
             if isinstance(layout, ChordProgressionLayout):
                 ctx.set_dash([4,2])
                 ctx.move_to(0, layout.y+layout.height)
-                ctx.line_to(ui.widget.width, layout.y+layout.height)
+                ctx.line_to(ui.widget.width/this.scaling_factor, layout.y+layout.height)
                 ctx.stroke()
                 ctx.set_dash([])
                 continue
@@ -561,7 +574,7 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
                 if i % 12 != 2:
                     k = i * 5
                     ctx.move_to(0, layout.y+k)
-                    ctx.line_to(widget.width, layout.y+k)
+                    ctx.line_to(widget.width/this.scaling_factor, layout.y+k)
                     ctx.stroke()
 
             initial = layout.by_beat(0.0)
@@ -603,12 +616,14 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
                 ctx.show_text(['solo', '', 'mute'][mute+1])
                 ctx.stroke()
 
-            ui.ctx.reset_clip()
+            ctx.identity_matrix()
+            ctx.reset_clip()
             for beat, x in this.beatballs:
-                ctx.arc(x, 150 - 25 * abs(math.sin(beat * math.pi)), 5, 0, 2*math.pi)
+                ctx.arc(x, 150/this.scaling_factor - 25 * abs(math.sin(beat * math.pi)), 5, 0, 2*math.pi)
                 ctx.stroke()
             comp.shape.trace(ctx)
             ctx.clip()
+            ctx.scale(this.scaling_factor, this.scaling_factor)
 
     # Spacing configuration for note heads
     p = 20 # width of 1/128th beat note
@@ -800,8 +815,8 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
     @gui.drawing
     def _draw_lines_(ui, comp):
         ctx = ui.ctx
-        comp.shape.trace(ctx)
-        ctx.clip()
+        #comp.shape.trace(ctx)
+        #ctx.clip()
         for dashed, x, y0, y1 in barlines:
             if dashed:
                 ctx.set_dash([4, 2])
@@ -976,9 +991,10 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
           track,
           instrument_uid,
           icolors,
+          this.scaling_factor,
         )
 
-        staff_app(editor, layout, x0)
+        staff_app(editor, layout, x0, this.scaling_factor)
 
     comp = gui.current_composition.get()
     @gui.listen(e_document_change)
@@ -987,13 +1003,14 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
 
     def _draw_(ui, comp):
         ui.ctx.reset_clip()
+        ui.ctx.identity_matrix()
     comp.post_drawings.append(_draw_)
 
 @gui.composable
-def staff_app(editor, layout, x0):
+def staff_app(editor, layout, x0, scaling_factor):
     _ui = gui.ui.get()
     comp = gui.current_composition.get()
-    gui.shape(gui.Box(0, layout.y, x0, layout.height))
+    gui.shape(gui.Box(0, layout.y * scaling_factor, x0 * scaling_factor, layout.height * scaling_factor))
     if isinstance(layout, ChordProgressionLayout):
         @gui.listen(gui.e_button_down)
         def _button_down_(x, y, button):
@@ -1109,10 +1126,10 @@ def get_segment(refbeat, track, voice_uid):
         return beat, None
 
 @gui.composable
-def transport_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
+def transport_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors, sf):
     _ui = gui.ui.get()
     _comp = gui.current_composition.get()
-    gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+    gui.shape(gui.Box(0, layout.y*sf, _ui.widget.width, layout.height*sf))
     if isinstance(layout, ChordProgressionLayout):
         return
     this = gui.lazybundle(
@@ -1122,9 +1139,9 @@ def transport_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectori
     )
     @gui.listen(gui.e_motion)
     def _motion_(x, y):
-        this.mouse_x = x
-        this.mouse_y = y
-        this.beat = round(monotonic_interpolation(x, offsets, beats))
+        this.mouse_x = x / sf
+        this.mouse_y = y / sf
+        this.beat = round(monotonic_interpolation(x / sf, offsets, beats))
 
     @gui.listen(gui.e_button_down)
     def _down_(x, y, button):
@@ -1160,10 +1177,10 @@ def transport_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectori
             ctx.fill()
 
 @gui.composable
-def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
+def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors, sf):
     _ui = gui.ui.get()
     _comp = gui.current_composition.get()
-    gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+    gui.shape(gui.Box(0, layout.y*sf, _ui.widget.width, layout.height*sf))
     if isinstance(layout, ChordProgressionLayout):
         return
 
@@ -1174,8 +1191,8 @@ def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, t
     beat_position = gui.state(None)
     @gui.listen(gui.e_motion)
     def _motion_(x, y):
-        mouse_x.lazy(x)
-        mouse_y.lazy(y)
+        mouse_x.lazy(x / sf)
+        mouse_y.lazy(y / sf)
         if not voice_lock.value:
             nearest.value = nearest_voice(trajectories, mouse_x.value, mouse_y.value, layout.staff.uid)
         for voice in track.voices:
@@ -1252,9 +1269,9 @@ def plot_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, t
             ctx.fill()
 
 @gui.composable
-def split_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
+def split_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors, sf):
     _ui = gui.ui.get()
-    gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+    gui.shape(gui.Box(0, layout.y*sf, _ui.widget.width, layout.height*sf))
 
     if isinstance(layout, ChordProgressionLayout):
         return
@@ -1268,8 +1285,8 @@ def split_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
     bu_split = gui.state(None)
     @gui.listen(gui.e_motion)
     def _motion_(x, y):
-        mouse_x.lazy(x)
-        mouse_y.lazy(y)
+        mouse_x.lazy(x / sf)
+        mouse_y.lazy(y / sf)
         if not voice_lock.value:
             nearest.value = nearest_voice(trajectories, mouse_x.value, mouse_y.value, layout.staff.uid)
         for voice in track.voices:
@@ -1415,9 +1432,9 @@ def split_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
                     ctx.show_text('3'*int(triplet))
 
 @gui.composable
-def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors):
+def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, track, instrument_uid, icolors, sf):
     _ui = gui.ui.get()
-    gui.shape(gui.Box(0, layout.y, _ui.widget.width, layout.height))
+    gui.shape(gui.Box(0, layout.y*sf, _ui.widget.width, layout.height*sf))
     if isinstance(layout, ChordProgressionLayout):
         this = gui.lazybundle(
             document = editor.document,
@@ -1433,7 +1450,7 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
         @gui.listen(gui.e_button_down)
         def _button_down_(x, y, button):
             if button == 1:
-                beatpoint = monotonic_interpolation(x, offsets, beats)
+                beatpoint = monotonic_interpolation(x / sf, offsets, beats)
                 beat = 0.0
                 i = 0
                 for seg in layout.cp.segments:
@@ -1573,8 +1590,8 @@ def input_tool(editor, staff_uid, layout, seg_xs, offsets, beats, trajectories, 
     @gui.listen(gui.e_button_down)
     def _button_down_(x, y, button):
         if button == 1:
-            beatpoint = monotonic_interpolation(x, offsets, beats)
-            nearest = nearest_voice(trajectories, x, y, layout.staff.uid)
+            beatpoint = monotonic_interpolation(x / sf, offsets, beats)
+            nearest = nearest_voice(trajectories, x / sf, y / sf, layout.staff.uid)
             this.voice_uid = nearest[0]
 
             for voice in track.voices:
