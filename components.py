@@ -3,6 +3,190 @@ import sdl2
 from contextlib import contextmanager
 
 @gui.composable
+def label2(text, font_size=20):
+    _ui = gui.ui.get()
+    _ui.ctx.set_font_size(font_size)
+    extents = _ui.ctx.text_extents(text)
+    gui.layout(gui.DynamicLayout(extents.width, extents.height))
+    @gui.drawing
+    def _draw_(ui, comp):
+        ui.ctx.set_source_rgba(0,0,0,1)
+        ui.ctx.set_font_size(font_size)
+        ui.ctx.move_to(comp.shape.x, comp.shape.y + comp.shape.height)
+        ui.ctx.show_text(text)
+
+@gui.composable
+def button2(text, font_size=20, disabled=False, min_width=0, flexible_width=False, flexible_height=False):
+    _ui = gui.ui.get()
+    _ui.ctx.set_font_size(font_size)
+    extents = _ui.ctx.text_extents(text)
+    gui.layout(gui.DynamicLayout(max(min_width, extents.width + 20), extents.height + 10, flexible_width, flexible_height))
+    this = gui.lazybundle(pressed = False)
+
+    @gui.drawing
+    def _draw_(ui, comp):
+        bb = comp.shape
+        ctx = ui.ctx
+        if this.pressed and not disabled:
+            ctx.set_source_rgba(0, 0, 0, 1)
+            comp.shape.trace(ui.ctx)
+            ctx.fill()
+        else:
+            ctx.set_source_rgba(1, 1, 1, 1)
+            comp.shape.trace(ui.ctx)
+            ctx.fill()
+        ctx.set_font_size(font_size)
+        if not disabled:
+            ctx.set_source_rgba(1*int(this.pressed), 1*int(this.pressed), 1*int(this.pressed), 1)
+        else:
+            ctx.set_source_rgba(0.5, 0.5, 0.5, 1)
+        xt = ctx.text_extents(text)
+        ctx.move_to(
+            bb.x + bb.width / 2 - xt.width / 2,
+            bb.y + bb.height / 2 - xt.y_bearing / 2)
+        ctx.show_text(text)
+        comp.shape.trace(ui.ctx)
+        ctx.stroke()
+    @gui.listen(gui.e_button_down)
+    def _down_(x, y, button):
+        this.pressed = True
+    @gui.listen(gui.e_button_up)
+    def _up_(x, y, button):
+        this.pressed = False
+
+@gui.composable
+def textbox2(text, change_text, font_size=20, min_width=0, flexible_width=False, flexible_height=False):
+    this = gui.lazybundle(
+        pos = len(text),
+        tail = len(text),
+        buf = text,
+        dragging = False,
+    )
+
+    _ui = gui.ui.get()
+    _ui.ctx.set_font_size(font_size)
+    extents = _ui.ctx.text_extents(this.buf)
+    gui.layout(gui.DynamicLayout(max(min_width, extents.width + 20), font_size + 10, flexible_width, flexible_height))
+
+    comp = gui.current_composition.get()
+    def text_position(pos):
+        ctx = gui.ui.get().ctx
+        ctx.set_font_size(font_size)
+        return 5 + ctx.text_extents(this.buf[:pos])[4]
+
+    def position_to_cursor(x):
+        # Estimate the position based on the mouse x-coordinate
+        ctx = gui.ui.get().ctx
+        ctx.set_font_size(font_size)
+        x_offset = comp.shape.x + 5
+        for i, char in enumerate(this.buf):
+            char_width = ctx.text_extents(char)[4]
+            if x_offset + char_width / 2 >= x:
+                return i
+            x_offset += char_width
+        return len(this.buf)
+
+    def delete_selection():
+        start = min(this.pos, this.tail)
+        end = max(this.pos, this.tail)
+        this.buf = this.buf[:start] + this.buf[end:]
+        this.pos = start
+        this.tail = this.pos
+
+    @gui.drawing
+    def _draw_(ui, comp):
+        bb = comp.shape
+        ctx = ui.ctx
+        ctx.set_source_rgba(1, 1, 1, 1)
+        comp.shape.trace(ctx)
+        ctx.fill()
+        ctx.set_source_rgba(0, 0, 0, 1)
+        comp.shape.trace(ctx)
+        ctx.stroke()
+        xt = ctx.text_extents(this.buf)
+        if this.pos != this.tail:
+            start = min(this.pos, this.tail)
+            end = max(this.pos, this.tail)
+            ctx.set_source_rgba(0.6, 0.8, 1, 0.5)  # Light blue highlight
+            ctx.rectangle(bb.x + text_position(start),
+                          bb.y + bb.height / 2 + xt.y_bearing,
+                          text_position(end) - text_position(start),
+                          font_size)
+            ctx.fill()
+        ctx.set_source_rgb(0, 0, 0)  # Black text
+        ctx.set_font_size(font_size)
+        ctx.move_to(bb.x + 5, bb.y + bb.height / 2 - xt.y_bearing / 2)
+        ctx.show_text(this.buf)
+
+        if ui.focus == comp.key and this.pos == this.tail:
+            cursor_x = text_position(this.pos)
+            ctx.move_to(bb.x + cursor_x, bb.y + 5)
+            ctx.line_to(bb.x + cursor_x, bb.y + font_size + 5)
+            ctx.stroke()
+
+    @gui.listen(gui.e_key_down)
+    def _key_down_(key, repeat, modifiers):
+        if key == sdl2.SDLK_BACKSPACE:
+            if this.pos != this.tail:
+                delete_selection()
+            elif this.pos > 0:
+                this.buf = this.buf[:this.pos - 1] + this.buf[this.pos:]
+                this.pos -= 1
+                this.tail = this.pos
+            change_text(this.buf)
+        elif key == sdl2.SDLK_DELETE:
+            if this.pos != this.tail:
+                delete_selection()
+            elif this.pos < len(this.buf):
+                this.buf = this.buf[:this.pos] + this.buf[this.pos + 1:]
+            change_text(this.buf)
+        elif key == sdl2.SDLK_LEFT:
+            if this.pos > 0:
+                this.pos -= 1
+                if not (modifiers & sdl2.KMOD_SHIFT):
+                    this.tail = this.pos
+        elif key == sdl2.SDLK_RIGHT:
+            if this.pos < len(this.buf):
+                this.pos += 1
+                if not (modifiers & sdl2.KMOD_SHIFT):
+                    this.tail = this.pos
+        elif key == sdl2.SDLK_HOME:
+            this.pos = 0
+            if not (modifiers & sdl2.KMOD_SHIFT):
+                this.tail = this.pos
+        elif key == sdl2.SDLK_END:
+            this.pos = len(this.buf)
+            if not (modifiers & sdl2.KMOD_SHIFT):
+                this.tail = this.pos
+
+    @gui.listen(gui.e_text)
+    def _text_(inp):
+        if this.pos != this.tail:
+            delete_selection()
+        this.buf = this.buf[:this.pos] + inp + this.buf[this.pos:]
+        this.pos += len(inp)
+        this.tail = this.pos
+        change_text(this.buf)
+
+    @gui.listen(gui.e_motion)
+    @gui.listen(gui.e_dragging)
+    def _motion_(x, y):
+        if this.dragging:
+            this.pos = position_to_cursor(x)
+
+    @gui.listen(gui.e_button_down)
+    def _button_down_(x, y, button):
+        if button == sdl2.SDL_BUTTON_LEFT:
+            this.pos = position_to_cursor(x)
+            this.tail = this.pos
+            this.dragging = True
+
+    @gui.listen(gui.e_button_up)
+    def mouse_button_up(x, y, button):
+        if button == sdl2.SDL_BUTTON_LEFT:
+            this.dragging = False
+
+@gui.composable
 def label(text, x, y, font_size=20):
     @gui.drawing
     def _draw_(ui, comp):

@@ -1,5 +1,6 @@
 from fractions import Fraction
 import entities
+import colorsys
 
 char_accidental = {
    -2: chr(119083),
@@ -285,3 +286,43 @@ class LinearEnvelope:
         else:
             return False
 
+#                                        1.0            0.5
+def golden_ratio_color(index, saturation=0.7, lightness=0.5, alpha=1.0):
+    """
+    Generate an approximately evenly distributed color based on the index.
+
+    Parameters:
+    - index: int, the index of the color to generate.
+    - saturation: float, the saturation of the color (0.0 to 1.0, default is 0.7).
+    - lightness: float, the lightness of the color (0.0 to 1.0, default is 0.5).
+    - alpha: float, the alpha transparency of the color (0.0 to 1.0, default is 1.0).
+
+    Returns:
+    - tuple (r, g, b, a): The color in (R, G, B, A) format.
+    """
+    golden_ratio_conjugate = 0.61803398875
+    hue = (index * golden_ratio_conjugate) % 1.0
+    r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+    return (r, g, b, alpha)
+
+def golden_ratio_color_varying(index, alpha=1.0):
+    """
+    Generate an approximately evenly distributed color with varying lightness and saturation based on the index.
+
+    Parameters:
+    - index: int, the index of the color to generate.
+    - alpha: float, the alpha transparency of the color (0.0 to 1.0, default is 1.0).
+
+    Returns:
+    - tuple (r, g, b, a): The color in (R, G, B, A) format.
+    """
+    golden_ratio_conjugate = 0.61803398875
+    hue = (index * golden_ratio_conjugate) % 1.0
+    
+    # Vary saturation and lightness slightly based on index
+    lightness = 0.55 - 0.2 * ((index % 5) - 2) / 4.0
+    # Saturation varies between 0.6 and 0.8
+    saturation = 1.0 - 0.3 * ((index % 3) - 1) / 2.0
+    
+    r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+    return (r, g, b, alpha)

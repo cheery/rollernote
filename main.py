@@ -13,48 +13,6 @@ import random
 import components
 import subprocess
 from fractions import Fraction
-import colorsys
-
-#                                        1.0            0.5
-def golden_ratio_color(index, saturation=0.7, lightness=0.5, alpha=1.0):
-    """
-    Generate an approximately evenly distributed color based on the index.
-
-    Parameters:
-    - index: int, the index of the color to generate.
-    - saturation: float, the saturation of the color (0.0 to 1.0, default is 0.7).
-    - lightness: float, the lightness of the color (0.0 to 1.0, default is 0.5).
-    - alpha: float, the alpha transparency of the color (0.0 to 1.0, default is 1.0).
-
-    Returns:
-    - tuple (r, g, b, a): The color in (R, G, B, A) format.
-    """
-    golden_ratio_conjugate = 0.61803398875
-    hue = (index * golden_ratio_conjugate) % 1.0
-    r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
-    return (r, g, b, alpha)
-
-def golden_ratio_color_varying(index, alpha=1.0):
-    """
-    Generate an approximately evenly distributed color with varying lightness and saturation based on the index.
-
-    Parameters:
-    - index: int, the index of the color to generate.
-    - alpha: float, the alpha transparency of the color (0.0 to 1.0, default is 1.0).
-
-    Returns:
-    - tuple (r, g, b, a): The color in (R, G, B, A) format.
-    """
-    golden_ratio_conjugate = 0.61803398875
-    hue = (index * golden_ratio_conjugate) % 1.0
-    
-    # Vary saturation and lightness slightly based on index
-    lightness = 0.55 - 0.2 * ((index % 5) - 2) / 4.0
-    # Saturation varies between 0.6 and 0.8
-    saturation = 1.0 - 0.3 * ((index % 3) - 1) / 2.0
-    
-    r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
-    return (r, g, b, alpha)
 
 def get_tempo_envelope(document):
     default = random.randint(10, 200)
@@ -125,145 +83,159 @@ def app(editor):
     this = gui.lazybundle(
         status = "program started",
         tool = plot_tool,
-        counter = 0,
-        text = "foobar",
         looping = False,
         instrument_uid = None,
         dialog = None,
         dialog_args = [],
     )
 
-    # Editor history
-    history = editor.history
-
-    undo = components.button(chr(0x21B6), font_size=24, disabled=len(history.undo_stack) == 0)
-    undo.shape = gui.Box(100, 10, 32, 32)
-    @undo.listen(gui.e_motion)
-    def _undo_status_(x, y):
-        if len(history.undo_stack) > 0:
-            this.status = f"undo: {history.undo_stack[-1].name}"
-    @undo.listen(gui.e_button_down)
-    def _undo_down_(x, y, button):
-        if len(history.undo_stack) > 0:
-            this.status = f"undone: {history.undo_stack[-1].name}"
-            history.undo()
-            undo.set_dirty()
-            redo.set_dirty()
-
-    redo = components.button(chr(0x21B7), font_size=24, disabled=len(history.redo_stack) == 0)
-    redo.shape = gui.Box(133, 10, 32, 32)
-    @redo.listen(gui.e_motion)
-    def _redo_status_(x, y):
-        if len(history.redo_stack) > 0:
-            this.status = f"redo: {history.redo_stack[-1].name}"
-    @redo.listen(gui.e_button_down)
-    def _redo_down_(x, y, button):
-        if len(history.redo_stack) > 0:
-            this.status = f"redone: {history.redo_stack[-1].name}"
-            history.redo()
-            undo.set_dirty()
-            redo.set_dirty()
-
-    play = components.button(chr(0x25B6), font_size=32)
-    play.shape = gui.Box(100, 52, 32, 32)
-    @play.listen(gui.e_button_down)
-    def _play_down_(x, y, button):
-        if button == 1:
-            bpm = get_tempo_envelope(editor.document)
-            editor.transport.play(bpm, editor.document.track.voices,
-                dict((s.uid, s) for s in editor.document.track.graphs))
-        if button == 3:
-            this.tool = transport_tool
-
-    #looper = components.button('loop=on' if this.looping else 'loop=off', font_size=16)
-    #looper.shape = gui.Box(58, 10, 32, 32)
-    #@looper.listen(gui.e_button_down)
-    #def _looper_down_(x, y, button):
-    #    this.looping = not this.looping
-
-    looper = components.button('loop=on' if this.looping else 'loop=off', font_size=16)
-    looper.shape = gui.Box(38, 10, 52, 32)
-    @looper.listen(gui.e_button_down)
-    def _looper_down_(x, y, button):
-        this.looping = not this.looping
-        editor.transport.loop = this.looping
-
-    record = components.button('wav', font_size=16)
-    record.shape = gui.Box(58, 52, 32, 32)
-    @record.listen(gui.e_button_down)
-    def _record_down_(x, y, button):
-        # TODO: Open a dialog
-        document.store_plugins(editor.transport.plugins)
-        transport = audio.Transport(document.init_plugins(editor.pluginhost), document.mutes)
-        bpm = get_tempo_envelope(editor.document)
-        transport.play(bpm, editor.document.track.voices,
-            dict((s.uid, s) for s in editor.document.track.graphs))
-        output = audio.WAVOutput(transport, 'temp.wav')
-        while not transport.is_idle():
-            output.write_frame()
-        output.close()
-        for plugin in transport.plugins.values():
-            plugin.close()
-        #subprocess.run(["ffmpeg", "-i", "-nostdin", "temp.wav", "temp.mp3"])
-
-    save = components.button("save", font_size=32)
-    save.shape = gui.Box(142, 52, 32*3, 32)
-    @save.listen(gui.e_button_down)
-    def _save_down_(x, y, button):
-        document.store_plugins(editor.transport.plugins)
-        entities.save_document('document.mide.zip', editor.document)
- 
-    new = components.button("new", font_size=32)
-    new.shape = gui.Box(142, 20+32*2, 32*3, 32)
-    @new.listen(gui.e_button_down)
-    def _new_down_(x, y, button):
-        # TODO: Also clean up audio params!
-        sdl2.SDL_PauseAudio(1)
-        for plugin in editor.transport.plugins.values():
-            plugin.close()
-        editor.document = entities.Document(
-            track = entities.Track(
-                graphs = [
-                    entities.Staff(100, 3, 2, [
-                        entities.StaffBlock(
-                            beat = 0,
-                            beats_in_measure = random.choice([3,4]),
-                            beat_unit = 4,
-                            canonical_key = random.randrange(-7, 8),
-                            clef = 3,
-                            mode = None
-                        )
-                    ])
-                ],
-                voices = []
-            ),
-            instruments = [],
-            next_uid = entities.UidGenerator(300),
-        )
-        editor.transport.plugins = {}
-        editor.transport.live_voices.clear()
-        sdl2.SDL_PauseAudio(0)
-
-    splitbutton = components.button("split", font_size=32)
-    splitbutton.shape = gui.Box(152+32*3, 52, 32*2, 32)
-    @splitbutton.listen(gui.e_button_down)
-    def _splitbutton_down_(x, y, button):
-        this.tool = split_tool
-
-    plotbutton = components.button("plot", font_size=32)
-    plotbutton.shape = gui.Box(172+32*5, 52, 32*2, 32)
-    @plotbutton.listen(gui.e_button_down)
-    def _plotbutton_down_(x, y, button):
-        this.tool = plot_tool
-
-    inputbutton = components.button("input", font_size=32)
-    inputbutton.shape = gui.Box(182+32*7, 52, 32*2, 32)
-    @inputbutton.listen(gui.e_button_down)
-    def _inputbutton_down_(x, y, button):
-        this.tool = input_tool
-
     meter = vu_meter(editor.transport.volume_meter)
     meter.shape = gui.Box(10, 10, 20, 90)
+
+    @gui.sub
+    def toolbar1():
+        gui.layout(gui.StaticLayout())
+        gui.shape(gui.Box(40, 10, 500, 32))
+
+        @gui.drawing
+        def _set_clip_(ui, comp):
+            ui.ctx.save()
+            comp.shape.trace(ui.ctx)
+            ui.ctx.clip()
+        @gui.post_drawing
+        def _clear_clip_(ui, comp):
+            ui.ctx.restore()
+
+        #@gui.row()
+        @gui.sub
+        def _row_():
+            that = gui.lazybundle(scroll_x = 0)
+            scroller = gui.ScrollableLayout(gui.RowLayout(), flexible_width = True, flexible_height = True)
+            scroller.scroll_x = that.scroll_x
+            scroller.scale_x = 1.0
+            scroller.scale_y = 1.0
+            gui.layout(scroller)
+            @gui.listen(gui.e_update)
+            def _update_():
+                that.scroll_x = math.sin(editor.time) * 150 + 150
+            new = components.button2("new", font_size=32, flexible_height = True)
+            @new.listen(gui.e_button_down)
+            def _new_down_(x, y, button):
+                # TODO: Also clean up audio params!
+                sdl2.SDL_PauseAudio(1)
+                for plugin in editor.transport.plugins.values():
+                    plugin.close()
+                editor.document = entities.Document(
+                    track = entities.Track(
+                        graphs = [
+                            entities.Staff(100, 3, 2, [
+                                entities.StaffBlock(
+                                    beat = 0,
+                                    beats_in_measure = random.choice([3,4]),
+                                    beat_unit = 4,
+                                    canonical_key = random.randrange(-7, 8),
+                                    clef = 3,
+                                    mode = None
+                                )
+                            ])
+                        ],
+                        voices = []
+                    ),
+                    instruments = [],
+                    next_uid = entities.UidGenerator(300),
+                )
+                editor.transport.plugins = {}
+                editor.transport.live_voices.clear()
+                sdl2.SDL_PauseAudio(0)
+            gui.hspacing(5)
+            save = components.button2("save", font_size=32, flexible_height=True)
+            @save.listen(gui.e_button_down)
+            def _save_down_(x, y, button):
+                document.store_plugins(editor.transport.plugins)
+                entities.save_document('document.mide.zip', editor.document)
+            gui.hspacing(5)
+            # Editor history
+            history = editor.history
+            undo = components.button2(chr(0x21B6), font_size=24, disabled=len(history.undo_stack) == 0, flexible_height = True)
+            @undo.listen(gui.e_motion)
+            def _undo_status_(x, y):
+                if len(history.undo_stack) > 0:
+                    this.status = f"undo: {history.undo_stack[-1].name}"
+            @undo.listen(gui.e_button_down)
+            def _undo_down_(x, y, button):
+                if len(history.undo_stack) > 0:
+                    this.status = f"undone: {history.undo_stack[-1].name}"
+                    history.undo()
+                    undo.set_dirty()
+                    redo.set_dirty()
+            gui.hspacing(5)
+            redo = components.button2(chr(0x21B7), font_size=24, disabled=len(history.redo_stack) == 0, flexible_height = True)
+            @redo.listen(gui.e_motion)
+            def _redo_status_(x, y):
+                if len(history.redo_stack) > 0:
+                    this.status = f"redo: {history.redo_stack[-1].name}"
+            @redo.listen(gui.e_button_down)
+            def _redo_down_(x, y, button):
+                if len(history.redo_stack) > 0:
+                    this.status = f"redone: {history.redo_stack[-1].name}"
+                    history.redo()
+                    undo.set_dirty()
+                    redo.set_dirty()
+
+    @gui.sub
+    def toolbar2():
+        gui.layout(gui.StaticLayout())
+        gui.shape(gui.Box(40, 52, 500, 48))
+
+        @gui.row()
+        def _row_():
+            looper = components.button2('loop=on' if this.looping else 'loop=off', font_size=16, flexible_height=True, min_width = 96)
+            @looper.listen(gui.e_button_down)
+            def _looper_down_(x, y, button):
+                this.looping = not this.looping
+                editor.transport.loop = this.looping
+            gui.hspacing(5)
+            record = components.button2('wav', font_size=16, flexible_height=True)
+            @record.listen(gui.e_button_down)
+            def _record_down_(x, y, button):
+                # TODO: Open a dialog
+                document.store_plugins(editor.transport.plugins)
+                transport = audio.Transport(document.init_plugins(editor.pluginhost), document.mutes)
+                bpm = get_tempo_envelope(editor.document)
+                transport.play(bpm, editor.document.track.voices,
+                    dict((s.uid, s) for s in editor.document.track.graphs))
+                output = audio.WAVOutput(transport, 'temp.wav')
+                while not transport.is_idle():
+                    output.write_frame()
+                output.close()
+                for plugin in transport.plugins.values():
+                    plugin.close()
+                #subprocess.run(["ffmpeg", "-i", "-nostdin", "temp.wav", "temp.mp3"])
+            gui.hspacing(5)
+            play = components.button2(chr(0x25B6), font_size=32, flexible_height=True)
+            @play.listen(gui.e_button_down)
+            def _play_down_(x, y, button):
+                if button == 1:
+                    bpm = get_tempo_envelope(editor.document)
+                    editor.transport.play(bpm, editor.document.track.voices,
+                        dict((s.uid, s) for s in editor.document.track.graphs))
+                if button == 3:
+                    this.tool = transport_tool
+            gui.hspacing(5)
+            splitbutton = components.button2("split", font_size=32, flexible_height=True)
+            @splitbutton.listen(gui.e_button_down)
+            def _splitbutton_down_(x, y, button):
+                this.tool = split_tool
+            gui.hspacing(5)
+            plotbutton = components.button2("plot", font_size=32, flexible_height=True)
+            @plotbutton.listen(gui.e_button_down)
+            def _plotbutton_down_(x, y, button):
+                this.tool = plot_tool
+            gui.hspacing(5)
+            inputbutton = components.button2("input", font_size=32, flexible_height=True)
+            @inputbutton.listen(gui.e_button_down)
+            def _inputbutton_down_(x, y, button):
+                this.tool = input_tool
 
     def instrument_button(x, y, instrument):
         plugin = editor.transport.plugins[instrument.uid]
@@ -301,7 +273,7 @@ def app(editor):
     @gui.drawing
     def _draw_instrument_colors_(ui, comp):
         for i, instrument in enumerate(editor.document.instruments):
-            ui.ctx.set_source_rgba(*golden_ratio_color_varying(i))
+            ui.ctx.set_source_rgba(*resolution.golden_ratio_color_varying(i))
             ui.ctx.rectangle(490 + 120*(i//7), 9 + (i%7)*20, 10, 17)
             ui.ctx.fill()
             mute = editor.document.mutes.get(instrument.uid, 0)
@@ -332,20 +304,11 @@ def app(editor):
     for i, (uri, name) in enumerate(editor.pluginhost.list_instrument_plugins()):
         add_instrument(1200 - 90, 10 + i*20, uri, name)
 
-
-    hmm = components.button(f"hello {this.counter}")
-    hmm.shape = gui.Box(310, 22, 100, 20)
-    @hmm.listen(gui.e_button_down)
-    def _click_(x, y, button):
-        this.counter += 1
-    haa = components.textbox(this.text, gui.setter(this, 'text'))
-    haa.shape = gui.Box(200, 22, 100, 20)
-
     document = editor.document
 
     icolors = {}
     for i, instrument in enumerate(document.instruments):
-        icolors[instrument.uid] = golden_ratio_color_varying(i)
+        icolors[instrument.uid] = resolution.golden_ratio_color_varying(i)
 
     layouts = {}
     y_base = 150
@@ -608,7 +571,7 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
                 ctx.show_text(layout.envelope.kind)
                 if layout.envelope.kind == 'dynamics':
                     i = envs.index(layout.envelope.uid)
-                    color = golden_ratio_color_varying(i)
+                    color = resolution.golden_ratio_color_varying(i)
                     ctx.set_source_rgba(*color)
                     ctx.rectangle(x0 - 10, layout.y, 10, layout.height)
                     ctx.fill()
@@ -909,7 +872,7 @@ def beatline(editor, layouts, track, tool_app, instrument_uid, icolors):
         ctx.set_dash([8, 2])
         for _, voice_uid, dynamics_uid, xs, ys in trajectories:
             if dynamics_uid is not None:
-                color = golden_ratio_color_varying(envs.index(dynamics_uid))
+                color = resolution.golden_ratio_color_varying(envs.index(dynamics_uid))
                 ctx.set_source_rgba(*color)
                 for i, (x,y) in enumerate(zip(xs, ys)):
                     if i == 0:

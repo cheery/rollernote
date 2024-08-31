@@ -111,7 +111,7 @@ class Transport:
         return len(self.live_voices) == 0 and self.volume0 + self.volume1 == 0
 
     def run(self, now, audio0, audio1):
-        mutelevel = min(self.mutes.get(uid, 0) for uid in self.plugins)
+        mutelevel = min((self.mutes.get(uid, 0) for uid in self.plugins), default=0)
         mutelevel = min(0, mutelevel)
         for plugin in self.plugins.values():
             for e in plugin.pending_events:

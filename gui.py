@@ -13,6 +13,8 @@ current_composition = ContextVar('current_composition')
 ui_memo = ContextVar('ui_memo')
 ui = ContextVar('ui')
 
+identity_transform = cairo.Matrix()
+
 class Composition:
     """A class to manage the composition and recomposition of composable functions."""
     def __init__(self, parent, key, props, state):
@@ -29,7 +31,8 @@ class Composition:
         self.drawings = []
         self.post_drawings = []
         self.listeners = []
-        self.layout = StaticLayout()
+        self.layout = None
+        self.transform = identity_transform
         if parent is None or parent.parent is None:
             self.shape = Hit()
         else:
@@ -49,7 +52,7 @@ class Composition:
             current.dirty = True
             current = current.parent
 
-    def get_callsite_key(self, depth=2):
+    def get_callsite_key(self, fn, depth=2):
         """Generate a unique key for the call site based on the current frame."""
         current_frame = inspect.currentframe()
         if current_frame is None:
@@ -63,22 +66,28 @@ class Composition:
         if caller_frame is None:
             raise RuntimeError("No caller frame available")
     
-        key = (caller_frame.f_code, caller_frame.f_lineno)
+        key = (fn, caller_frame.f_code, caller_frame.f_lineno)
         count = self.key_counter.get(key, 0)
         self.key_counter[key] = count + 1
         return key + (count,)
 
     def draw(self):
         _ui = ui.get()
+        matrix = _ui.ctx.get_matrix()
+        _ui.ctx.transform(self.transform)
         for drawing in self.drawings:
             drawing(_ui, self)
         for children in self.children:
             children.draw()
         for drawing in self.post_drawings:
             drawing(_ui, self)
+        _ui.ctx.set_matrix(matrix)
 
     def hit(self, x, y):
         if self.shape.test(x, y):
+            matrix = cairo.Matrix() * self.transform
+            matrix.invert()
+            x, y = matrix.transform_point(x, y)
             selection = self
             for child in self.children:
                 selection = child.hit(x, y) or selection
@@ -105,10 +114,10 @@ class Composition:
         for child in self.children:
             yield from child.preorder()
 
-def get_properties(fn, args, kwargs):
+def get_properties(args, kwargs):
     """Organize the arguments to allow their quick identification"""
     pargs = tuple(sorted(kwargs.items(), key=lambda item: item[0]))
-    return (fn, args, pargs)
+    return (args, pargs)
 
 @contextmanager
 def composition_context(comp, memo):
@@ -121,19 +130,23 @@ def composition_context(comp, memo):
         ui_memo.reset(token1)
 
 def format_key(key):
-    return f"{key[0].co_filename}:{key[1]}"
+    return f"{key[1].co_filename}:{key[2]}"
+
+def memoize(previous):
+    return dict() if previous is None else dict(previous.memoize())
 
 @contextmanager
 def composition_frame(fn, args, kwargs, d=0):
-    props = get_properties(fn, args, kwargs)
+    props = get_properties(args, kwargs)
     comp = current_composition.get()
-    key = comp.get_callsite_key(4+d)
+    key = comp.get_callsite_key(fn, 4+d)
     previous = ui_memo.get().get(key)
     if previous is None or previous.props != props or previous.dirty:
         #print(f"{format_key(key)} recomposed")
-        this = Composition(comp, key, props, {} if previous is None else previous.state)
+        state = {} if previous is None else previous.state
+        this = Composition(comp, key, props, state)
         comp.children.append(this)
-        with composition_context(this, dict() if previous is None else dict(previous.memoize())):
+        with composition_context(this, memoize(previous)):
             assert current_composition.get() == this
             yield this
     else:
@@ -173,7 +186,7 @@ class UIState:
 
 def state(initial):
     comp = current_composition.get()
-    key = comp.get_callsite_key()
+    key = comp.get_callsite_key(None)
     if key not in comp.state:
         comp.state[key] = initial
     return UIState(comp, key)
@@ -206,14 +219,14 @@ class UIStateBundle:
 
 def bundle(**kwargs):
     comp = current_composition.get()
-    key = comp.get_callsite_key()
+    key = comp.get_callsite_key(None)
     if key not in comp.state:
         comp.state[key] = kwargs
     return UIStateBundle(comp, key, False)
 
 def lazybundle(**kwargs):
     comp = current_composition.get()
-    key = comp.get_callsite_key()
+    key = comp.get_callsite_key(None)
     if key not in comp.state:
         comp.state[key] = kwargs
     return UIStateBundle(comp, key, True)
@@ -225,10 +238,12 @@ class Composer:
     def __init__(self, scene):
         self.scene = scene
         self.composition = Composition(None, None, None, {})
+        self.composition.layout = DynamicLayout(flexible_width=True, flexible_height=True)
 
     def __call__(self, *args, **kwargs):
         memo = dict(self.composition.memoize())
         composition = Composition(None, None, None, self.composition.state)
+        composition.layout = DynamicLayout(flexible_width=True, flexible_height=True)
         with composition_context(composition, memo):
             self.scene(*args, **kwargs)
         self.composition = composition
@@ -272,11 +287,9 @@ class GUI:
             self.widget.exposed = self.widget.exposed or self.composer(*self.args, **self.kwargs)
             comp = self.composer.composition
             comp.layout.measure(comp.children, self.widget.width, self.widget.height)
-            if isinstance(comp.layout, StaticLayout):
-                shape = comp.shape
-            else:
+            if comp.layout is not None:
                 shape = Box(0, 0, comp.layout.width, comp.layout.height)
-            comp.layout(comp.children, shape)
+                comp.layout(comp, shape)
             self.composer.composition.draw()
         self.renderer.flip()
 
@@ -412,11 +425,18 @@ def drawing(func):
     current_composition.get().drawings.append(func)
     return func
 
+def post_drawing(func):
+    current_composition.get().post_drawings.append(func)
+    return func
+
 def listen(event):
     return current_composition.get().listen(event, original=True)
 
 def shape(shape):
     current_composition.get().shape = shape
+
+def layout(layout):
+    current_composition.get().layout = layout
 
 def broadcast(e_event, *args):
     ui.get().custom_global_event(e_event, *args)
@@ -424,39 +444,7 @@ def broadcast(e_event, *args):
 def inform(e_event, this, *args):
     ui.get().custom_event(e_event, this, *args)
 
-#@contextmanager
-def workspace(color=(1,1,1,1), font_family=None):
-#    with composition_frame(None, (color, font_family), {}) as comp:
-#        if comp.fresh:
-            @drawing
-            def _workspace_(ui, _):
-                ctx = ui.ctx
-                if font_family is not None:
-                    ctx.select_font_face(font_family)
-                ctx.set_source_rgba(*color)
-                ctx.rectangle(0, 0, ui.widget.width, ui.widget.height)
-                ctx.fill()
-#        yield
-
 class Hit:
-    def __init__(self, children=None):
-        self.children = children or []
-        self.on_hover = lambda x, y: None
-        self.on_button_down = lambda x, y, button: None
-        self.on_button_up = lambda x, y, button: None
-    def append(self, item):
-        self.children.append(item)
-
-    def extend(self, items):
-        self.children.extend(items)
-
-    def hit(self, x, y):
-        if self.test(x, y):
-            selection = self
-            for child in self.children:
-                selection = child.hit(x, y) or selection
-            return selection
-
     def trace(self, ctx):
         pass
 
@@ -464,8 +452,7 @@ class Hit:
         return True
 
 class Circle(Hit):
-    def __init__(self, x, y, radius, children=None):
-        super().__init__(children)
+    def __init__(self, x, y, radius):
         self.x = x
         self.y = y
         self.radius = radius
@@ -480,8 +467,7 @@ class Circle(Hit):
         return dx*dx + dy*dy <= self.radius*self.radius
 
 class Box(Hit):
-    def __init__(self, x, y, width, height, children=None):
-        super().__init__(children)
+    def __init__(self, x, y, width, height):
         self.x = x
         self.y = y
         self.width = width
@@ -495,10 +481,10 @@ class Box(Hit):
         iy = self.y <= y < self.y + self.height
         return ix and iy
 
-class Hidden(Hit):
-    def __init__(self, children=None):
-        super().__init__(children)
+    def __repr__(self):
+        return f"Box({self.x}, {self.y}, {self.width}, {self.height})"
 
+class Hidden(Hit):
     def trace(self, ctx):
         pass
 
@@ -507,15 +493,13 @@ class Hidden(Hit):
 
 class StaticLayout:
     def measure(self, children, available_width, available_height):
-        pass
-
-    def __call__(self, children, box):
         for child in children:
-            if isinstance(child.layout, StaticLayout):
-                child.layout(child.children, child.shape)
-            else:
-                child.shape = box
-                child.layout(child.children, box)
+            child.layout.measure(child.children, available_width, available_height)
+
+    def __call__(self, this, box):
+        for child in this.children:
+            if child.layout is not None:
+                child.layout(child, this.shape)
 
 class DynamicLayout:
     def __init__(self, width=0, height=0, flexible_width=False, flexible_height=False):
@@ -530,15 +514,17 @@ class DynamicLayout:
         if self.flexible_height:
             self.height = available_height
         for child in children:
-            child.measure(self.width, self.height)
-
-    def __call__(self, children, x, y):
-        for child in children:
             if isinstance(child.layout, StaticLayout):
-                child.layout(child.children, child.shape)
-            else:
-                child.shape = Box(x, y, self.width, self.height)
-                child.layout(child.children, box)
+                shape = child.shape
+                child.layout.measure(child.children, shape.width, shape.height)
+            elif child.layout is not None:
+                child.layout.measure(child.children, self.width, self.height)
+
+    def __call__(self, this, box):
+        this.shape = box
+        for child in this.children:
+            if child.layout is not None:
+                child.layout(child, this.shape)
     
 def align_low(pos, space, available_space):
     return pos
@@ -558,73 +544,82 @@ class RowLayout(DynamicLayout):
         total_width = 0
         max_height = 0
         flexibles = []
-        for child in self.children:
+        for child in children:
             if isinstance(child.layout, StaticLayout):
+                shape = child.shape
+                child.layout.measure(child.children, shape.width, shape.height)
+                continue
+            elif child.layout is None:
                 continue
             if child.layout.flexible_width:
                 flexibles.append(child)
             else:
-                child.layout.measure(child.children, child.width, available_height)
+                child.layout.measure(child.children, child.layout.width, available_height)
                 total_width += child.layout.width
                 max_height = max(max_height, child.layout.height)
         if flexibles:
-            remaining_width = width - total_width
+            remaining_width = available_width - total_width
             flexible_width = remaining_width / len(flexibles)
             for child in flexibles:
-                child.measure(flexible_width, available_height)
+                child.layout.measure(child.children, flexible_width, available_height)
                 total_width += child.layout.width
                 max_height = max(max_height, child.layout.height)
         self.width = total_width
-        self.height = total_height
+        self.height = max_height
 
-    def __call__(self, children, box):
+    def __call__(self, this, box):
+        this.shape = box
         current_x = box.x
-        for child in children:
-            if isinstance(child.layout, StaticLayout):
-                child.layout(child.children, child.shape)
-            else:
+        for child in this.children:
+            if child.layout is not None:
                 width = child.layout.width
                 height = child.layout.height
-                current_t = self.align(box.y, height, box.height)
-                child.shape = Box(current_x, current_y, width, height)
-                child.layout(child.children, child.shape)
+                current_y = self.align(box.y, height, box.height)
+                shape = Box(current_x, current_y, width, height)
+                child.layout(child, shape)
                 current_x += width
 
 class ColumnLayout(DynamicLayout):
+    def __init__(self, align = align_low):
+        super().__init__(flexible_width = True)
+        self.align = align
+
     def measure(self, children, available_width, available_height):
         total_height = 0
         max_width = 0
         flexibles = []
-        for child in self.children:
+        for child in children:
             if isinstance(child.layout, StaticLayout):
+                shape = child.shape
+                child.layout.measure(child.children, shape.width, shape.height)
+                continue
+            elif child.layout is None:
                 continue
             if child.layout.flexible_height:
                 flexibles.append(child)
             else:
-                child.layout.measure(child.children, available_width, child.height) 
+                child.layout.measure(child.children, available_width, child.layout.height) 
                 total_height += child.layout.height
                 max_width = max(max_width, child.layout.width)
         if flexibles:
-            remaining_height = height - total_height
+            remaining_height = available_height - total_height
             flexible_height = remaining_height / len(flexibles)
             for child in flexibles:
-                child.measure(available_width, flexible_height)
+                child.layout.measure(child.children, available_width, flexible_height)
                 total_height += child.layout.height
                 max_width = max(max_width, child.layout.width)
+        self.width = max_width
         self.height = total_height
-        self.width = total_width
 
-    def __call__(self, children, box):
+    def __call__(self, this, box):
         current_y = box.y
-        for child in children:
-            if isinstance(child.layout, StaticLayout):
-                child.layout(child.children, child.shape)
-            else:
+        for child in this.children:
+            if child.layout is not None:
                 width = child.layout.width
                 height = child.layout.height
                 current_x = self.align(box.x, width, box.width)
-                child.shape = Box(current_x, current_y, width, height)
-                child.layout(child.children, child.shape)
+                shape = Box(current_x, current_y, width, height)
+                child.layout(child, shape)
                 current_y += height
 
 class ScrollableLayout(DynamicLayout):
@@ -633,25 +628,98 @@ class ScrollableLayout(DynamicLayout):
         self.inner = inner
         self.scroll_x = 0
         self.scroll_y = 0
+        self.scale_x = 1
+        self.scale_y = 1
 
     def measure(self, children, available_width, available_height):
         if self.flexible_width:
             self.width = available_width
         if self.flexible_height:
             self.height = available_height
-        self.inner.measure(children, self.width, self.height)
+        self.inner.measure(children, self.width / self.scale_x, self.height / self.scale_y)
 
-    def layout(self, children, box):
-        max_scroll_x = max(0, self.inner.width - box.width)
-        max_scroll_y = max(0, self.inner.height - box.height)
+    def __call__(self, this, box):
+        max_scroll_x = max(0, self.inner.width - box.width/self.scale_x)
+        max_scroll_y = max(0, self.inner.height - box.height/self.scale_y)
 
         # Adjust scroll positions to be within the valid range
         self.scroll_x = max(0, min(self.scroll_x, max_scroll_x))
         self.scroll_y = max(0, min(self.scroll_y, max_scroll_y))
 
+        inner_box = Box(0, 0, self.inner.width, self.inner.height)
+        matrix = cairo.Matrix()
+        matrix.translate(box.x, box.y)
+        matrix.scale(self.scale_x, self.scale_y)
+        matrix.translate(-self.scroll_x, -self.scroll_y)
+        this.transform = matrix
+        self.inner(this, inner_box)
+        this.shape = box
+
+class PaddedLayout(DynamicLayout):
+    def __init__(self, inner, top=0, right=0, bottom=0, left=0, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inner = inner
+        self.top = top
+        self.right = right
+        self.bottom = bottom
+        self.left = left
+
+    def measure(self, children, available_width, available_height):
+        self.inner.measure(children,
+            available_width - self.left - self.right,
+            available_height - self.top - self.bottom)
+        self.width = self.inner.width + self.left + self.right
+        self.height = self.inner.height + self.top + self.bottom
+
+    def __call__(self, this, box):
         inner_box = Box(
-            x - self.scroll_x,
-            y - self.scroll_y,
-            inner.width,
-            inner.height)
-        self.inner.layout(children, inner_box)
+            box.x + self.left,
+            box.y + self.top,
+            self.inner.width,
+            self.inner.height)
+        self.inner(this, inner_box)
+
+def sub(fn, d=0):
+    comp = current_composition.get()
+    key = comp.get_callsite_key(None, 2+d)
+    previous = ui_memo.get().get(key)
+    state = {} if previous is None else previous.state
+    this = Composition(comp, key, None, state)
+    comp.children.append(this)
+    with composition_context(this, memoize(previous)):
+        fn()
+    return this
+
+def column(align = align_low):
+    def _decorator_(fn):
+        this = sub(fn, 1)
+        this.layout = ColumnLayout(align)
+        return this
+    return _decorator_
+
+def row(align = align_low):
+    def _decorator_(fn):
+        this = sub(fn, 1)
+        this.layout = RowLayout(align)
+        return this
+    return _decorator_
+
+@composable
+def hspacing(x):
+    layout(DynamicLayout(width = x, flexible_height=True))
+
+@composable
+def vspacing(y):
+    layout(DynamicLayout(height = y, flexible_width=True))
+
+def workspace(color=(1,1,1,1), font_family=None):
+    layout(DynamicLayout(flexible_width=True, flexible_height=True))
+    if font_family is not None:
+        ui.get().ctx.select_font_face(font_family)
+    @drawing
+    def _workspace_(ui, _):
+        ctx = ui.ctx
+        ctx.set_source_rgba(*color)
+        ctx.rectangle(0, 0, ui.widget.width, ui.widget.height)
+        ctx.fill()
+
