@@ -102,6 +102,12 @@ def graph_from_json(record):
             uid = record['uid'],
             segments = [ChordProgressionSegment.from_json(a) for a in record['segments']],
         )
+    elif record['type'] == 'envelope':
+        return Envelope(
+            uid = record['uid'],
+            kind = record['kind'],
+            segments = [EnvelopeSegment.from_json(a) for a in record['segments']],
+        )
     else:
        raise ValueError
 
@@ -133,6 +139,42 @@ class ChordProgressionSegment:
     def as_json(self):
         return {
             'nth': self.nth,
+            'duration': self.duration.as_integer_ratio()
+        }
+
+class Envelope:
+    def __init__(self, uid, kind, segments):
+        self.uid = uid
+        self.kind = kind
+        self.segments = segments
+
+    def as_json(self):
+        return {
+            'type': 'envelope',
+            'uid': self.uid,
+            'kind': self.kind,
+            'segments': [seg.as_json() for seg in self.segments],
+        }
+
+class EnvelopeSegment:
+    def __init__(self, control, value, duration):
+        self.control = control
+        self.value = value
+        self.duration = duration
+
+    @staticmethod
+    def from_json(record):
+        numerator, denominator = record['duration']
+        return EnvelopeSegment(
+            control = record['control'],
+            value = record['value'],
+            duration = Fraction(numerator, denominator),
+        )
+
+    def as_json(self):
+        return {
+            'control': self.control,
+            'value': self.value,
             'duration': self.duration.as_integer_ratio()
         }
 
@@ -214,9 +256,10 @@ def at_beat(blocks, beat):
         return blocks[i-1], None
 
 class Voice:
-    def __init__(self, uid, staff_uid, segments):
+    def __init__(self, uid, staff_uid, dynamics_uid, segments):
         self.uid = uid
         self.staff_uid = staff_uid
+        self.dynamics_uid = dynamics_uid
         self.segments = segments
 
     @staticmethod
@@ -224,6 +267,7 @@ class Voice:
         return Voice(
             uid = record['uid'],
             staff_uid = record['staff_uid'],
+            dynamics_uid = record.get('dynamics_uid'), # TODO: change later
             segments = [VoiceSegment.from_json(a) for a in record['segments']],
         )
 
@@ -231,6 +275,7 @@ class Voice:
         return {
             'uid': self.uid,
             'staff_uid': self.staff_uid,
+            'dynamics_uid': self.dynamics_uid,
             'segments': [seg.as_json() for seg in self.segments],
         }
 

@@ -59,6 +59,11 @@ class WAVOutput:
     def close(self):
         self.file.close()
 
+def get_dyn(envelope):
+    if envelope is None:
+        return resolution.LinearEnvelope([(0.0, 1.0, 0.0)])
+    return resolution.linear_envelope(envelope.segments, default=1.0)
+
 class Transport:
     def __init__(self, plugins, mutes):
         self.block_length = 1024
@@ -74,10 +79,11 @@ class Transport:
         self.play_start = None
         self.play_end   = None
 
-    def play(self, bpm, voices, staves):
-        self.currently_playing = bpm, voices, staves
+    def play(self, bpm, voices, graphs):
+        self.currently_playing = bpm, voices, graphs
         self.live_voices.update([
-            LiveVoice(staves[voice.staff_uid], voice, bpm)
+            LiveVoice(graphs[voice.staff_uid], voice, bpm,
+                      dyn = get_dyn(graphs.get(voice.dynamics_uid)))
             for voice in voices
             if len(voice.segments) > 0
         ])
@@ -128,19 +134,20 @@ class Transport:
                 self.init_livevoice(lv, now)
                 key = lv.get_key()
                 if mutelevel2 == get_mutelevel(lv):
+                    vel = round(127 * lv.dyn.value(lv.last_beat))
                     for note in lv.voice.segments[lv.current].notes:
                         if note.instrument_uid is None or mutelevel != self.mutes.get(note.instrument_uid, 0):
                             continue
                         plugin = self.plugins[note.instrument_uid]
                         buf = plugin.inputs['In']
                         mp = resolution.resolve_pitch(note.pitch, key)
-                        plugin.push_midi_event(buf, [0x90, mp, 0xFF])
+                        plugin.push_midi_event(buf, [0x90, mp, vel])
                         lv.live_notes.append((mp, plugin))
                 still_live.add(lv)
             elif lv.next_vseg <= now:
                 for mp, plugin in lv.live_notes:
                     buf = plugin.inputs['In']
-                    plugin.push_midi_event(buf, [0x80, mp, 0xFF])
+                    plugin.push_midi_event(buf, [0x80, mp, 0x1F])
                 lv.live_notes = []
                 if lv.current + 1 < len(lv.voice.segments) and (self.play_end is None or lv.beat < self.play_end):
                     lv.last_vseg = lv.next_vseg
@@ -152,13 +159,14 @@ class Transport:
                     key = lv.get_key()
                     lv.next_vseg += lv.bpm.area(lv.last_beat, lv.beat - lv.last_beat, lambda bpm: 60 / bpm)
                     if mutelevel2 == get_mutelevel(lv):
+                        vel = round(127 * lv.dyn.value(lv.last_beat))
                         for note in lv.voice.segments[lv.current+1].notes:
                             if note.instrument_uid is None or mutelevel != self.mutes.get(note.instrument_uid, 0):
                                 continue
                             plugin = self.plugins[note.instrument_uid]
                             buf = plugin.inputs['In']
                             mp = resolution.resolve_pitch(note.pitch, key)
-                            plugin.push_midi_event(buf, [0x90, mp, 0xFF])
+                            plugin.push_midi_event(buf, [0x90, mp, vel])
                             lv.live_notes.append((mp, plugin))
                     still_live.add(lv)
                 lv.current += 1
@@ -198,47 +206,13 @@ class Meter:
         self.clipping1 = False
         self.decay = 0.95
 
-class LinearEnvelope:
-    def __init__(self, vector):
-        self.vector = vector # vector consists of list of triples:
-                             # position, constant, change rate
-
-    def area(self, position, duration, f=lambda x: x):
-        i = 0
-        for j, (p, k0, k1) in enumerate(self.vector):
-            if p <= position:
-                i = j
-        endpoint = position + duration
-        accum = 0
-        while i < len(self.vector) and self.vector[i][0] < endpoint:
-            p, k0, k1 = self.vector[i]
-            q = self.vector[i+1][0] if i+1 < len(self.vector) else endpoint
-            x0 = max(p, position)
-            x1 = min(q, endpoint)
-            y0 = x0*k1 + k0
-            y1 = x1*k1 + k0
-            accum += (x1-x0)*f((y0+y1)/2)
-            i += 1
-        return accum
-
-    def check_positiveness(self):
-        p, k0, k1 = self.vector[0]
-        positive = (p * k1 + k0) > 0
-        
-        for i, (p, h0, h1) in enumerate(self.vector):
-            if i > 0:
-                q, k0, k1 = self.vector[i-1]
-                y = (p-q)*k1 + k0
-                positive = positive and y > 0
-        p, k0, k1 = self.vector[-1]
-        positive = positive and k0 > 0 and k1 >= 0
-        return positive
-
 class LiveVoice:
-    def __init__(self, staff, voice, bpm, beat=0.0, current=-1, next_vseg=0.0):
+    def __init__(self, staff, voice, bpm, dyn, beat=0.0, current=-1, next_vseg=0.0):
         self.smeared = entities.smear(staff.blocks)
         self.voice = voice
         self.bpm = bpm
+        self.dyn = dyn
+        assert dyn.check_positiveness(allow_zero=True)
         self.last_beat = beat
         self.beat = beat
         self.current = current

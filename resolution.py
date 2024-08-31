@@ -187,3 +187,101 @@ def quantize_fraction(input_value):
         return Fraction(rounded)
     else:
         return fraction
+
+def find_next_value(index, segments):
+    """Find the next defined value"""
+    for i in range(index + 1, len(segments)):
+        if segments[i].control != 0:
+            return None
+        if segments[i].value is not None:
+            return segments[i].value
+    return None
+
+def linear_envelope(segments, default):
+    current_value = default
+    current_position = 0.0
+    envelope = []
+
+    if len(segments) == 0:
+        envelope.append((current_position, current_value, 0))
+
+    # Traverse segments
+    for i, segment in enumerate(segments):
+        duration = segment.duration
+    
+        if segment.control == 0 and segment.value is None:
+            envelope.append((current_position, current_value, 0))
+        elif segment.control == 0:
+            # Immediate value change
+            value = segment.value
+            envelope.append((current_position, value, 0))
+            current_value = value
+        else:
+            next_value = find_next_value(i, segments)
+            if segment.control > 0 and next_value <= current_value:
+                next_value = None
+            if segment.control < 0 and next_value >= current_value:
+                next_value = None
+            if next_value is not None:
+                end_value = next_value
+            else:
+                # Assume 10% above/below the current value
+                end_value = current_value * (1.0 + 0.1 * segment.control)
+            start_value = current_value
+            slope = (end_value - start_value) / float(duration)
+            envelope.append((current_position, start_value, slope))
+            current_value = end_value
+    
+        # Move to the next position
+        current_position += float(duration)
+    return LinearEnvelope(envelope)
+
+class LinearEnvelope:
+    def __init__(self, vector):
+        self.vector = vector # vector consists of list of triples:
+                             # position, constant, change rate
+
+    def value(self, position):
+        i = 0
+        y = None
+        for j, (p, k0, k1) in enumerate(self.vector):
+            if p <= position:
+                y = (position-p)*k1 + k0
+        return y
+
+    def area(self, position, duration, f=lambda x: x):
+        i = 0
+        for j, (p, k0, k1) in enumerate(self.vector):
+            if p <= position:
+                i = j
+        endpoint = position + duration
+        accum = 0
+        while i < len(self.vector) and self.vector[i][0] < endpoint:
+            p, k0, k1 = self.vector[i]
+            q = self.vector[i+1][0] if i+1 < len(self.vector) else endpoint
+            x0 = max(p, position)
+            x1 = min(q, endpoint)
+            y0 = x0*k1 + k0
+            y1 = x1*k1 + k0
+            accum += (x1-x0)*f((y0+y1)/2)
+            i += 1
+        return accum
+
+    def check_positiveness(self, allow_zero = False):
+        p, k0, k1 = self.vector[0]
+        positive = (p * k1 + k0)
+        
+        for i, (p, h0, h1) in enumerate(self.vector):
+            if i > 0:
+                q, k0, k1 = self.vector[i-1]
+                y = (p-q)*k1 + k0
+                positive = min(positive, y)
+        p, k0, k1 = self.vector[-1]
+        if k0 > 0 and k1 >= 0:
+            if allow_zero:
+                return positive >= 0
+            else:
+                return positive > 0
+        else:
+            return False
+
