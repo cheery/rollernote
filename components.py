@@ -3,6 +3,17 @@ import sdl2
 from contextlib import contextmanager
 
 @gui.composable
+def colorbox(color, *args, **kwargs):
+    gui.layout(gui.DynamicLayout(*args, **kwargs))
+    @gui.drawing
+    def _draw_(ui, comp):
+        ui.ctx.set_source_rgba(*color)
+        comp.shape.trace(ui.ctx)
+        ui.ctx.stroke()
+        comp.shape.trace(ui.ctx)
+        ui.ctx.fill()
+
+@gui.composable
 def label2(text, font_size=20):
     _ui = gui.ui.get()
     _ui.ctx.set_font_size(font_size)

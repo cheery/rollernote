@@ -28,6 +28,7 @@ class Composition:
         self.state = state
         self.fresh = True
         # The parts that makes this GUI
+        self.pre_drawings = []
         self.drawings = []
         self.post_drawings = []
         self.listeners = []
@@ -76,6 +77,8 @@ class Composition:
         _ui = ui.get()
         _ui.ctx.save()
         try:
+            for drawing in self.pre_drawings:
+                drawing(_ui, self)
             if self.clipping:
                 self.shape.trace(_ui.ctx)
                 _ui.ctx.clip()
@@ -88,6 +91,16 @@ class Composition:
                 drawing(_ui, self)
         finally:
             _ui.ctx.restore()
+
+    def local_point(self, x, y):
+        # TODO: This probably works, but may fail on more complex case
+        matrix = self.transform
+        this = self.parent
+        while this is not None:
+            matrix = this.transform * matrix
+            this = this.parent
+        matrix.invert()
+        return matrix.transform_point(x, y)
 
     def hit(self, x, y):
         if self.shape.test(x, y):
@@ -293,8 +306,10 @@ class GUI:
             self.widget.exposed = self.widget.exposed or self.composer(*self.args, **self.kwargs)
             comp = self.composer.composition
             comp.layout.measure(comp.children, self.widget.width, self.widget.height)
-            if comp.layout is not None:
-                shape = Box(0, 0, comp.layout.width, comp.layout.height)
+            if isinstance(comp.layout, StaticLayout):
+                comp.layout(comp, comp.shape)
+            elif comp.layout is not None:
+                shape = Box(0, 0, comp.layout.calc_width, comp.layout.calc_height)
                 comp.layout(comp, shape)
             self.composer.composition.draw()
         self.renderer.flip()
@@ -427,6 +442,10 @@ class GUI:
     def close(self):
         pass
 
+def pre_drawing(func):
+    current_composition.get().pre_drawings.append(func)
+    return func
+
 def drawing(func):
     current_composition.get().drawings.append(func)
     return func
@@ -513,25 +532,27 @@ class DynamicLayout:
         self.height = height
         self.flexible_width = flexible_width
         self.flexible_height = flexible_height
+        self.calc_width = width
+        self.calc_height = height
 
     def measure(self, children, available_width, available_height):
         if self.flexible_width:
-            self.width = available_width
+            self.calc_width = max(self.width, available_width)
         if self.flexible_height:
-            self.height = available_height
+            self.calc_height = max(self.height, available_height)
         for child in children:
             if isinstance(child.layout, StaticLayout):
                 shape = child.shape
                 child.layout.measure(child.children, shape.width, shape.height)
             elif child.layout is not None:
-                child.layout.measure(child.children, self.width, self.height)
+                child.layout.measure(child.children, self.calc_width, self.calc_height)
 
     def __call__(self, this, box, shallow=True):
         if shallow:
             this.shape = box
         for child in this.children:
             if child.layout is not None:
-                child.layout(child, this.shape)
+                child.layout(child, box)
     
 def align_low(pos, space, available_space):
     return pos
@@ -543,11 +564,15 @@ def align_high(pos, space, available_space):
     return pos + available_space - space
 
 class RowLayout(DynamicLayout):
-    def __init__(self, align = align_low):
-        super().__init__(flexible_height = True)
+    def __init__(self, align = align_low, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.align = align
 
     def measure(self, children, available_width, available_height):
+        if not self.flexible_width:
+            available_width = self.width
+        if not self.flexible_height:
+            available_height = self.height
         total_width = 0
         max_height = 0
         flexibles = []
@@ -558,41 +583,47 @@ class RowLayout(DynamicLayout):
                 continue
             elif child.layout is None:
                 continue
-            if child.layout.flexible_width:
+            if child.layout.flexible_width and self.flexible_width:
                 flexibles.append(child)
             else:
                 child.layout.measure(child.children, child.layout.width, available_height)
-                total_width += child.layout.width
-                max_height = max(max_height, child.layout.height)
+                total_width += child.layout.calc_width
+                max_height = max(max_height, child.layout.calc_height)
         if flexibles:
             remaining_width = available_width - total_width
             flexible_width = remaining_width / len(flexibles)
             for child in flexibles:
                 child.layout.measure(child.children, flexible_width, available_height)
-                total_width += child.layout.width
-                max_height = max(max_height, child.layout.height)
-        self.width = total_width
-        self.height = max_height
+                total_width += child.layout.calc_width
+                max_height = max(max_height, child.layout.calc_height)
+        self.calc_width = max(self.width, total_width)
+        self.calc_height = max(self.height, max_height)
 
     def __call__(self, this, box, shallow=True):
         if shallow:
             this.shape = box
         current_x = box.x
         for child in this.children:
-            if child.layout is not None:
-                width = child.layout.width
-                height = child.layout.height
+            if isinstance(child.layout, StaticLayout):
+                child.layout(child, child.shape)
+            elif child.layout is not None:
+                width = child.layout.calc_width
+                height = child.layout.calc_height
                 current_y = self.align(box.y, height, box.height)
                 shape = Box(current_x, current_y, width, height)
                 child.layout(child, shape)
                 current_x += width
 
 class ColumnLayout(DynamicLayout):
-    def __init__(self, align = align_low):
-        super().__init__(flexible_width = True)
+    def __init__(self, align = align_low, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.align = align
 
     def measure(self, children, available_width, available_height):
+        if not self.flexible_width:
+            available_width = self.width
+        if not self.flexible_height:
+            available_height = self.height
         total_height = 0
         max_width = 0
         flexibles = []
@@ -603,30 +634,32 @@ class ColumnLayout(DynamicLayout):
                 continue
             elif child.layout is None:
                 continue
-            if child.layout.flexible_height:
+            if child.layout.flexible_height and self.flexible_height:
                 flexibles.append(child)
             else:
                 child.layout.measure(child.children, available_width, child.layout.height) 
-                total_height += child.layout.height
-                max_width = max(max_width, child.layout.width)
+                total_height += child.layout.calc_height
+                max_width = max(max_width, child.layout.calc_width)
         if flexibles:
             remaining_height = available_height - total_height
             flexible_height = remaining_height / len(flexibles)
             for child in flexibles:
                 child.layout.measure(child.children, available_width, flexible_height)
-                total_height += child.layout.height
-                max_width = max(max_width, child.layout.width)
-        self.width = max_width
-        self.height = total_height
+                total_height += child.layout.calc_height
+                max_width = max(max_width, child.layout.calc_width)
+        self.calc_width = max(self.width, max_width)
+        self.calc_height = max(self.height, total_height)
 
     def __call__(self, this, box, shallow=True):
         if shallow:
             this.shape = box
         current_y = box.y
         for child in this.children:
-            if child.layout is not None:
-                width = child.layout.width
-                height = child.layout.height
+            if isinstance(child.layout, StaticLayout):
+                child.layout(child, child.shape)
+            elif child.layout is not None:
+                width = child.layout.calc_width
+                height = child.layout.calc_height
                 current_x = self.align(box.x, width, box.width)
                 shape = Box(current_x, current_y, width, height)
                 child.layout(child, shape)
@@ -643,32 +676,47 @@ class ScrollableLayout(DynamicLayout):
 
     def measure(self, children, available_width, available_height):
         if self.flexible_width:
-            self.width = available_width
+            self.calc_width = available_width
+        else:
+            self.calc_width = self.width
         if self.flexible_height:
-            self.height = available_height
-        self.inner.measure(children, self.width / self.scale_x, self.height / self.scale_y)
+            self.calc_height = available_height
+        else:
+            self.calc_height = self.height
+        self.inner.measure(children,
+            self.calc_width / self.scale_x,
+            self.calc_height / self.scale_y)
+
+    def max_scroll(self):
+        max_scroll_x = max(0, self.inner.calc_width - self.calc_width/self.scale_x)
+        max_scroll_y = max(0, self.inner.calc_height - self.calc_height/self.scale_y)
+        return max_scroll_x, max_scroll_y
+
+    def clamp_scroll(self, scroll_x, scroll_y):
+        max_scroll_x, max_scroll_y = self.max_scroll()
+
+        # Adjust scroll positions to be within the valid range
+        scroll_x = max(0, min(scroll_x, max_scroll_x))
+        scroll_y = max(0, min(scroll_y, max_scroll_y))
+        return scroll_x, scroll_y
 
     def __call__(self, this, box, shallow=True):
         assert shallow
-        max_scroll_x = max(0, self.inner.width - box.width/self.scale_x)
-        max_scroll_y = max(0, self.inner.height - box.height/self.scale_y)
-
-        # Adjust scroll positions to be within the valid range
-        self.scroll_x = max(0, min(self.scroll_x, max_scroll_x))
-        self.scroll_y = max(0, min(self.scroll_y, max_scroll_y))
-
-        inner_box = Box(0, 0, self.inner.width, self.inner.height)
         matrix = cairo.Matrix()
         matrix.translate(box.x, box.y)
         matrix.scale(self.scale_x, self.scale_y)
         matrix.translate(-self.scroll_x, -self.scroll_y)
         this.transform = matrix
         this.shape = box
+        inner_box = Box(0, 0, self.inner.calc_width, self.inner.calc_height)
         self.inner(this, inner_box, shallow=False)
 
 class PaddedLayout(DynamicLayout):
-    def __init__(self, inner, top=0, right=0, bottom=0, left=0, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, inner, top=0, right=0, bottom=0, left=0):
+        super().__init__(inner.width + left + right,
+                         inner.height + bottom + top,
+                         inner.flexible_width,
+                         inner.flexible_height)
         self.inner = inner
         self.top = top
         self.right = right
@@ -676,11 +724,15 @@ class PaddedLayout(DynamicLayout):
         self.left = left
 
     def measure(self, children, available_width, available_height):
+        if not self.flexible_width:
+            available_width = self.width + self.left + self.right
+        if not self.flexible_height:
+            available_height = self.height + self.top + self.bottom
         self.inner.measure(children,
             available_width - self.left - self.right,
             available_height - self.top - self.bottom)
-        self.width = self.inner.width + self.left + self.right
-        self.height = self.inner.height + self.top + self.bottom
+        self.calc_width = self.inner.calc_width + self.left + self.right
+        self.calc_height = self.inner.calc_height + self.top + self.bottom
 
     def __call__(self, this, box, shallow=True):
         if shallow:
@@ -688,8 +740,8 @@ class PaddedLayout(DynamicLayout):
         inner_box = Box(
             box.x + self.left,
             box.y + self.top,
-            self.inner.width,
-            self.inner.height)
+            self.inner.calc_width,
+            self.inner.calc_height)
         self.inner(this, inner_box, shallow=False)
 
 def sub(fn, d=0):
@@ -703,17 +755,17 @@ def sub(fn, d=0):
         fn()
     return this
 
-def column(align = align_low):
+def column(*args, **kwargs):
     def _decorator_(fn):
         this = sub(fn, 1)
-        this.layout = ColumnLayout(align)
+        this.layout = ColumnLayout(*args, **kwargs)
         return this
     return _decorator_
 
-def row(align = align_low):
+def row(*args, **kwargs):
     def _decorator_(fn):
         this = sub(fn, 1)
-        this.layout = RowLayout(align)
+        this.layout = RowLayout(*args, **kwargs)
         return this
     return _decorator_
 
@@ -726,7 +778,7 @@ def vspacing(y):
     layout(DynamicLayout(height = y, flexible_width=True))
 
 def workspace(color=(1,1,1,1), font_family=None):
-    layout(DynamicLayout(flexible_width=True, flexible_height=True))
+    layout(ColumnLayout(flexible_width=True, flexible_height=True))
     if font_family is not None:
         ui.get().ctx.select_font_face(font_family)
     @drawing

@@ -1,6 +1,7 @@
 from fractions import Fraction
 import entities
 import colorsys
+import bisect
 
 char_accidental = {
    -2: chr(119083),
@@ -326,3 +327,36 @@ def golden_ratio_color_varying(index, alpha=1.0):
     
     r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
     return (r, g, b, alpha)
+
+def sequence_interpolation(value, sequence, interpolant, use_highest=False):
+    li = bisect.bisect_left(sequence, value)
+    ri = bisect.bisect_right(sequence, value)
+    if li < len(sequence) and sequence[li] == value:
+        if use_highest:
+            return interpolant[ri-1]
+        else:
+            return interpolant[li]
+    lowi = max(0, li - 1)
+    uppi = min(len(sequence) - 1, ri)
+    if sequence[uppi] != sequence[lowi]:
+        t = (value - sequence[lowi]) / (sequence[uppi] - sequence[lowi])
+    else:
+        t = 0
+    return interpolant[lowi]*(1-t) + interpolant[uppi]*t
+
+def mean(xs, default=None):
+    xs = list(xs)
+    if len(xs) == 0:
+        if default is None:
+            raise ValueError
+        else:
+            return default
+    return sum(xs) // len(xs)
+
+def frange(start, stop, step, inclusive=False):
+    current = start
+    while current < stop:
+        yield current
+        current += step
+    if inclusive and current <= stop:
+        yield current
