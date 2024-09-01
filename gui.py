@@ -33,6 +33,7 @@ class Composition:
         self.listeners = []
         self.layout = None
         self.transform = identity_transform
+        self.clipping = False
         if parent is None or parent.parent is None:
             self.shape = Hit()
         else:
@@ -73,19 +74,24 @@ class Composition:
 
     def draw(self):
         _ui = ui.get()
-        matrix = _ui.ctx.get_matrix()
-        _ui.ctx.transform(self.transform)
-        for drawing in self.drawings:
-            drawing(_ui, self)
-        for children in self.children:
-            children.draw()
-        for drawing in self.post_drawings:
-            drawing(_ui, self)
-        _ui.ctx.set_matrix(matrix)
+        _ui.ctx.save()
+        try:
+            if self.clipping:
+                self.shape.trace(_ui.ctx)
+                _ui.ctx.clip()
+            _ui.ctx.transform(self.transform)
+            for drawing in self.drawings:
+                drawing(_ui, self)
+            for children in self.children:
+                children.draw()
+            for drawing in self.post_drawings:
+                drawing(_ui, self)
+        finally:
+            _ui.ctx.restore()
 
     def hit(self, x, y):
         if self.shape.test(x, y):
-            matrix = cairo.Matrix() * self.transform
+            matrix = cairo.Matrix(*self.transform)
             matrix.invert()
             x, y = matrix.transform_point(x, y)
             selection = self
@@ -496,7 +502,7 @@ class StaticLayout:
         for child in children:
             child.layout.measure(child.children, available_width, available_height)
 
-    def __call__(self, this, box):
+    def __call__(self, this, box, shallow=True):
         for child in this.children:
             if child.layout is not None:
                 child.layout(child, this.shape)
@@ -520,8 +526,9 @@ class DynamicLayout:
             elif child.layout is not None:
                 child.layout.measure(child.children, self.width, self.height)
 
-    def __call__(self, this, box):
-        this.shape = box
+    def __call__(self, this, box, shallow=True):
+        if shallow:
+            this.shape = box
         for child in this.children:
             if child.layout is not None:
                 child.layout(child, this.shape)
@@ -567,8 +574,9 @@ class RowLayout(DynamicLayout):
         self.width = total_width
         self.height = max_height
 
-    def __call__(self, this, box):
-        this.shape = box
+    def __call__(self, this, box, shallow=True):
+        if shallow:
+            this.shape = box
         current_x = box.x
         for child in this.children:
             if child.layout is not None:
@@ -611,7 +619,9 @@ class ColumnLayout(DynamicLayout):
         self.width = max_width
         self.height = total_height
 
-    def __call__(self, this, box):
+    def __call__(self, this, box, shallow=True):
+        if shallow:
+            this.shape = box
         current_y = box.y
         for child in this.children:
             if child.layout is not None:
@@ -623,13 +633,13 @@ class ColumnLayout(DynamicLayout):
                 current_y += height
 
 class ScrollableLayout(DynamicLayout):
-    def __init__(self, inner, *args, **kwargs):
+    def __init__(self, inner, state, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.inner = inner
-        self.scroll_x = 0
-        self.scroll_y = 0
-        self.scale_x = 1
-        self.scale_y = 1
+        self.scroll_x = state.scroll_x
+        self.scroll_y = state.scroll_y
+        self.scale_x = state.scale_x
+        self.scale_y = state.scale_y
 
     def measure(self, children, available_width, available_height):
         if self.flexible_width:
@@ -638,7 +648,8 @@ class ScrollableLayout(DynamicLayout):
             self.height = available_height
         self.inner.measure(children, self.width / self.scale_x, self.height / self.scale_y)
 
-    def __call__(self, this, box):
+    def __call__(self, this, box, shallow=True):
+        assert shallow
         max_scroll_x = max(0, self.inner.width - box.width/self.scale_x)
         max_scroll_y = max(0, self.inner.height - box.height/self.scale_y)
 
@@ -652,8 +663,8 @@ class ScrollableLayout(DynamicLayout):
         matrix.scale(self.scale_x, self.scale_y)
         matrix.translate(-self.scroll_x, -self.scroll_y)
         this.transform = matrix
-        self.inner(this, inner_box)
         this.shape = box
+        self.inner(this, inner_box, shallow=False)
 
 class PaddedLayout(DynamicLayout):
     def __init__(self, inner, top=0, right=0, bottom=0, left=0, *args, **kwargs):
@@ -671,13 +682,15 @@ class PaddedLayout(DynamicLayout):
         self.width = self.inner.width + self.left + self.right
         self.height = self.inner.height + self.top + self.bottom
 
-    def __call__(self, this, box):
+    def __call__(self, this, box, shallow=True):
+        if shallow:
+            this.shape = box
         inner_box = Box(
             box.x + self.left,
             box.y + self.top,
             self.inner.width,
             self.inner.height)
-        self.inner(this, inner_box)
+        self.inner(this, inner_box, shallow=False)
 
 def sub(fn, d=0):
     comp = current_composition.get()

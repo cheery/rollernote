@@ -97,27 +97,8 @@ def app(editor):
         gui.layout(gui.StaticLayout())
         gui.shape(gui.Box(40, 10, 500, 32))
 
-        @gui.drawing
-        def _set_clip_(ui, comp):
-            ui.ctx.save()
-            comp.shape.trace(ui.ctx)
-            ui.ctx.clip()
-        @gui.post_drawing
-        def _clear_clip_(ui, comp):
-            ui.ctx.restore()
-
-        #@gui.row()
-        @gui.sub
+        @gui.row()
         def _row_():
-            that = gui.lazybundle(scroll_x = 0)
-            scroller = gui.ScrollableLayout(gui.RowLayout(), flexible_width = True, flexible_height = True)
-            scroller.scroll_x = that.scroll_x
-            scroller.scale_x = 1.0
-            scroller.scale_y = 1.0
-            gui.layout(scroller)
-            @gui.listen(gui.e_update)
-            def _update_():
-                that.scroll_x = math.sin(editor.time) * 150 + 150
             new = components.button2("new", font_size=32, flexible_height = True)
             @new.listen(gui.e_button_down)
             def _new_down_(x, y, button):
