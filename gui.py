@@ -12,6 +12,7 @@ from contextvars import ContextVar
 current_composition = ContextVar('current_composition')
 ui_memo = ContextVar('ui_memo')
 ui = ContextVar('ui')
+key_counter = ContextVar('key_counter')
 
 identity_transform = cairo.Matrix()
 
@@ -23,7 +24,6 @@ class Composition:
         self.children = []
         self.props = props
         self.result = None
-        self.key_counter = {}
         self.dirty = False
         self.state = state
         self.fresh = True
@@ -53,25 +53,6 @@ class Composition:
         while current is not None:
             current.dirty = True
             current = current.parent
-
-    def get_callsite_key(self, fn, depth=2):
-        """Generate a unique key for the call site based on the current frame."""
-        current_frame = inspect.currentframe()
-        if current_frame is None:
-            raise RuntimeError("No current frame available")
-    
-        caller_frame = current_frame
-        for i in range(depth):
-            if caller_frame is None:
-                raise RuntimeError("No caller frame available")
-            caller_frame = caller_frame.f_back
-        if caller_frame is None:
-            raise RuntimeError("No caller frame available")
-    
-        key = (fn, caller_frame.f_code, caller_frame.f_lineno)
-        count = self.key_counter.get(key, 0)
-        self.key_counter[key] = count + 1
-        return key + (count,)
 
     def draw(self):
         _ui = ui.get()
@@ -113,7 +94,7 @@ class Composition:
             return selection
 
     def listen(self, event, original=False):
-        #key = self.get_callsite_key(2 + depth)
+        #key = get_callsite_key(2 + depth)
         #print('format', format_key(key))
         def _decorator_(fn):
             #if self.fresh:
@@ -132,6 +113,26 @@ class Composition:
         yield self
         for child in self.children:
             yield from child.preorder()
+
+def get_callsite_key(fn, depth=2):
+    """Generate a unique key for the call site based on the current frame."""
+    current_frame = inspect.currentframe()
+    if current_frame is None:
+        raise RuntimeError("No current frame available")
+
+    caller_frame = current_frame
+    for i in range(depth):
+        if caller_frame is None:
+            raise RuntimeError("No caller frame available")
+        caller_frame = caller_frame.f_back
+    if caller_frame is None:
+        raise RuntimeError("No caller frame available")
+
+    key = (fn, caller_frame.f_code, caller_frame.f_lineno)
+    count = key_counter.get().get(key, 0)
+    key_counter.get()[key] = count + 1
+    return key + (count,)
+
 
 def get_properties(args, kwargs):
     """Organize the arguments to allow their quick identification"""
@@ -158,7 +159,7 @@ def memoize(previous):
 def composition_frame(fn, args, kwargs, d=0):
     props = get_properties(args, kwargs)
     comp = current_composition.get()
-    key = comp.get_callsite_key(fn, 4+d)
+    key = get_callsite_key(fn, 4+d)
     previous = ui_memo.get().get(key)
     if previous is None or previous.props != props or previous.dirty:
         #print(f"{format_key(key)} recomposed")
@@ -205,7 +206,7 @@ class UIState:
 
 def state(initial):
     comp = current_composition.get()
-    key = comp.get_callsite_key(None)
+    key = get_callsite_key(None)
     if key not in comp.state:
         comp.state[key] = initial
     return UIState(comp, key)
@@ -238,14 +239,14 @@ class UIStateBundle:
 
 def bundle(**kwargs):
     comp = current_composition.get()
-    key = comp.get_callsite_key(None)
+    key = get_callsite_key(None)
     if key not in comp.state:
         comp.state[key] = kwargs
     return UIStateBundle(comp, key, False)
 
 def lazybundle(**kwargs):
     comp = current_composition.get()
-    key = comp.get_callsite_key(None)
+    key = get_callsite_key(None)
     if key not in comp.state:
         comp.state[key] = kwargs
     return UIStateBundle(comp, key, True)
@@ -260,12 +261,14 @@ class Composer:
         self.composition.layout = DynamicLayout(flexible_width=True, flexible_height=True)
 
     def __call__(self, *args, **kwargs):
+        token0 = key_counter.set({})
         memo = dict(self.composition.memoize())
         composition = Composition(None, None, None, self.composition.state)
         composition.layout = DynamicLayout(flexible_width=True, flexible_height=True)
         with composition_context(composition, memo):
             self.scene(*args, **kwargs)
         self.composition = composition
+        key_counter.reset(token0)
         return composition.dirty
 
 @contextmanager
@@ -746,7 +749,7 @@ class PaddedLayout(DynamicLayout):
 
 def sub(fn, d=0):
     comp = current_composition.get()
-    key = comp.get_callsite_key(None, 2+d)
+    key = get_callsite_key(None, 2+d)
     previous = ui_memo.get().get(key)
     state = {} if previous is None else previous.state
     this = Composition(comp, key, None, state)
