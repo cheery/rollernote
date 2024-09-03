@@ -149,46 +149,46 @@ def pitch_complexity(pitch):
     else:
         return 1 + abs(pitch.accidental)
 
-def categorize_note_duration(fraction):
-    for i in range(10):
-        base_note = Fraction(4) / (2**i)
-        if fraction == base_note * 2 / 3:
-            return base_note, 0, True
-        if fraction == base_note:
-            return base_note, 0, False
-        total = base_note
-        for n in range(0, 4):
-            total += base_note / (2**(n+1))
-            if fraction == total:
-                return base_note, n+1, False
+#def categorize_note_duration(fraction):
+#    for i in range(10):
+#        base_note = Fraction(4) / (2**i)
+#        if fraction == base_note * 2 / 3:
+#            return base_note, 0, True
+#        if fraction == base_note:
+#            return base_note, 0, False
+#        total = base_note
+#        for n in range(0, 4):
+#            total += base_note / (2**(n+1))
+#            if fraction == total:
+#                return base_note, n+1, False
+#
+#def build_note_duration(base_note, dots, tri):
+#    if tri:
+#        return base_note * 2 / 3
+#    total = base_note
+#    for n in range(0, dots):
+#        total += base_note / (2**(n+1))
+#    return total
+#
+#def generate_all_note_durations():
+#    for i in range(10):
+#        base_note = Fraction(4) / (2**i)
+#        yield base_note
+#        yield base_note * 2 / 3
+#        total = base_note
+#        for n in range(0, 4):
+#            total += base_note / (2**(n+1))
+#            yield total
 
-def build_note_duration(base_note, dots, tri):
-    if tri:
-        return base_note * 2 / 3
-    total = base_note
-    for n in range(0, dots):
-        total += base_note / (2**(n+1))
-    return total
-
-def generate_all_note_durations():
-    for i in range(10):
-        base_note = Fraction(4) / (2**i)
-        yield base_note
-        yield base_note * 2 / 3
-        total = base_note
-        for n in range(0, 4):
-            total += base_note / (2**(n+1))
-            yield total
-
-def quantize_fraction(input_value):
-    rounded = round(input_value)
-    fraction = min(generate_all_note_durations(), key=lambda note: abs(input_value - float(note)))
-    # Aside musical fractions, we also want to quantize to beat boundaries.
-    # This is important because the cutting/joining tools quantize
-    if rounded > 0 and abs(input_value - rounded) < abs(input_value - float(fraction)):
-        return Fraction(rounded)
-    else:
-        return fraction
+#def quantize_fraction(input_value):
+#    rounded = round(input_value)
+#    fraction = min(generate_all_note_durations(), key=lambda note: abs(input_value - float(note)))
+#    # Aside musical fractions, we also want to quantize to beat boundaries.
+#    # This is important because the cutting/joining tools quantize
+#    if rounded > 0 and abs(input_value - rounded) < abs(input_value - float(fraction)):
+#        return Fraction(rounded)
+#    else:
+#        return fraction
 
 def find_next_value(index, segments):
     """Find the next defined value"""
@@ -360,3 +360,120 @@ def frange(start, stop, step, inclusive=False):
         current += step
     if inclusive and current <= stop:
         yield current
+
+def base_note(n):
+    if n < 0:
+        return Fraction(1, 2**(-n))
+    else:
+        return Fraction(2**n)
+
+def dotted_note(n, d):
+    return (2 ** (d + 1) - 1) * base_note(n-d)
+
+def fragmented_note(n, d):
+    return base_note(n) / d
+
+def as_fragment(x):
+    n, d = x.as_integer_ratio()
+    a = 0
+    while n & 1 == 0 and d & 1 == 0:
+        n >>= 1
+        d >>= 1
+    while n & 1 == 0:
+        n >>= 1
+        a += 1
+    while d & 1 == 0:
+        d >>= 1
+        a -= 1
+    return a, Fraction(d, n)
+
+def categorize_duration(duration, limits, primes=(3,5,7,11)):
+    above = lambda x: limits is None or limits[0] <= x
+    below = lambda x: limits is None or x <= limits[1]
+    less  = lambda x: limits is None or x <= limits[2]
+    n, k = as_fragment(duration)
+    if k.numerator == 1:
+        dots = -1
+        c = k.denominator + 1
+        while c & 1 == 0:
+            c >>= 1
+            dots += 1
+        if c == 1 and above(n+dots) and below(n+dots) and less(dots):
+            return 'dotted', n+dots, dots # Detected dotted or bare note
+    while not above(n):
+        n += 1
+        k *= 2
+    while not below(n):
+        n -= 1
+        k /= 2
+    if k.numerator == 1:
+        return 'repeated', n, k.denominator # Detected repeated base notes
+    elif k.denominator == 1 and k.numerator in primes: 
+        return 'fragment', n, k.numerator # Detected fragment of a tuplet.
+    else:
+        return 'arbitrary', n, k # Detected arbitrary note
+
+def rebuild_duration(category, n, k):
+    if category == 'dotted':
+        return dotted_note(n, k)
+    elif category == 'repeated':
+        return base_note(n) * k
+    elif category == 'fragment' or category == 'arbitrary':
+        return base_note(n) / k
+
+def valid_durations(limits, extra=(), primes=(3,5,7,11)):
+    for duration in extra:
+        yield duration
+    for n in range(limits[0], limits[1]+1):
+        for k in range(limits[2]+1):
+            yield dotted_note(n, k)
+        for k in primes:
+            yield base_note(n) / k
+
+def quantize(value, beat_unit, limits, primes=(3,5,7,11)):
+    distance_function = lambda x: abs(float(x) - value / beat_unit)
+    repeated = Fraction(round(value)) / beat_unit
+    if repeated == 0:
+        repeated += Fraction(1, beat_unit)
+    return min(valid_durations(limits, [repeated], primes),
+               key=distance_function) * beat_unit
+
+def quantize_and_categorize(value, beat_unit, limits, primes=(3,5,7,11)):
+    closest = quantize(value, beat_unit, limits, primes)
+    return categorize_duration(closest / beat_unit, limits)
+
+def flexible_categorize(value, beat_unit, limits, primes=(3,5,7,11)):
+    category, n, k = categorize_duration(value / beat_unit, limits)
+    if category != 'arbitrary':
+        return category, n, k, False
+    category, n, k = quantize_and_categorize(float(value), beat_unit, limits, primes)
+    return category, n, k, True
+
+# This is not used for anything, but it might become useful later.
+def closest_fraction(value, n, m): # Using Farey sequence
+    a_num = 0
+    a_denom = 1
+
+    b_num = math.ceil(value)
+    b_denom = 1
+
+    c_num   = a_num   + b_num
+    c_denom = a_denom + b_denom
+    while not (c_num > n or c_denom > m):
+        if c_num/c_denom < value:
+            a_num = c_num
+            a_denom = c_denom
+        else:
+            b_num = c_num
+            b_denom = c_denom
+        c_num   = a_num   + b_num
+        c_denom = a_denom + b_denom
+
+    if value - a_num/a_denom < b_num/b_denom - value:
+        return Fraction(a_num, a_denom)
+    else:
+        return Fraction(b_num, b_denom)
+
+    # Convert floating-point value to a Fraction
+    frac = Fraction.from_float(value)
+    return frac

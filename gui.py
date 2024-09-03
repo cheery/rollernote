@@ -12,21 +12,22 @@ from contextvars import ContextVar
 current_composition = ContextVar('current_composition')
 ui_memo = ContextVar('ui_memo')
 ui = ContextVar('ui')
-key_counter = ContextVar('key_counter')
 
 identity_transform = cairo.Matrix()
 
 class Composition:
     """A class to manage the composition and recomposition of composable functions."""
-    def __init__(self, parent, key, props, state):
+    def __init__(self, parent, key, uid, props, state):
         self.parent = parent
         self.key = key
+        self.uid = uid
         self.children = []
         self.props = props
         self.result = None
         self.dirty = False
         self.state = state
         self.fresh = True
+        self.key_counter = {}
         # The parts that makes this GUI
         self.pre_drawings = []
         self.drawings = []
@@ -39,6 +40,42 @@ class Composition:
             self.shape = Hit()
         else:
             self.shape = Hidden()
+
+    # TODO: Make an UID for each composition object.
+    def get_composition(self, chain):
+        if chain[0] == self.key and len(chain) == 1:
+            return self
+        for child in self.children:
+            if child.key == chain[1]:
+                return child.get_composition(chain[1:])
+
+    def get_keys(self):
+        this = self
+        chain = []
+        while this is not None:
+            chain.append(this.key)
+            this = this.parent
+        chain.reverse()
+        return chain
+
+    def get_callsite_key(self, fn, depth=2):
+        """Generate a unique key for the call site based on the current frame."""
+        current_frame = inspect.currentframe()
+        if current_frame is None:
+            raise RuntimeError("No current frame available")
+    
+        caller_frame = current_frame
+        for i in range(depth):
+            if caller_frame is None:
+                raise RuntimeError("No caller frame available")
+            caller_frame = caller_frame.f_back
+        if caller_frame is None:
+            raise RuntimeError("No caller frame available")
+    
+        key = (fn, caller_frame.f_code, caller_frame.f_lineno)
+        count = self.key_counter.get(key, 0)
+        self.key_counter[key] = count + 1
+        return key + (count,)
 
     def memoize(self):
         for child in self.children:
@@ -114,26 +151,6 @@ class Composition:
         for child in self.children:
             yield from child.preorder()
 
-def get_callsite_key(fn, depth=2):
-    """Generate a unique key for the call site based on the current frame."""
-    current_frame = inspect.currentframe()
-    if current_frame is None:
-        raise RuntimeError("No current frame available")
-
-    caller_frame = current_frame
-    for i in range(depth):
-        if caller_frame is None:
-            raise RuntimeError("No caller frame available")
-        caller_frame = caller_frame.f_back
-    if caller_frame is None:
-        raise RuntimeError("No caller frame available")
-
-    key = (fn, caller_frame.f_code, caller_frame.f_lineno)
-    count = key_counter.get().get(key, 0)
-    key_counter.get()[key] = count + 1
-    return key + (count,)
-
-
 def get_properties(args, kwargs):
     """Organize the arguments to allow their quick identification"""
     pargs = tuple(sorted(kwargs.items(), key=lambda item: item[0]))
@@ -159,12 +176,13 @@ def memoize(previous):
 def composition_frame(fn, args, kwargs, d=0):
     props = get_properties(args, kwargs)
     comp = current_composition.get()
-    key = get_callsite_key(fn, 4+d)
+    key = comp.get_callsite_key(fn, 4+d)
     previous = ui_memo.get().get(key)
     if previous is None or previous.props != props or previous.dirty:
         #print(f"{format_key(key)} recomposed")
         state = {} if previous is None else previous.state
-        this = Composition(comp, key, props, state)
+        uid = object() if previous is None else previous.uid
+        this = Composition(comp, key, uid, props, state)
         comp.children.append(this)
         with composition_context(this, memoize(previous)):
             assert current_composition.get() == this
@@ -206,7 +224,7 @@ class UIState:
 
 def state(initial):
     comp = current_composition.get()
-    key = get_callsite_key(None)
+    key = comp.get_callsite_key(None)
     if key not in comp.state:
         comp.state[key] = initial
     return UIState(comp, key)
@@ -239,14 +257,14 @@ class UIStateBundle:
 
 def bundle(**kwargs):
     comp = current_composition.get()
-    key = get_callsite_key(None)
+    key = comp.get_callsite_key(None)
     if key not in comp.state:
         comp.state[key] = kwargs
     return UIStateBundle(comp, key, False)
 
 def lazybundle(**kwargs):
     comp = current_composition.get()
-    key = get_callsite_key(None)
+    key = comp.get_callsite_key(None)
     if key not in comp.state:
         comp.state[key] = kwargs
     return UIStateBundle(comp, key, True)
@@ -257,18 +275,17 @@ def setter(bundle, name):
 class Composer:
     def __init__(self, scene):
         self.scene = scene
-        self.composition = Composition(None, None, None, {})
+        self.composition = Composition(None, None, 0, None, {})
         self.composition.layout = DynamicLayout(flexible_width=True, flexible_height=True)
+        self.next_uid = 1
 
     def __call__(self, *args, **kwargs):
-        token0 = key_counter.set({})
         memo = dict(self.composition.memoize())
-        composition = Composition(None, None, None, self.composition.state)
+        composition = Composition(None, None, 0, None, self.composition.state)
         composition.layout = DynamicLayout(flexible_width=True, flexible_height=True)
         with composition_context(composition, memo):
             self.scene(*args, **kwargs)
         self.composition = composition
-        key_counter.reset(token0)
         return composition.dirty
 
 @contextmanager
@@ -304,6 +321,12 @@ class GUI:
         self.button_presses = {}
         self.under_motion = None
 
+    def by_uid(self, uid):
+        for comp in self.composer.composition.preorder():
+            if comp.uid == uid:
+                return comp
+        raise KeyError
+
     def draw(self):
         with ui_context(self):
             self.widget.exposed = self.widget.exposed or self.composer(*self.args, **self.kwargs)
@@ -331,32 +354,38 @@ class GUI:
             this = comp.hit(x, y)
             handled_by = None
             if len(self.button_presses) > 0 and self.under_motion is not None:
-                for that in comp.preorder():
-                    if that.key == self.under_motion:
-                        for event, _, handler in that.listeners:
-                            if event == e_dragging:
-                                handler(x,y)
-                                handled_by = that.key
+                try:
+                    that = self.by_uid(self.under_motion)
+                except KeyError:
+                    pass
+                else:
+                    for event, _, handler in that.listeners:
+                        if event == e_dragging:
+                            handler(x,y)
+                            handled_by = that.uid
             while this is not None and handled_by is None:
-                if this.key != self.under_motion:
+                if this.uid != self.under_motion:
                     for event, _, handler in this.listeners:
                         if event == e_entering:
                             handler(x, y)
-                            handled_by = this.key
+                            handled_by = this.uid
                 if handled_by is None:
                     for event, _, handler in this.listeners:
                         if event == e_entering:
                             handled_by = this
                         elif event == e_motion:
                             handler(x, y)
-                            handled_by = this.key
+                            handled_by = this.uid
                 this = this.parent
             if handled_by != self.under_motion and self.under_motion is not None:
-                for that in comp.preorder():
-                    if that.key == self.under_motion:
-                        for event, _, handler in that.listeners:
-                            if event == e_leaving:
-                                handler(x,y)
+                try:
+                    that = self.by_uid(self.under_motion)
+                except KeyError:
+                    pass
+                else:
+                    for event, _, handler in that.listeners:
+                        if event == e_leaving:
+                            handler(x,y)
             self.under_motion = handled_by
         self.widget.exposed = self.widget.exposed or comp.dirty
 
@@ -368,12 +397,12 @@ class GUI:
             focus_by = None
             while this is not None and (handled_by is None or focus_by is None):
                 for event, _, handler in this.listeners:
-                    if event == e_button_down and (handled_by is None or handled_by == this.key):
+                    if event == e_button_down and (handled_by is None or handled_by == this.uid):
                         handler(x, y, button)
-                        handled_by = this.key
-                    if event in keyboad_events and (focus_by is None or focus_by == this.key):
+                        handled_by = this.uid
+                    if event in keyboad_events and (focus_by is None or focus_by == this.uid):
                         this.set_dirty() # Give it chance to react on focus change.
-                        focus_by = this.key
+                        focus_by = this.uid
                 this = this.parent
             if handled_by is not None:
                 self.button_presses[button] = handled_by
@@ -384,42 +413,54 @@ class GUI:
     def mouse_button_up(self, x, y, button):
         with ui_context(self):
             comp = self.composer.composition
-            key = self.button_presses.pop(button, None)
-            for this in comp.preorder():
-                if this.key == key:
-                    for event, _, handler in this.listeners:
-                        if event == e_button_up:
-                            handler(x, y, button)
+            uid = self.button_presses.pop(button, None)
+            try:
+                this = self.by_uid(uid)
+            except KeyError:
+                pass
+            else:
+                for event, _, handler in this.listeners:
+                    if event == e_button_up:
+                        handler(x, y, button)
             self.widget.exposed = self.widget.exposed or comp.dirty
 
     def text_input(self, text):
         with ui_context(self):
             comp = self.composer.composition
-            for this in comp.preorder():
-                if self.focus == this.key:
-                    for event, _, handler in this.listeners:
-                        if event == e_text:
-                            handler(text)
+            try:
+                this = self.by_uid(self.focus)
+            except KeyError:
+                pass
+            else:
+                for event, _, handler in this.listeners:
+                    if event == e_text:
+                        handler(text)
             self.widget.exposed = self.widget.exposed or comp.dirty
 
     def key_down(self, sym, repeat, modifiers):
         with ui_context(self):
             comp = self.composer.composition
-            for this in comp.preorder():
-                if self.focus == this.key:
-                    for event, _, handler in this.listeners:
-                        if event == e_key_down:
-                            handler(sym, repeat, modifiers)
+            try:
+                this = self.by_uid(self.focus)
+            except KeyError:
+                pass
+            else:
+                for event, _, handler in this.listeners:
+                    if event == e_key_down:
+                        handler(sym, repeat, modifiers)
             self.widget.exposed = self.widget.exposed or comp.dirty
 
     def key_up(self, sym, modifiers):
         with ui_context(self):
             comp = self.composer.composition
-            for this in comp.preorder():
-                if self.focus == this.key:
-                    for event, _, handler in this.listeners:
-                        if event == e_key_up:
-                            handler(sym, modifiers)
+            try:
+                this = self.by_uid(self.focus)
+            except KeyError:
+                pass
+            else:
+                for event, _, handler in this.listeners:
+                    if event == e_key_up:
+                        handler(sym, modifiers)
             self.widget.exposed = self.widget.exposed or comp.dirty
 
     # We assume we're in custom context.
@@ -436,7 +477,7 @@ class GUI:
             for event, _, handler in this.listeners:
                 if event == e_event:
                     handler(*args)
-                    handled_by = this.key
+                    handled_by = this.uid
             this = this.parent
 
     def closing(self):
@@ -520,14 +561,14 @@ class Hidden(Hit):
         return False
 
 class StaticLayout:
+    def __init__(self, inner):
+        self.inner = inner
+
     def measure(self, children, available_width, available_height):
-        for child in children:
-            child.layout.measure(child.children, available_width, available_height)
+        self.inner.measure(children, available_width, available_height)
 
     def __call__(self, this, box, shallow=True):
-        for child in this.children:
-            if child.layout is not None:
-                child.layout(child, this.shape)
+        self.inner(this, box)
 
 class DynamicLayout:
     def __init__(self, width=0, height=0, flexible_width=False, flexible_height=False):
@@ -554,7 +595,9 @@ class DynamicLayout:
         if shallow:
             this.shape = box
         for child in this.children:
-            if child.layout is not None:
+            if isinstance(child.layout, StaticLayout):
+                child.layout(child, child.shape)
+            elif child.layout is not None:
                 child.layout(child, box)
     
 def align_low(pos, space, available_space):
@@ -749,10 +792,11 @@ class PaddedLayout(DynamicLayout):
 
 def sub(fn, d=0):
     comp = current_composition.get()
-    key = get_callsite_key(None, 2+d)
+    key = comp.get_callsite_key(None, 2+d)
     previous = ui_memo.get().get(key)
     state = {} if previous is None else previous.state
-    this = Composition(comp, key, None, state)
+    uid = object() if previous is None else previous.uid
+    this = Composition(comp, key, uid, None, state)
     comp.children.append(this)
     with composition_context(this, memoize(previous)):
         fn()

@@ -23,7 +23,6 @@ def get_tempo_envelope(document):
                 return env
     return resolution.LinearEnvelope([ (0, default, 0) ])
 
-e_dialog_open = object()
 e_document_change = object()
 
 @gui.composable
@@ -82,11 +81,6 @@ def vu_meter(vol, width=20, height=90):
         this.clip1 = vol.clipping1
 
 @gui.composable
-def test_dialog():
-    with components.dialog():
-        pass
-
-@gui.composable
 def app(editor): 
     gui.workspace(color=(1,1,1,1), font_family='FreeSerif')
     this = gui.lazybundle(
@@ -95,9 +89,19 @@ def app(editor):
         looping = False,
         instrument_uid = None,
         beatballs = [],
-        dialog = None,
-        dialog_args = [],
+        dialogs = [],
     )
+
+    comp = gui.current_composition.get()
+    @gui.listen(gui.e_button_down)
+    def _down_(x, y, button):
+        @components.open_context_menu(comp, x, y,)
+        def _context_menu_():
+            components.button2("hello")
+            components.button2("hello")
+            components.button2("hello")
+            components.button2("hello")
+            components.button2("hello")
 
     @gui.sub
     def upper():
@@ -141,6 +145,7 @@ def app(editor):
                 save = components.button2("save", font_size=32, flexible_height=True)
                 @save.listen(gui.e_button_down)
                 def _save_down_(x, y, button):
+                    document = editor.document
                     document.store_plugins(editor.transport.plugins)
                     entities.save_document('document.mide.zip', editor.document)
                 gui.hspacing(5)
@@ -184,6 +189,7 @@ def app(editor):
                 @record.listen(gui.e_button_down)
                 def _record_down_(x, y, button):
                     # TODO: Open a dialog
+                    document = editor.document
                     document.store_plugins(editor.transport.plugins)
                     transport = audio.Transport(document.init_plugins(editor.pluginhost), document.mutes)
                     bpm = get_tempo_envelope(editor.document)
@@ -308,11 +314,38 @@ def app(editor):
                     if mute < 0:
                         stat = " solo"
                     label = f"{instrument.uid}: {plugin.name}"
+                    comp = gui.current_composition.get()
                     openplugin = components.button2(label + stat, font_size=10, flexible_height=True)
                     @openplugin.listen(gui.e_button_down)
                     def _openplugin_down_(x, y, button):
-                        if plugin.widget is None:
+                        if button == 1 and plugin.widget is None:
                             editor.widget(label, 120, 70, lv2.UIPayload, plugin)
+                        elif button == 3:
+                            @components.open_context_menu(comp, x, y)
+                            def _context_menu_():
+                                comp = gui.current_composition.get()
+                                comp.layout.max_width = 150
+                                dis = editor.document.mutes.get(instrument.uid,0) == +1
+                                mut = components.button2("mute" + " (on)"*dis, flexible_width=True)
+                                @mut.listen(gui.e_button_down)
+                                def _mute_(x, y, button):
+                                    mute = editor.document.mutes.get(instrument.uid, 0)
+                                    if mute == +1:
+                                        editor.document.mutes.pop(instrument.uid, None)
+                                    else:
+                                        editor.document.mutes[instrument.uid] = +1
+
+                                dis = editor.document.mutes.get(instrument.uid,0) == -1
+                                sol = components.button2("solo" + " (on)"*dis, flexible_width=True)
+                                @sol.listen(gui.e_button_down)
+                                def _solo_(x, y, button):
+                                    mute = editor.document.mutes.get(instrument.uid, 0)
+                                    if mute == -1:
+                                        editor.document.mutes.pop(instrument.uid, None)
+                                    else:
+                                        editor.document.mutes[instrument.uid] = -1
+                                #components.button2("clone", flexible_width=True)
+                                #components.button2("erase", flexible_width=True)
 
                     selected = instrument.uid == this.instrument_uid
                     select = components.button2("X" if selected else "", font_size=10, disabled=selected, min_width=32, flexible_height=True)
@@ -572,7 +605,7 @@ def app(editor):
             #def _event_():
             #    pass # TODO: fix
                 #buf = editor.plugin.inputs['In']
-                #editor.plugin.push_midi_event(buf, [0x91, key % 128, 0xFF])
+                #editor.plugin.push_midi_event(buf, [0x91, key % 128, 127])
 
     @gui.listen(gui.e_key_up)
     def _up_(key, modifier):
@@ -581,20 +614,21 @@ def app(editor):
         #def _event_():
         #    pass # TODO: fix
             #buf = editor.plugin.inputs['In']
-            #editor.plugin.push_midi_event(buf, [0x81, key % 128, 0xFF])
+            #editor.plugin.push_midi_event(buf, [0x81, key % 128, 127])
 
-    if this.dialog is not None:
-        this.dialog(editor, *this.dialog_args)
+    for dialog, args, kwargs in this.dialogs:
+        dialog(*args, **kwargs)
 
-    @gui.listen(e_dialog_open)
-    def _dialog_open_(dialog, args):
-        this.dialog = dialog
-        this.dialog_args = args
+    comp = gui.current_composition.get()
+    @gui.listen(components.e_dialog_open)
+    def _dialog_open_(dialog, *args, **kwargs):
+        this.dialogs.append((dialog, args, kwargs))
+        comp.set_dirty()
 
     @gui.listen(components.e_dialog_leave)
     def _dialog_leave_():
-        this.dialog = None
-        this.dialog_args = []
+        this.dialogs.pop()
+        comp.set_dirty()
 
 E_ENVELOPE_SEGMENT          = 4
 E_CHORD_PROGRESSION_SEGMENT = 3
@@ -667,9 +701,9 @@ class BeatlineLayout(gui.ColumnLayout):
             for beat, rest_seg in rest_positions:
                 if last_y is not None:
                     if rest_seg not in empty_segment_position:
-                        self.empty_segment_position[rest_seg] = []
+                        empty_segment_position[rest_seg] = []
                     empty_segment_position[rest_seg].append(last_y)
-                elif rest_seg not in self.empty_segment_position:
+                elif rest_seg not in empty_segment_position:
                     empty_segment_position[rest_seg] = [layout.top_line, layout.bot_line]
         self.empty_segment_position = dict((seg, resolution.mean(positions)) for seg, positions in empty_segment_position.items())
 
@@ -811,8 +845,8 @@ class BeatlineLayout(gui.ColumnLayout):
                     if 0 <= refbeat - beat < float(seg.duration):
                         return beat, seg
                     beat += float(seg.duration)
-        if beat <= refbeat:
-            return beat, None
+                if beat <= refbeat:
+                    return beat, None
 
     def get_voice(self, voice_uid):
         for voice in self.track.voices:
@@ -941,44 +975,47 @@ def beatline_events_display(document):
             ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
             block = entities.by_beat(layout.smeared, beat)
             beat_unit = block.beat_unit
-            cat = resolution.categorize_note_duration(duration / beat_unit)
-            if cat is None:
-                if len(seg.notes) == 0:
-                    t = beatline.empty_segment_position[seg]
-                else:
-                    pos = resolution.mean(note.pitch.position for note in seg.notes)
-                    t = layout.note_position(beat, pos)
+            cat, n, k, flex = resolution.flexible_categorize(duration, beat_unit, (-7,1,3))
+                #if len(seg.notes) == 0:
+                #    t = beatline.empty_segment_position[seg]
+                #else:
+                #    pos = resolution.mean(note.pitch.position for note in seg.notes)
+                #    t = layout.note_position(beat, pos)
+                #d = resolution.quantize_fraction(duration / beat_unit)
+                #cat = resolution.categorize_note_duration(d)
+                #base, dots, triplet = cat
+            if flex:
                 for center in layout.center_lines():
                     ctx.move_to(x, bb.y + center)
                     ctx.show_text('*')
-                d = resolution.quantize_fraction(duration / beat_unit)
-                cat = resolution.categorize_note_duration(d)
-            base, dots, triplet = cat
+
             if len(seg.notes) == 0:
                 y = beatline.empty_segment_position[seg]
                 ctx.set_font_size(50)
                 ctx.move_to(x - 4, bb.y + y -2)
                 c = {
-                    Fraction(2,1): chr(119098),
-                    Fraction(1,1): chr(119099),
-                    Fraction(1,2): chr(119100),
-                    Fraction(1,4): chr(119101),
-                    Fraction(1,8): chr(119102),
-                    Fraction(1,16): chr(119103),
-                    Fraction(1,32): chr(119104),
-                    Fraction(1,64): chr(119105),
-                    Fraction(1,128): chr(119106),
-                }[base]
+                    1: chr(119098),
+                    0: chr(119099),
+                   -1: chr(119100),
+                   -2: chr(119101),
+                   -3: chr(119102),
+                   -4: chr(119103),
+                   -5: chr(119104),
+                   -6: chr(119105),
+                   -7: chr(119106),
+                }[n]
                 ctx.show_text(c)
-                if triplet:
-                    ctx.move_to(x, bb.y + y)
-                    ctx.line_to(x + 5, bb.y + y + 5)
-                    ctx.line_to(x + 5, bb.y + y - 5)
-                    ctx.line_to(x, bb.y + y)
-                    ctx.stroke()
-                for dot in range(dots):
-                    ctx.arc(x + 16 + dot*5, bb.y + y + 3, 2, 0, 2*math.pi)
-                    ctx.fill()
+                if cat == 'fragment':
+                    ctx.set_font_size(10)
+                    ctx.move_to(x - 4, bb.y + y + 5)
+                    ctx.show_text(str(k))
+                if cat == 'dotted':
+                    for dot in range(k):
+                        ctx.arc(x + 16 + dot*5, bb.y + y + 3, 2, 0, 2*math.pi)
+                        ctx.fill()
+                if cat == 'repeated':
+                    ctx.move_to(x - 4, bb.y + y + 5)
+                    ctx.show_text('*' + str(k))
             for note in seg.notes:
                 ctx.set_source_rgba(0,0,0,1)
                 pitch = note.pitch
@@ -990,21 +1027,24 @@ def beatline_events_display(document):
                     ctx.move_to(x - 8 - xt.width, bb.y + y + 5)
                     ctx.show_text(resolution.char_accidental[pitch.accidental])
                 # TODO: represent triplet with some smarter way
-                if triplet:
-                    ctx.move_to(x -5, bb.y + y)
-                    ctx.line_to(x +5, bb.y + y + 5)
-                    ctx.line_to(x +5, bb.y + y - 5)
-                    ctx.line_to(x -5, bb.y + y)
+                ctx.move_to(x +5, bb.y + y)
+                ctx.arc(x, bb.y + y, 5, 0, 2*math.pi)
+                if n >= -1:
+                    ctx.stroke()
                 else:
-                    ctx.move_to(x +5, bb.y + y)
-                    ctx.arc(x, bb.y + y, 5, 0, 2*math.pi)
-                    if base >= Fraction(1, 2):
-                        ctx.stroke()
-                    else:
-                        ctx.fill()
-                    for dot in range(dots):
-                        ctx.arc(x + 8 + dot*5, bb.y + y + 3, 2, 0, 2*math.pi)
-                        ctx.fill()
+                    ctx.fill()
+                if cat == 'fragment':
+                    ctx.set_font_size(10)
+                    ctx.move_to(x + 5, bb.y + y + 5)
+                    ctx.show_text(str(k))
+                if cat in ('dotted', 'repeated'):
+                    if cat == 'dotted':
+                        for dot in range(k):
+                            ctx.arc(x + 8 + dot*5, bb.y + y + 3, 2, 0, 2*math.pi)
+                            ctx.fill()
+                    if cat == 'repeated':
+                        ctx.move_to(x, bb.y + y + 5)
+                        ctx.show_text('*'+str(k))
                 if tie > 0:
                     past, px = beatline.seg_xs[seg][tie-1]
                     y0 = layout.note_position(past, pitch.position)
@@ -1024,12 +1064,12 @@ def beatline_events_display(document):
                     ctx.move_to(x + 5, bb.y + high)
                     ctx.line_to(x + 5, bb.y + low)
                     ctx.stroke()
-                if base <= Fraction(1, 2):
+                if n <= -1:
                     ctx.move_to(x + 5, bb.y + high)
                     ctx.line_to(x + 5, bb.y + high - 30)
                     ctx.stroke()
                 for d in range(5):
-                    if base <= Fraction(1, 2**(d+3)):
+                    if n <= -3-d:
                         ctx.move_to(x + 5, bb.y + high - 30 + d * 4)
                         ctx.line_to(x + 5 + 5, bb.y + high - 30 + d * 4 + 8)
                         ctx.stroke()
@@ -1103,7 +1143,7 @@ def staff_display(editor, document, track, staff, tool, instrument_uid):
     @gui.listen(gui.e_button_down)
     def _margin_press_(x, y, button):
         if button == 1:
-            gui.inform(e_dialog_open, comp, staff_dialog, [comp.layout.staff])
+            gui.inform(components.e_dialog_open, comp, staff_dialog, editor, comp.layout.staff)
         if button == 2:
             mute = editor.document.mutes.get(comp.layout.uid, 0)
             if mute == -1:
@@ -1271,7 +1311,7 @@ def envelope_display(editor, document, track, envelope, tool, instrument_uid):
     @gui.listen(gui.e_button_down)
     def _margin_press_(x, y, button):
         if button == 1:
-            gui.inform(e_dialog_open, comp, envelope_dialog, [comp.layout.envelope])
+            gui.inform(components.e_dialog_open, comp, envelope_dialog, editor, comp.layout.envelope)
 
 class EnvelopeLayout(GraphLayout):
     def __init__(self, track, envelope):
@@ -1429,7 +1469,7 @@ def staff_plot_tool(editor, instrument_uid):
         voice_lock = False,
         mouse_x = 0,
         mouse_y = 0,
-        nearest = (None, (0,0)),
+        nearest = None,
         beat_position = None,
         playing = [],
     )
@@ -1449,7 +1489,7 @@ def staff_plot_tool(editor, instrument_uid):
         beatline = comp.parent.parent.layout.inner
         if comp.local_point(x, y)[0] < beatline.x0:
             gui.inform(e_margin_press, comp, x, y, button)
-        elif this.beat_position and this.nearest[0] is not None:
+        elif this.beat_position and this.nearest is not None:
             refbeat, position = this.beat_position
             _, seg = beatline.get_segment(refbeat, this.nearest[0])
             if button == 1 and seg is not None:
@@ -1471,7 +1511,8 @@ def staff_plot_tool(editor, instrument_uid):
 
     @gui.listen(gui.e_key_down)
     def _keydown_(key, repeat, modifier):
-        if this.nearest[0] is not None:
+        beatline = comp.parent.parent.layout.inner
+        if this.nearest is not None:
             if key == sdl2.SDLK_m:
                 mute = editor.document.mutes.get(this.nearest[0], 0)
                 if mute == 1:
@@ -1496,13 +1537,13 @@ def staff_plot_tool(editor, instrument_uid):
                                 voice.dynamics_uid = envs[i]
                             else:
                                 voice.dynamics_uid = None
-                _comp.set_dirty()
+                comp.set_dirty()
         if repeat == 0 and key == sdl2.SDLK_p and this.beat_position:
             def midi_event(m, plugin):
                 @plugin.event
                 def _event_():
                     buf = plugin.inputs['In']
-                    plugin.push_midi_event(buf, [0x91, m, 0xFF])
+                    plugin.push_midi_event(buf, [0x91, m, 127])
             beat, position = this.beat_position
             block = entities.by_beat(comp.parent.layout.smeared, beat)
             key = resolution.canon_key(block.canonical_key)
@@ -1520,13 +1561,13 @@ def staff_plot_tool(editor, instrument_uid):
                 @plugin.event
                 def _event_():
                     buf = plugin.inputs['In']
-                    plugin.push_midi_event(buf, [0x81, m, 0xFF])
+                    plugin.push_midi_event(buf, [0x81, m, 127])
             for m, plugin in this.playing:
                 midi_event(m, plugin)
 
     @gui.listen(gui.e_leaving)
     def _leaving_(x, y):
-        this.nearest = None, (0, 0)
+        this.nearest = None
         this.beat_position = None
         this.voice_lock = False
 
@@ -1537,7 +1578,7 @@ def staff_plot_tool(editor, instrument_uid):
         ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
         if this.voice_lock:
             ctx.set_source_rgba(0.0, 0.0, 1.0, 1.0)
-        if this.nearest[0] is not None:
+        if this.nearest is not None:
             staff_uid, dynamics_uid, xs, ys = beatline.trajectories[this.nearest[0]]
             for i, (x,y) in enumerate(zip(xs, ys)):
                 if i == 0:
@@ -1563,7 +1604,7 @@ def staff_split_tool(editor, instrument_uid):
         voice_lock = False,
         mouse_x = 0,
         mouse_y = 0,
-        nearest = (None, (0, 0)),
+        nearest = None,
         bseg = (0.0, None, 0, 0),
         beat_position = None,
         bu_split = None,
@@ -1579,7 +1620,7 @@ def staff_split_tool(editor, instrument_uid):
             this.nearest = beatline.nearest_voice(graph, x, y)
         this.beat_position = beatline.location_as_position(graph, x, y)
         
-        if this.nearest[0] is not None:
+        if this.nearest is not None:
             voice = beatline.get_voice(this.nearest[0])
             x1 = beatline.offsets[0]
             beat = 0.0
@@ -1595,19 +1636,19 @@ def staff_split_tool(editor, instrument_uid):
             if this.bseg[1] is not None:
                 t = (this.mouse_x - this.bseg[2]) / (this.bseg[3] - this.bseg[2])
                 bu = entities.by_beat(graph.layout.smeared, this.bseg[0]).beat_unit
-                total = this.bseg[1].duration / bu
-                a = resolution.quantize_fraction(t * float(total))
+                total = this.bseg[1].duration
+                a = resolution.quantize(t * float(total), bu, (-7,1,3))
                 b = total - a
-                if b in resolution.generate_all_note_durations():
-                    this.bu_split = (bu, a, b, this.bseg[1])
+                if b in resolution.valid_durations((-7,1,3)):
+                    this.bu_split = (bu, a/bu, b/bu, this.bseg[1])
             else:
                 bu = entities.by_beat(graph.layout.smeared, this.bseg[0]).beat_unit
-                a = resolution.quantize_fraction((this.mouse_x - this.bseg[2]) / 50)
+                a = resolution.quantize((this.mouse_x - this.bseg[2]) / 50, bu, (-7,1,3))
                 this.bu_split = (bu, a, None, None)
 
     @gui.listen(gui.e_leaving)
     def _leaving_(x, y):
-        this.nearest = (None, (0, 0))
+        this.nearest = None
         this.bseg = (0, None, 0, 0)
         this.beat_position = None
         this.voice_lock = False
@@ -1617,7 +1658,7 @@ def staff_split_tool(editor, instrument_uid):
         beatline = comp.parent.parent.layout.inner
         if comp.local_point(x, y)[0] < beatline.x0:
             gui.inform(e_margin_press, comp, x, y, button)
-        elif this.beat_position and this.nearest[0] is not None:
+        elif this.beat_position and this.nearest is not None:
             refbeat, position = this.beat_position
             if button == 3:
                 this.voice_lock = not this.voice_lock
@@ -1645,7 +1686,7 @@ def staff_split_tool(editor, instrument_uid):
         ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
         if this.voice_lock:
             ctx.set_source_rgba(0.0, 0.0, 1.0, 1.0)
-        if this.nearest[0] is not None:
+        if this.nearest is not None:
             staff_uid, dynamics_uid, xs, ys = beatline.trajectories[this.nearest[0]]
             for i, (x,y) in enumerate(zip(xs, ys)):
                 if i == 0:
@@ -1678,42 +1719,55 @@ def staff_split_tool(editor, instrument_uid):
             bu, a, b, seg = this.bu_split
             level = this.mouse_y
             tab = {
-                Fraction(2,1): chr(119132),
-                Fraction(1,1): chr(119133),
-                Fraction(1,2): chr(119134),
-                Fraction(1,4): chr(119135),
-                Fraction(1,8): chr(119136),
-                Fraction(1,16): chr(119137),
-                Fraction(1,32): chr(119138),
-                Fraction(1,64): chr(119139),
-                Fraction(1,128): chr(119140),
+                +1: chr(119132),
+                +0: chr(119133),
+                -1: chr(119134),
+                -2: chr(119135),
+                -3: chr(119136),
+                -4: chr(119137),
+                -5: chr(119138),
+                -6: chr(119139),
+                -7: chr(119140),
             }
             ctx.set_font_size(25)
-            cat = resolution.categorize_note_duration(a)
-            if cat is not None:
-                base, dots, triplet = cat
-                ctx.move_to(x0 + 5, level)
-                if base > 2:
-                    text = (tab[Fraction(1,base.denominator)] + '.'*dots) * base.numerator
-                else:
-                    text = tab[base] + '.'*dots
-                ctx.show_text(text)
+            cat, n, k, flex = resolution.flexible_categorize(a*bu, bu, (-7,1,3))
+            if cat == 'dotted':
+                text = tab[n] + '.'*k
                 ctx.set_font_size(12)
+                ctx.move_to(x0 + 5, level)
+                ctx.show_text(text)
+            elif cat == 'fragment':
+                text = tab[n]
+                ctx.set_font_size(12)
+                ctx.move_to(x0 + 5, level)
+                ctx.show_text(text)
                 ctx.move_to(x0 + 5, level + 12)
-                ctx.show_text('3'*int(triplet))
-                ctx.set_font_size(25)
-                if b is not None:
-                    base, dots, triplet = resolution.categorize_note_duration(b)
-                    if base > 2:
-                        text = (tab[Fraction(1,base.denominator)] + '.'*dots) * base.numerator
-                    else:
-                        text = tab[base] + '.'*dots
-                    ex = ctx.text_extents(text)
-                    ctx.move_to(x2 - 5 - ex.width, level)
-                    ctx.show_text(text)
+                ctx.show_text(str(k))
+            elif cat == 'repeated':
+                text = tab[n] + '*' + str(k)
+                ctx.set_font_size(12)
+                ctx.move_to(x0 + 5, level)
+                ctx.show_text(text)
+            ctx.set_font_size(25)
+            if b is not None:
+                cat, n, k, flex = resolution.flexible_categorize(b*bu, bu, (-7,1,3))
+                if cat == 'dotted':
+                    text = tab[n] + '.'*k
                     ctx.set_font_size(12)
-                    ctx.move_to(x2 - 5 - ex.width, level + 12)
-                    ctx.show_text('3'*int(triplet))
+                    ctx.move_to(x2 + 5, level)
+                    ctx.show_text(text)
+                elif cat == 'fragment':
+                    text = tab[n]
+                    ctx.set_font_size(12)
+                    ctx.move_to(x2 + 5, level)
+                    ctx.show_text(text)
+                    ctx.move_to(x2 + 5, level + 12)
+                    ctx.show_text(str(k))
+                elif cat == 'repeated':
+                    text = tab[n] + '*' + str(k)
+                    ctx.set_font_size(12)
+                    ctx.move_to(x2 + 5, level)
+                    ctx.show_text(text)
 
 split_tool = {'staff': staff_split_tool}
 
@@ -1742,9 +1796,10 @@ def staff_input_tool(editor, instrument_uid):
         accidental = None,
         playing = [],
         time_start = None,
-        base_note = Fraction(1, 4),
+        cat = 'dotted',
+        base = 0,
         dots = 0,
-        tri = False,
+        tuplet = 3,
     )
     if this.document != editor.document:
         this.document = editor.document
@@ -1772,7 +1827,10 @@ def staff_input_tool(editor, instrument_uid):
             if button == 1:
                 beatpoint = resolution.sequence_interpolation(x, beatline.offsets, beatline.beats)
                 nearest = beatline.nearest_voice(comp.parent, x, y)
-                this.voice_uid = nearest[0]
+                if nearest is not None:
+                    this.voice_uid = nearest[0]
+                else:
+                    this.voice_uid = None
 
                 if this.voice_uid is not None:
                     voice = beatline.get_voice(this.voice_uid)
@@ -1819,7 +1877,7 @@ def staff_input_tool(editor, instrument_uid):
                 @plugin.event
                 def _event_():
                     buf = plugin.inputs['In']
-                    plugin.push_midi_event(buf, [0x91, m, 0xFF])
+                    plugin.push_midi_event(buf, [0x91, m, 127])
             block = entities.by_beat(layout.smeared, this.beat)
             key = resolution.canon_key(block.canonical_key)
             this.playing = []
@@ -1834,22 +1892,32 @@ def staff_input_tool(editor, instrument_uid):
         if repeat == 0 and key == sdl2.SDLK_q:
             this.time_start = editor.time
 
-        if key == sdl2.SDLK_a:
-            this.base_note /= 2
+        if key == sdl2.SDLK_a and this.base > -7:
+            this.base -= 1
 
-        if key == sdl2.SDLK_w:
-            this.base_note *= 2
+        if key == sdl2.SDLK_w and this.base < 1:
+            this.base += 1
 
-        if key == sdl2.SDLK_z and this.dots > 0:
+        if key == sdl2.SDLK_z and this.dots > 0 and this.cat == 'dotted':
             this.dots -= 1
 
-        if key == sdl2.SDLK_x:
+        if key == sdl2.SDLK_x and this.dots < 3 and this.cat == 'dotted':
             this.dots += 1
 
-        if key == sdl2.SDLK_e:
-            this.tri = not this.tri
+        if key == sdl2.SDLK_z and this.cat == 'fragment':
+            primes = [3,5,7,11]
+            this.tuplet = primes[primes.index(this.tuplet) - 1]
 
-        if key == sdl2.SDLK_z:
+        if key == sdl2.SDLK_x and this.cat == 'fragment':
+            primes = [3,5,7,11,3]
+            this.tuplet = primes[primes.index(this.tuplet) + 1]
+
+        if key == sdl2.SDLK_e and this.cat == 'dotted':
+            this.cat = 'fragment'
+        elif key == sdl2.SDLK_e and this.cat == 'fragment':
+            this.cat = 'dotted'
+            
+        if key == sdl2.SDLK_s:
             this.stencil = []
 
         if key == sdl2.SDLK_BACKSPACE:
@@ -1866,9 +1934,13 @@ def staff_input_tool(editor, instrument_uid):
             editor.transport.play(bpm, editor.document.track.voices,
                 dict((s.uid, s) for s in editor.document.track.graphs))
 
+        if this.cat == 'dotted':
+            duration = resolution.rebuild_duration(this.cat, this.base, this.dots) * block.beat_unit
+        if this.cat == 'fragment':
+            duration = resolution.rebuild_duration(this.cat, this.base, this.tuplet) * block.beat_unit
         seg = entities.VoiceSegment(
             notes = list(this.stencil),
-            duration = resolution.build_note_duration(this.base_note, this.dots, this.tri) * block.beat_unit,
+            duration = duration
         )
         if key == sdl2.SDLK_1:
             for voice in track.voices:
@@ -1923,7 +1995,7 @@ def staff_input_tool(editor, instrument_uid):
                 @plugin.event
                 def _event_():
                     buf = plugin.inputs['In']
-                    plugin.push_midi_event(buf, [0x81, m, 0xFF])
+                    plugin.push_midi_event(buf, [0x81, m, 127])
             for m, plugin in this.playing:
                 midi_event(m, plugin)
         if key == sdl2.SDLK_q:
@@ -1935,7 +2007,7 @@ def staff_input_tool(editor, instrument_uid):
         layout = comp.parent.layout
         ctx = ui.ctx
         bb = comp.shape
-        if ui.focus == comp.key:
+        if ui.focus == comp.uid:
             if this.voice_uid is None:
                 ctx.set_source_rgba(0.0, 0.0, 1.0, 1.0)
             else:
@@ -1948,7 +2020,7 @@ def staff_input_tool(editor, instrument_uid):
             ctx.stroke()
 
             for note in this.stencil:
-                ctx.set_source_rgba(*bealine.instrument_colors.get(note.instrument_uid, (0.25,0.25,0.25,1.0)))
+                ctx.set_source_rgba(*beatline.instrument_colors.get(note.instrument_uid, (0.25,0.25,0.25,1.0)))
                 pitch = note.pitch
                 y = layout.note_position(this.beat, pitch.position)
                 ctx.arc(x, bb.y + y, 5, 0, math.pi*2)
@@ -1966,32 +2038,24 @@ def staff_input_tool(editor, instrument_uid):
                 ctx.show_text(resolution.char_accidental[this.accidental])
 
             tab = {
-                Fraction(2,1): chr(119132),
-                Fraction(1,1): chr(119133),
-                Fraction(1,2): chr(119134),
-                Fraction(1,4): chr(119135),
-                Fraction(1,8): chr(119136),
-                Fraction(1,16): chr(119137),
-                Fraction(1,32): chr(119138),
-                Fraction(1,64): chr(119139),
-                Fraction(1,128): chr(119140),
+                +1: chr(119132),
+                +0: chr(119133),
+                -1: chr(119134),
+                -2: chr(119135),
+                -3: chr(119136),
+                -4: chr(119137),
+                -5: chr(119138),
+                -6: chr(119139),
+                -7: chr(119140),
             }
             ctx.set_font_size(25)
             block = entities.by_beat(layout.smeared, this.beat)
-            base, dots, triplet = this.base_note, this.dots, this.tri
-            if triplet:
-                dots = 0
-            ctx.move_to(x + 15, bb.y + y0 - 10)
-            if base > 2:
-                text = (tab[Fraction(1,base.denominator)] + '.'*dots) * base.numerator
-            else:
-                text = tab[base] + '.'*dots
+            ctx.move_to(x + 15, bb.y + bb.height - 10)
+            if this.cat == 'dotted':
+                text = tab[this.base] + '.'*this.dots
+            if this.cat == 'fragment':
+                text = tab[this.base] + str(this.tuplet)
             ctx.show_text(text)
-            ctx.set_font_size(12)
-            ctx.move_to(x + 15, bb.y + y0 + 2)
-            ctx.show_text('3'*int(triplet))
-            ctx.set_font_size(25)
-
 
 @gui.composable
 def envelope_input_tool(editor, instrument_uid):
@@ -2001,11 +2065,12 @@ def envelope_input_tool(editor, instrument_uid):
         document = editor.document,
         seg_index = 0,
         beat = 0.0,
-        base_note = Fraction(1, 4),
-        dots = 0,
-        tri = False,
         tapped = random.randint(10, 200),
         taps = [],
+        cat = 'dotted',
+        base = 0,
+        dots = 0,
+        tuplet = 3,
     )
     if this.document != editor.document:
         this.seg_index = 0
@@ -2093,13 +2158,16 @@ def envelope_input_tool(editor, instrument_uid):
             if text == 't':
                 control = 0
                 value = this.tapped
-            duration = resolution.build_note_duration(this.base_note, this.dots, this.tri) * 4
-            if control is not None:
-                seg = entities.EnvelopeSegment(control, value, duration)
-                layout.envelope.segments[this.seg_index:this.seg_index] = [seg]
-                this.seg_index += 1
-                this.beat += float(seg.duration)
-                this._composition.set_dirty()
+        if this.cat == 'dotted':
+            duration = resolution.rebuild_duration(this.cat, this.base, this.dots) * 4
+        if this.cat == 'fragment':
+            duration = resolution.rebuild_duration(this.cat, this.base, this.tuplet) * 4
+        if control is not None:
+            seg = entities.EnvelopeSegment(control, value, duration)
+            layout.envelope.segments[this.seg_index:this.seg_index] = [seg]
+            this.seg_index += 1
+            this.beat += float(seg.duration)
+            this._composition.set_dirty()
     @gui.listen(gui.e_key_down)
     def _down_(key, repeat, modifier):
         layout = comp.parent.layout
@@ -2114,16 +2182,32 @@ def envelope_input_tool(editor, instrument_uid):
             if tiptap > 0 and len(this.taps) > 1:
                 tiptap /= len(this.taps)-1
                 this.tapped = round(60 / tiptap)
-        if key == sdl2.SDLK_a:
-            this.base_note /= 2
-        if key == sdl2.SDLK_w:
-            this.base_note *= 2
-        if key == sdl2.SDLK_z and this.dots > 0:
+
+        if key == sdl2.SDLK_a and this.base > -7:
+            this.base -= 1
+
+        if key == sdl2.SDLK_w and this.base < 1:
+            this.base += 1
+
+        if key == sdl2.SDLK_z and this.dots > 0 and this.cat == 'dotted':
             this.dots -= 1
-        if key == sdl2.SDLK_x:
+
+        if key == sdl2.SDLK_x and this.dots < 3 and this.cat == 'dotted':
             this.dots += 1
-        if key == sdl2.SDLK_e:
-            this.tri = not this.tri
+
+        if key == sdl2.SDLK_z and this.cat == 'fragment':
+            primes = [3,5,7,11]
+            this.tuplet = primes[primes.index(this.tuplet) - 1]
+
+        if key == sdl2.SDLK_x and this.cat == 'fragment':
+            primes = [3,5,7,11,3]
+            this.tuplet = primes[primes.index(this.tuplet) + 1]
+
+        if key == sdl2.SDLK_e and this.cat == 'dotted':
+            this.cat = 'fragment'
+        elif key == sdl2.SDLK_e and this.cat == 'fragment':
+            this.cat = 'dotted'
+
         if key == sdl2.SDLK_BACKSPACE:
             if this.seg_index > 0:
                 seg = layout.envelope.segments[this.seg_index-1]
@@ -2146,41 +2230,36 @@ def envelope_input_tool(editor, instrument_uid):
         layout = comp.parent.layout
         bb = comp.shape
         ctx = ui.ctx
-        if ui.focus == comp.key:
+        if ui.focus == comp.uid:
+            ctx.set_source_rgba(0,0,0,1)
             x = resolution.sequence_interpolation(this.beat, beatline.beats, beatline.offsets, True)
             ctx.move_to(x,bb.y)
             ctx.line_to(x,bb.y+bb.height)
             ctx.stroke()
 
             tab = {
-                Fraction(2,1): chr(119132),
-                Fraction(1,1): chr(119133),
-                Fraction(1,2): chr(119134),
-                Fraction(1,4): chr(119135),
-                Fraction(1,8): chr(119136),
-                Fraction(1,16): chr(119137),
-                Fraction(1,32): chr(119138),
-                Fraction(1,64): chr(119139),
-                Fraction(1,128): chr(119140),
+                +1: chr(119132),
+                +0: chr(119133),
+                -1: chr(119134),
+                -2: chr(119135),
+                -3: chr(119136),
+                -4: chr(119137),
+                -5: chr(119138),
+                -6: chr(119139),
+                -7: chr(119140),
             }
             ctx.set_font_size(25)
-            if True:
-                base, dots, triplet = this.base_note, this.dots, this.tri
-                if triplet:
-                    dots = 0
-                ctx.move_to(x + 15, bb.y - 10)
-                if base > 2:
-                    text = (tab[Fraction(1,base.denominator)] + '.'*dots) * base.numerator
-                else:
-                    text = tab[base] + '.'*dots
-                ctx.show_text(text)
+            ctx.move_to(x + 15, bb.y + bb.height - 10)
+            if this.cat == 'dotted':
+                text = tab[this.base] + '.'*this.dots
+            if this.cat == 'fragment':
+                text = tab[this.base] + str(this.tuplet)
+            ctx.show_text(text)
+
+            if layout.envelope.kind == 'tempo':
                 ctx.set_font_size(12)
-                ctx.move_to(x + 15, bb.y + 2)
-                ctx.show_text('3'*int(triplet))
-                if layout.envelope.kind == 'tempo':
-                    ctx.set_font_size(12)
-                    ctx.move_to(x + 35, bb.y - 15)
-                    ctx.show_text(str(this.tapped))
+                ctx.move_to(x + 35, bb.y - 15)
+                ctx.show_text(str(this.tapped))
 
 @gui.composable
 def chord_progression_input_tool(editor, instrument_uid):
@@ -2190,9 +2269,10 @@ def chord_progression_input_tool(editor, instrument_uid):
         document = editor.document,
         seg_index = 0,
         beat = 0.0,
-        base_note = Fraction(1, 4),
+        cat = 'dotted',
+        base = 0,
         dots = 0,
-        tri = False,
+        tuplet = 3,
     )
     if this.document != editor.document:
         this.seg_index = 0
@@ -2220,16 +2300,32 @@ def chord_progression_input_tool(editor, instrument_uid):
     @gui.listen(gui.e_key_down)
     def _down_(key, repeat, modifier):
         layout = comp.parent.layout
-        if key == sdl2.SDLK_a:
-            this.base_note /= 2
-        if key == sdl2.SDLK_w:
-            this.base_note *= 2
-        if key == sdl2.SDLK_z and this.dots > 0:
+
+        if key == sdl2.SDLK_a and this.base > -7:
+            this.base -= 1
+
+        if key == sdl2.SDLK_w and this.base < 1:
+            this.base += 1
+
+        if key == sdl2.SDLK_z and this.dots > 0 and this.cat == 'dotted':
             this.dots -= 1
-        if key == sdl2.SDLK_x:
+
+        if key == sdl2.SDLK_x and this.dots < 3 and this.cat == 'dotted':
             this.dots += 1
-        if key == sdl2.SDLK_e:
-            this.tri = not this.tri
+
+        if key == sdl2.SDLK_z and this.cat == 'fragment':
+            primes = [3,5,7,11]
+            this.tuplet = primes[primes.index(this.tuplet) - 1]
+
+        if key == sdl2.SDLK_x and this.cat == 'fragment':
+            primes = [3,5,7,11,3]
+            this.tuplet = primes[primes.index(this.tuplet) + 1]
+
+        if key == sdl2.SDLK_e and this.cat == 'dotted':
+            this.cat = 'fragment'
+        elif key == sdl2.SDLK_e and this.cat == 'fragment':
+            this.cat = 'dotted'
+
         if key == sdl2.SDLK_BACKSPACE:
             if this.seg_index > 0:
                 seg = layout.chord_progression.segments[this.seg_index-1]
@@ -2238,7 +2334,10 @@ def chord_progression_input_tool(editor, instrument_uid):
                 this.beat -= float(seg.duration)
                 this._composition.set_dirty()
         nth = None
-        duration = resolution.build_note_duration(this.base_note, this.dots, this.tri) * 4
+        if this.cat == 'dotted':
+            duration = resolution.rebuild_duration(this.cat, this.base, this.dots) * 4
+        if this.cat == 'fragment':
+            duration = resolution.rebuild_duration(this.cat, this.base, this.tuplet) * 4
         if key == sdl2.SDLK_1:
             nth = 1
         if key == sdl2.SDLK_2:
@@ -2274,38 +2373,31 @@ def chord_progression_input_tool(editor, instrument_uid):
         layout = comp.parent.layout
         bb = comp.shape
         ctx = ui.ctx
-        if ui.focus == comp.key:
+        if ui.focus == comp.get_keys():
+            ctx.set_source_rgba(0,0,0,1)
             x = resolution.sequence_interpolation(this.beat, beatline.beats, beatline.offsets, True)
             ctx.move_to(x,bb.y)
             ctx.line_to(x,bb.y+bb.height)
             ctx.stroke()
 
             tab = {
-                Fraction(2,1): chr(119132),
-                Fraction(1,1): chr(119133),
-                Fraction(1,2): chr(119134),
-                Fraction(1,4): chr(119135),
-                Fraction(1,8): chr(119136),
-                Fraction(1,16): chr(119137),
-                Fraction(1,32): chr(119138),
-                Fraction(1,64): chr(119139),
-                Fraction(1,128): chr(119140),
+                +1: chr(119132),
+                +0: chr(119133),
+                -1: chr(119134),
+                -2: chr(119135),
+                -3: chr(119136),
+                -4: chr(119137),
+                -5: chr(119138),
+                -6: chr(119139),
+                -7: chr(119140),
             }
             ctx.set_font_size(25)
-            if True:
-                base, dots, triplet = this.base_note, this.dots, this.tri
-                if triplet:
-                    dots = 0
-                ctx.move_to(x + 15, bb.y - 10)
-                if base > 2:
-                    text = (tab[Fraction(1,base.denominator)] + '.'*dots) * base.numerator
-                else:
-                    text = tab[base] + '.'*dots
-                ctx.show_text(text)
-                ctx.set_font_size(12)
-                ctx.move_to(x + 15, bb.y + 2)
-                ctx.show_text('3'*int(triplet))
-                ctx.set_font_size(25)
+            ctx.move_to(x + 15, bb.y + bb.height - 10)
+            if this.cat == 'dotted':
+                text = tab[this.base] + '.'*this.dots
+            if this.cat == 'fragment':
+                text = tab[this.base] + str(this.tuplet)
+            ctx.show_text(text)
 
 input_tool = {
     'staff': staff_input_tool,

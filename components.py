@@ -369,7 +369,30 @@ def textbox(text, change_text, font_size=20):
         if button == sdl2.SDL_BUTTON_LEFT:
             dragging.value = False
 
+e_dialog_open = object()
 e_dialog_leave = object()
+
+def dialog2(shaded=True):
+    def _decorator_(fn):
+        _ui = gui.ui.get()
+        comp = gui.current_composition.get()
+        gui.layout(gui.StaticLayout(gui.PaddedLayout(gui.DynamicLayout(flexible_width=True, flexible_height=True),
+                                                     100, 100, 100, 100)))
+        gui.shape(gui.Box(0, 0, _ui.widget.width, _ui.widget.height))
+        if shaded:
+            @gui.drawing
+            def _draw_(ui, comp):
+                ui.ctx.set_source_rgba(0,0,0,0.5)
+                ui.ctx.rectangle(0,0, ui.widget.width, ui.widget.height)
+                ui.ctx.fill()
+
+        @gui.listen(gui.e_button_down)
+        def _button_down_(x, y, button):
+            gui.inform(e_dialog_leave, comp)
+
+        this = gui.sub(fn, 1)
+        return this
+    return _decorator_
 
 @contextmanager
 def dialog(shape=None):
@@ -409,3 +432,55 @@ def dialog(shape=None):
             pass
          
         yield comp
+
+def open_context_menu(comp, x, y, *args, **kwargs):
+    def _decorator_(fn):
+        gui.inform(e_dialog_open, comp, context_menu, fn, x, y, *args, **kwargs)
+    return _decorator_
+
+@gui.composable
+def context_menu(fn, x, y, *args, **kwargs):
+    @dialog2(shaded=False)
+    def _contents_():
+        gui.layout(MenuLayout(gui.ColumnLayout(flexible_width=True, flexible_height=True), x, y))
+        gui.shape(gui.Box(0,0,0,0))
+        @gui.drawing
+        def _draw_(ui, comp):
+            ui.ctx.set_source_rgba(1,1,1,1)
+            comp.shape.trace(ui.ctx)
+            ui.ctx.fill()
+            ui.ctx.set_source_rgba(0,0,0,1)
+            comp.shape.trace(ui.ctx)
+            ui.ctx.stroke()
+        fn(*args, **kwargs)
+
+class MenuLayout(gui.StaticLayout):
+    def __init__(self, inner, x, y, max_width=None, max_height=None):
+        super().__init__(inner)
+        self.x = x
+        self.y = y
+        self.max_width = max_width
+        self.max_height = max_height
+
+    def measure(self, children, available_width, available_height):
+        widget = gui.ui.get().widget
+        if self.max_width is not None:
+            width = self.max_width
+        else:
+            width = widget.width
+        if self.max_height is not None:
+            height = self.max_height
+        else:
+            height = widget.height
+        super().measure(children, width, height)
+
+    def __call__(self, this, box, shallow=True):
+        assert shallow
+        widget = gui.ui.get().widget
+        width = self.inner.calc_width
+        height = self.inner.calc_height
+        offset_x = max(0, self.x + width - widget.width)
+        offset_y = max(0, self.y + height - widget.height)
+        this.shape = gui.Box(self.x - offset_x, self.y - offset_y, width, height)
+        super().__call__(this, this.shape)
+
