@@ -24,6 +24,7 @@ def get_tempo_envelope(document):
     return resolution.LinearEnvelope([ (0, default, 0) ])
 
 e_document_change = object()
+e_graph_press = object()
 
 @gui.composable
 def vu_meter(vol, width=20, height=90):
@@ -425,7 +426,7 @@ def app(editor):
         gui.layout(gui.DynamicLayout(flexible_width=True, height=50))
         @gui.listen(gui.e_update)
         def _update_():
-            main_panel = main_scroller.children[0]
+            main_panel = next(main_scroller.children)
             beatline = main_panel.layout.inner
             beatballs = []
             for voice in list(editor.transport.live_voices):
@@ -441,7 +442,7 @@ def app(editor):
             this.beatballs = beatballs
         @gui.drawing
         def _draw_(ui, comp):
-            main_panel = main_scroller.children[0]
+            main_panel = next(main_scroller.children)
             ui.ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
             for beat, x in this.beatballs:
                 ui.ctx.arc(x*main_panel.layout.scale_x, comp.shape.y + 45 - 25 * abs(math.sin(beat * math.pi)), 5, 0, 2*math.pi)
@@ -588,6 +589,16 @@ def app(editor):
 
             beatline_events_display(document)
 
+            if 'main' in this.tool:
+                this.tool['main'](editor, document, this.instrument_uid)
+
+            @gui.listen(gui.e_key_down)
+            def _key_down_(key, repeat, modifier):
+                if key == sdl2.SDLK_SPACE:
+                    bpm = get_tempo_envelope(editor.document)
+                    editor.transport.play(bpm, editor.document.track.voices,
+                        dict((s.uid, s) for s in editor.document.track.graphs))
+
     gui.vspacing(5)
     @gui.row(height=32, flexible_width=True)
     def add_buttons():
@@ -683,6 +694,7 @@ class BeatlineLayout(gui.ColumnLayout):
         bisect.insort_left(self.events, (beat, kind, value), key=lambda k: (k[0], k[1]))
 
     def measure(self, children, available_width, available_height):
+        children = list(children)
         graphics = [child for child in children if isinstance(child.layout, GraphLayout)]
         self.x0 = max((child.layout.left_margin for child in graphics), default=0)
 
@@ -880,12 +892,11 @@ class BeatlineLayout(gui.ColumnLayout):
             if voice.uid == voice_uid:
                 return voice
 
-@gui.composable
 def beatline_events_display(document):
     @gui.drawing
     def _draw_(ui, comp):
         ctx = ui.ctx
-        beatline = comp.parent.layout.inner
+        beatline = comp.layout.inner
         for dashed, x, graph in beatline.barlines:
             if dashed:
                 ctx.set_dash([4, 2])
@@ -1168,22 +1179,26 @@ def staff_display(editor, document, track, staff, tool, instrument_uid):
 
     @gui.listen(e_margin_press)
     @gui.listen(gui.e_button_down)
-    def _margin_press_(x, y, button):
-        if button == 1:
-            gui.inform(components.e_dialog_open, comp, staff_dialog, editor, comp.layout.staff)
-        if button == 2:
-            mute = editor.document.mutes.get(comp.layout.uid, 0)
-            if mute == -1:
-                editor.document.mutes.pop(comp.layout.uid, None)
-            else:
-                editor.document.mutes[comp.layout.uid] = -1
-        if button == 3:
-            mute = editor.document.mutes.get(comp.layout.uid, 0)
-            if mute == 1:
-                editor.document.mutes.pop(comp.layout.uid, None)
-            else:
-                editor.document.mutes[comp.layout.uid] = 1
-        comp.set_dirty()
+    def _press_(x, y, button):
+        beatline = comp.parent.layout.inner
+        if comp.local_point(x, y)[0] < beatline.x0:
+            if button == 1:
+                gui.inform(components.e_dialog_open, comp, staff_dialog, editor, comp.layout.staff)
+            if button == 2:
+                mute = editor.document.mutes.get(comp.layout.uid, 0)
+                if mute == -1:
+                    editor.document.mutes.pop(comp.layout.uid, None)
+                else:
+                    editor.document.mutes[comp.layout.uid] = -1
+            if button == 3:
+                mute = editor.document.mutes.get(comp.layout.uid, 0)
+                if mute == 1:
+                    editor.document.mutes.pop(comp.layout.uid, None)
+                else:
+                    editor.document.mutes[comp.layout.uid] = 1
+            comp.set_dirty()
+        else:
+            gui.inform(e_graph_press, comp, comp, x, y, button)
 
 class StaffLayout(GraphLayout):
     def __init__(self, track, staff):
@@ -1277,13 +1292,17 @@ def chord_progression_display(editor, document, track, chord_progression, tool, 
 
     @gui.listen(e_margin_press)
     @gui.listen(gui.e_button_down)
-    def _margin_press_(x, y, button):
-        if button == 3:
-            mute = document.mutes.get(comp.layout.uid, 0)
-            if mute == 1:
-                 document.mutes.pop(comp.layout.uid, None)
-            else:
-                 document.mutes[comp.layout.uid] = 1
+    def _press_(x, y, button):
+        beatline = comp.parent.layout.inner
+        if comp.local_point(x, y)[0] < beatline.x0:
+            if button == 3:
+                mute = document.mutes.get(comp.layout.uid, 0)
+                if mute == 1:
+                     document.mutes.pop(comp.layout.uid, None)
+                else:
+                     document.mutes[comp.layout.uid] = 1
+        else:
+            gui.inform(e_graph_press, comp, comp, x, y, button)
 
 
 
@@ -1336,9 +1355,13 @@ def envelope_display(editor, document, track, envelope, tool, instrument_uid):
 
     @gui.listen(e_margin_press)
     @gui.listen(gui.e_button_down)
-    def _margin_press_(x, y, button):
-        if button == 1:
-            gui.inform(components.e_dialog_open, comp, envelope_dialog, editor, comp.layout.envelope)
+    def _press_(x, y, button):
+        beatline = comp.parent.layout.inner
+        if comp.local_point(x, y)[0] < beatline.x0:
+            if button == 1:
+                gui.inform(components.e_dialog_open, comp, envelope_dialog, editor, comp.layout.envelope)
+        else:
+            gui.inform(e_graph_press, comp, comp, x, y, button)
 
 class EnvelopeLayout(GraphLayout):
     def __init__(self, track, envelope):
@@ -1955,11 +1978,6 @@ def staff_input_tool(editor, instrument_uid):
                     this.seg_index -= 1
                     this.beat -= float(seg.duration)
             this._composition.set_dirty()
-
-        if key == sdl2.SDLK_SPACE:
-            bpm = get_tempo_envelope(editor.document)
-            editor.transport.play(bpm, editor.document.track.voices,
-                dict((s.uid, s) for s in editor.document.track.graphs))
 
         if this.cat == 'dotted':
             duration = resolution.rebuild_duration(this.cat, this.base, this.dots) * block.beat_unit

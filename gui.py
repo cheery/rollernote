@@ -21,7 +21,7 @@ class Composition:
         self.parent = parent
         self.key = key
         self.uid = uid
-        self.children = []
+        self.drawables = []
         self.props = props
         self.result = None
         self.dirty = False
@@ -29,9 +29,6 @@ class Composition:
         self.fresh = True
         self.key_counter = {}
         # The parts that makes this GUI
-        self.pre_drawings = []
-        self.drawings = []
-        self.post_drawings = []
         self.listeners = []
         self.layout = None
         self.transform = identity_transform
@@ -40,6 +37,12 @@ class Composition:
             self.shape = Hit()
         else:
             self.shape = Hidden()
+
+    @property
+    def children(self):
+        for child in self.drawables:
+            if isinstance(child, Composition):
+                yield child
 
     # TODO: Make an UID for each composition object.
     def get_composition(self, chain):
@@ -93,22 +96,24 @@ class Composition:
 
     def draw(self):
         _ui = ui.get()
-        _ui.ctx.save()
-        try:
-            for drawing in self.pre_drawings:
-                drawing(_ui, self)
-            if self.clipping:
-                self.shape.trace(_ui.ctx)
-                _ui.ctx.clip()
-            _ui.ctx.transform(self.transform)
-            for drawing in self.drawings:
-                drawing(_ui, self)
-            for children in self.children:
-                children.draw()
-            for drawing in self.post_drawings:
-                drawing(_ui, self)
-        finally:
-            _ui.ctx.restore()
+        for child in self.drawables:
+            _ui.ctx.save()
+            try:
+                if isinstance(child, Drawing):
+                    if child.in_clip:
+                        self.shape.trace(_ui.ctx)
+                        _ui.ctx.clip()
+                    if child.in_transform:
+                        _ui.ctx.transform(self.transform)
+                    child.fn(_ui, self)
+                else:
+                    if self.clipping:
+                        self.shape.trace(_ui.ctx)
+                        _ui.ctx.clip()
+                    _ui.ctx.transform(self.transform)
+                    child.draw()
+            finally:
+                _ui.ctx.restore()
 
     def local_point(self, x, y):
         # TODO: This probably works, but may fail on more complex case
@@ -151,6 +156,12 @@ class Composition:
         for child in self.children:
             yield from child.preorder()
 
+class Drawing:
+    def __init__(self, in_clip, in_transform, fn):
+        self.in_clip = in_clip
+        self.in_transform = in_transform
+        self.fn = fn
+
 def get_properties(args, kwargs):
     """Organize the arguments to allow their quick identification"""
     pargs = tuple(sorted(kwargs.items(), key=lambda item: item[0]))
@@ -183,7 +194,7 @@ def composition_frame(fn, args, kwargs, d=0):
         state = {} if previous is None else previous.state
         uid = object() if previous is None else previous.uid
         this = Composition(comp, key, uid, props, state)
-        comp.children.append(this)
+        comp.drawables.append(this)
         with composition_context(this, memoize(previous)):
             assert current_composition.get() == this
             yield this
@@ -191,7 +202,7 @@ def composition_frame(fn, args, kwargs, d=0):
         #print(f"{format_key(key)} retained {previous}")
         previous.fresh = False
         previous.parent = comp
-        comp.children.append(previous)
+        comp.drawables.append(previous)
         previous.listeners = list(filter(lambda v: v[1], previous.listeners))
         yield previous
 
@@ -486,17 +497,29 @@ class GUI:
     def close(self):
         pass
 
-def pre_drawing(func):
-    current_composition.get().pre_drawings.append(func)
-    return func
+def pre_drawing(fn):
+    comp = current_composition.get()
+    comp.drawables.append(Drawing(in_clip=False, in_transform=False, fn=fn))
+    return fn
 
-def drawing(func):
-    current_composition.get().drawings.append(func)
-    return func
+def drawing2(in_clip=None, in_transform=True):
+    def _decorator_(fn):
+        comp = current_composition.get()
+        if in_clip is None:
+            in_clip = comp.clipping
+        comp.drawables.append(Drawing(in_clip, in_transform, fn))
+        return fn
+    return _decorator_
 
-def post_drawing(func):
-    current_composition.get().post_drawings.append(func)
-    return func
+def drawing(fn):
+    comp = current_composition.get()
+    comp.drawables.append(Drawing(in_clip=comp.clipping, in_transform=True, fn=fn))
+    return fn
+
+def post_drawing(fn):
+    comp = current_composition.get()
+    comp.drawables.append(Drawing(in_clip=comp.clipping, in_transform=True, fn=fn))
+    return fn
 
 def listen(event):
     return current_composition.get().listen(event, original=True)
@@ -797,7 +820,7 @@ def sub(fn, d=0):
     state = {} if previous is None else previous.state
     uid = object() if previous is None else previous.uid
     this = Composition(comp, key, uid, None, state)
-    comp.children.append(this)
+    comp.drawables.append(this)
     with composition_context(this, memoize(previous)):
         fn()
     return this
