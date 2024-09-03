@@ -344,8 +344,34 @@ def app(editor):
                                         editor.document.mutes.pop(instrument.uid, None)
                                     else:
                                         editor.document.mutes[instrument.uid] = -1
-                                #components.button2("clone", flexible_width=True)
-                                #components.button2("erase", flexible_width=True)
+                                clo = components.button2("clone", flexible_width=True)
+                                @clo.listen(gui.e_button_down)
+                                def _clone_(x, y, button):
+                                    uid = editor.document.next_uid()
+                                    i = f"instrument.{uid}"
+                                    patch, data = editor.transport.plugins[instrument.uid].store(i)
+                                    new_instrument = entities.Instrument(instrument.plugin, patch, data, uid)
+                                    editor.document.instruments.append(new_instrument)
+                                    sdl2.SDL_PauseAudio(1)
+                                    editor.transport.plugins[new_instrument.uid] = plugin = editor.pluginhost.plugin(new_instrument.plugin)
+                                    if len(new_instrument.patch) > 0:
+                                        plugin.restore(new_instrument.patch, new_instrument.data)
+                                    sdl2.SDL_PauseAudio(0)
+                                era = components.button2("erase", flexible_width=True)
+                                @era.listen(gui.e_button_down)
+                                def _erase_(x, y, button):
+                                    sdl2.SDL_PauseAudio(1)
+                                    plugin = editor.transport.plugins[instrument.uid]
+                                    plugin.close()
+                                    editor.document.instruments.remove(instrument)
+                                    for voice in editor.document.track.voices:
+                                        for seg in voice.segments:
+                                            for note in seg.notes:
+                                                if note.instrument_uid == instrument.uid:
+                                                    note.instrument_uid = None
+                                    sdl2.SDL_PauseAudio(0)
+                                    gui.inform(components.e_dialog_leave, comp)
+
 
                     selected = instrument.uid == this.instrument_uid
                     select = components.button2("X" if selected else "", font_size=10, disabled=selected, min_width=32, flexible_height=True)
@@ -627,8 +653,9 @@ def app(editor):
 
     @gui.listen(components.e_dialog_leave)
     def _dialog_leave_():
-        this.dialogs.pop()
-        comp.set_dirty()
+        if len(this.dialogs) > 0:
+            this.dialogs.pop()
+            comp.set_dirty()
 
 E_ENVELOPE_SEGMENT          = 4
 E_CHORD_PROGRESSION_SEGMENT = 3
