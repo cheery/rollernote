@@ -1694,11 +1694,12 @@ def super_tool_main(editor, document, instrument_uid):
                         halve.listen(gui.e_button_down)(mul_segments(Fraction(1, 2)))
                         double = components.button2(f"*2", flexible_width=True, flexible_height=True)
                         double.listen(gui.e_button_down)(mul_segments(Fraction(2)))
-                    retro = components.button2("retrograde", flexible_width=True)
-                    @retro.listen(gui.e_button_down)
-                    def _retro_down(x, y, button):
-                        voice.segments[i0:i1+1] = reversed(voice.segments[i0:i1+1])
-                        gui.broadcast(e_document_change)
+                    retro = components.button2("retrograde", flexible_width=True, disabled=not continuity)
+                    if continuity:
+                        @retro.listen(gui.e_button_down)
+                        def _retro_down(x, y, button):
+                            voice.segments[i0:i1+1] = reversed(voice.segments[i0:i1+1])
+                            gui.broadcast(e_document_change)
             elif button == 3:
                 this.voice_lock = not this.voice_lock
 
