@@ -24,7 +24,9 @@ def get_tempo_envelope(document):
     return resolution.LinearEnvelope([ (0, default, 0) ])
 
 e_document_change = object()
-e_graph_press = object()
+e_graph_button_down = object()
+e_graph_button_up = object()
+e_graph_motion = object()
 
 @gui.composable
 def vu_meter(vol, width=20, height=90):
@@ -1177,7 +1179,7 @@ def staff_display(editor, document, track, staff, tool, instrument_uid):
 #    def _document_change_():
 #        comp.set_dirty()
 
-    @gui.listen(e_margin_press)
+    @gui.listen(e_margin_press) # TODO: remove when ready
     @gui.listen(gui.e_button_down)
     def _press_(x, y, button):
         beatline = comp.parent.layout.inner
@@ -1198,7 +1200,15 @@ def staff_display(editor, document, track, staff, tool, instrument_uid):
                     editor.document.mutes[comp.layout.uid] = 1
             comp.set_dirty()
         else:
-            gui.inform(e_graph_press, comp, comp, x, y, button)
+            gui.inform(e_graph_button_down, comp, x, y, button, comp)
+
+    @gui.listen(gui.e_button_up)
+    def _button_up_(x, y, button):
+        gui.inform(e_graph_button_up, comp, x, y, button, comp)
+
+    @gui.listen(gui.e_motion)
+    def _motion_(x, y):
+        gui.inform(e_graph_motion, comp, x, y, comp)
 
 class StaffLayout(GraphLayout):
     def __init__(self, track, staff):
@@ -1302,9 +1312,15 @@ def chord_progression_display(editor, document, track, chord_progression, tool, 
                 else:
                      document.mutes[comp.layout.uid] = 1
         else:
-            gui.inform(e_graph_press, comp, comp, x, y, button)
+            gui.inform(e_graph_button_down, comp, x, y, button, comp)
 
+    @gui.listen(gui.e_button_up)
+    def _button_up_(x, y, button):
+        gui.inform(e_graph_button_up, comp, x, y, button, comp)
 
+    @gui.listen(gui.e_motion)
+    def _motion_(x, y):
+        gui.inform(e_graph_motion, comp, x, y, comp)
 
 class ChordProgressionLayout(GraphLayout):
     def __init__(self, track, chord_progression):
@@ -1361,7 +1377,15 @@ def envelope_display(editor, document, track, envelope, tool, instrument_uid):
             if button == 1:
                 gui.inform(components.e_dialog_open, comp, envelope_dialog, editor, comp.layout.envelope)
         else:
-            gui.inform(e_graph_press, comp, comp, x, y, button)
+            gui.inform(e_graph_button_down, comp, x, y, button, comp)
+
+    @gui.listen(gui.e_button_up)
+    def _button_up_(x, y, button):
+        gui.inform(e_graph_button_up, comp, x, y, button, comp)
+
+    @gui.listen(gui.e_motion)
+    def _motion_(x, y):
+        gui.inform(e_graph_motion, comp, x, y, comp)
 
 class EnvelopeLayout(GraphLayout):
     def __init__(self, track, envelope):
@@ -1452,116 +1476,143 @@ def staff_dialog(editor, staff):
                         editor.document.track.voices.remove(voice)
                 gui.inform(components.e_dialog_leave, rm_staff)
 
-@gui.composable
-def staff_transport_tool(editor, instrument_uid):
+def transport_tool_main(editor, document, instrument_uid):
     comp = gui.current_composition.get()
-    gui.layout(gui.DynamicLayout(flexible_width=True, flexible_height=True))
     this = gui.lazybundle(
         mouse_x = 0,
         mouse_y = 0,
         beat = 0,
+        head = 0,
+        tail = 0,
+        dragging = False
     )
     @gui.listen(gui.e_motion)
     def _motion_(x, y):
-        beatline = comp.parent.parent.layout.inner
+        beatline = comp.layout.inner
         x, y = comp.local_point(x, y)
         this.mouse_x = x
         this.mouse_y = y
         this.beat = round(resolution.sequence_interpolation(x, beatline.offsets, beatline.beats))
+        if this.dragging:
+            this.head = this.beat
+            editor.transport.play_start = min(this.tail, this.head)
+            editor.transport.play_end   = max(this.tail, this.head)
 
     @gui.listen(gui.e_button_down)
-    def _down_(x, y, button):
-        beatline = comp.parent.parent.layout.inner
-        if comp.local_point(x, y)[0] < beatline.x0:
-            gui.inform(e_margin_press, comp, x, y, button)
-        else:
-            if button == 1:
-                editor.transport.play_start = this.beat
-            if button == 2:
-                editor.transport.play_start = None
-                editor.transport.play_end = None
-            if button == 3:
-                editor.transport.play_end = this.beat
+    @gui.listen(e_graph_button_down)
+    def _down_(x, y, button, graph=None):
+        beatline = comp.layout.inner
+        if button == 1:
+            editor.transport.play_start = this.beat
+            editor.transport.play_end   = this.beat
+            this.head = this.beat
+            this.tail = this.beat
+            this.dragging = True
             comp.set_dirty()
+        if button == 3:
+            @components.open_context_menu(comp, x, y)
+            def _context_menu_():
+                clr = components.button2("clear selection")
+                @clr.listen(gui.e_button_down)
+                def _clr_down_(x, y, button):
+                    editor.transport.play_start = None
+                    editor.transport.play_end = None
+                    comp.set_dirty()
+                    gui.inform(components.e_dialog_leave, comp)
+
+    @gui.listen(gui.e_button_up)
+    @gui.listen(e_graph_button_up)
+    def _up_(x, y, button, graph=None):
+        this.dragging = False
 
     @gui.drawing
     def _draw_(ui, comp):
-        graph = comp.parent
-        beatline = comp.parent.parent.layout.inner
-        bb = comp.shape
+        beatline = comp.layout.inner
+        height = beatline.calc_height
         ctx = ui.ctx
         x = resolution.sequence_interpolation(this.beat, beatline.beats, beatline.offsets, True)
         ctx.set_source_rgba(1,0,0,1)
-        ctx.move_to(x, bb.y)
-        ctx.line_to(x, bb.y+bb.height)
+        ctx.move_to(x, 0)
+        ctx.line_to(x, height)
         ctx.stroke()
+
+        if editor.transport.play_start is not None and editor.transport.play_end is not None:
+            x = resolution.sequence_interpolation(this.head, beatline.beats, beatline.offsets, True)
+            ctx.set_source_rgba(0,0,1,1)
+            ctx.move_to(x, 0)
+            ctx.line_to(x, height)
+            ctx.stroke()
 
         if editor.transport.play_start is not None:
             ctx.set_source_rgba(0,0,0,0.7)
             x0 = resolution.sequence_interpolation(0.0, beatline.beats, beatline.offsets, True)
             x1 = resolution.sequence_interpolation(editor.transport.play_start, beatline.beats, beatline.offsets, True)
-            ctx.rectangle(x0, bb.y, x1 - x0, bb.height)
+            ctx.rectangle(x0, 0, x1 - x0, height)
             ctx.fill()
         if editor.transport.play_end is not None:
             ctx.set_source_rgba(0,0,0,0.7)
             x2 = resolution.sequence_interpolation(editor.transport.play_end, beatline.beats, beatline.offsets, True)
             x3 = resolution.sequence_interpolation(beatline.last_beat, beatline.beats, beatline.offsets, True)
-            ctx.rectangle(x2, bb.y, x3 - x2, bb.height)
+            ctx.rectangle(x2, 0, x3 - x2, height)
             ctx.fill()
 
-transport_tool = {'staff': staff_transport_tool}
+transport_tool = {'main': transport_tool_main}
 
-@gui.composable
-def staff_plot_tool(editor, instrument_uid):
+def plot_tool_main(editor, document, instrument_uid):
     comp = gui.current_composition.get()
-    gui.layout(gui.DynamicLayout())
     this = gui.lazybundle(
         voice_lock = False,
         mouse_x = 0,
         mouse_y = 0,
         nearest = None,
-        beat_position = None,
+        graph = None,
+        beat = 0.0,
+        position = None,
         playing = [],
     )
     @gui.listen(gui.e_motion)
-    def _motion_(x, y):
-        graph = comp.parent
-        beatline = comp.parent.parent.layout.inner
+    @gui.listen(e_graph_motion)
+    def _motion_(x, y, graph=None):
+        beatline = comp.layout.inner
         x, y = comp.local_point(x, y)
         this.mouse_x = x
         this.mouse_y = y
-        if not this.voice_lock:
-            this.nearest = beatline.nearest_voice(graph, x, y)
-        this.beat_position = beatline.location_as_position(graph, x, y)
+        if graph is not None and isinstance(graph.layout, StaffLayout):
+            if not this.voice_lock:
+                this.nearest = beatline.nearest_voice(graph, x, y)
+                this.graph = graph
+            if this.graph == graph:
+                beat_position = beatline.location_as_position(graph, x, y)
+                if beat_position is not None:
+                    this.beat, this.position = beat_position
+                else:
+                    this.beat, this.position = 0.0, None
 
+    @gui.listen(e_graph_button_down)
     @gui.listen(gui.e_button_down)
-    def _button_down_(x, y, button):
-        beatline = comp.parent.parent.layout.inner
-        if comp.local_point(x, y)[0] < beatline.x0:
-            gui.inform(e_margin_press, comp, x, y, button)
-        elif this.beat_position and this.nearest is not None:
-            refbeat, position = this.beat_position
-            _, seg = beatline.get_segment(refbeat, this.nearest[0])
+    def _button_down_(x, y, button, graph=None):
+        beatline = comp.layout.inner
+        if this.position is not None and this.nearest is not None:
+            _, seg = beatline.get_segment(this.beat, this.nearest[0])
             if button == 1 and seg is not None:
-                if not any(note.pitch.position == position for note in seg.notes):
+                # TODO: smarter plotting?
+                if not any(note.pitch.position == this.position for note in seg.notes):
                     seg.notes.append(entities.Note(
-                        entities.Pitch(position),
+                        entities.Pitch(this.position),
                         instrument_uid))
-                    comp.set_dirty()
-                    this.beat_position = None
+                    this.position = None
             if button == 2 and seg is not None:
                 for note in seg.notes:
-                    if note.pitch.position == position:
+                    if note.pitch.position == this.position:
                         seg.notes.remove(note)
-                        comp.set_dirty()
-                        this.beat_position = None
+                        this.position = None
                         break
             if button == 3:
                 this.voice_lock = not this.voice_lock
 
     @gui.listen(gui.e_key_down)
     def _keydown_(key, repeat, modifier):
-        beatline = comp.parent.parent.layout.inner
+        beatline = comp.layout.inner
         if this.nearest is not None:
             if key == sdl2.SDLK_m:
                 mute = editor.document.mutes.get(this.nearest[0], 0)
@@ -1577,30 +1628,28 @@ def staff_plot_tool(editor, instrument_uid):
                     editor.document.mutes[this.nearest[0]] = -1
             if key == sdl2.SDLK_d:
                 envs = beatline.envs
-                for voice in editor.document.track.voices:
-                    if voice.uid == this.nearest[0]:
-                        if voice.dynamics_uid is None and len(envs) > 0:
-                            voice.dynamics_uid = envs[0]
-                        elif voice.dynamics_uid is not None:
-                            i = envs.index(voice.dynamics_uid) + 1
-                            if i < len(envs):
-                                voice.dynamics_uid = envs[i]
-                            else:
-                                voice.dynamics_uid = None
+                voice = beatline.get_voice(this.nearest[0])
+                if voice.dynamics_uid is None and len(envs) > 0:
+                    voice.dynamics_uid = envs[0]
+                elif voice.dynamics_uid is not None:
+                    i = envs.index(voice.dynamics_uid) + 1
+                    if i < len(envs):
+                        voice.dynamics_uid = envs[i]
+                    else:
+                        voice.dynamics_uid = None
                 comp.set_dirty()
-        if repeat == 0 and key == sdl2.SDLK_p and this.beat_position:
+        if repeat == 0 and key == sdl2.SDLK_p and this.position is not None:
             def midi_event(m, plugin):
                 @plugin.event
                 def _event_():
                     buf = plugin.inputs['In']
                     plugin.push_midi_event(buf, [0x91, m, 127])
-            beat, position = this.beat_position
-            block = entities.by_beat(comp.parent.layout.smeared, beat)
+            block = entities.by_beat(this.graph.layout.smeared, this.beat)
             key = resolution.canon_key(block.canonical_key)
             this.playing = []
             if instrument_uid is not None:
                 plugin = editor.transport.plugins[instrument_uid]
-                m = resolution.resolve_pitch(entities.Pitch(position, None), key)
+                m = resolution.resolve_pitch(entities.Pitch(this.position, None), key)
                 midi_event(m, plugin)
                 this.playing.append((m, plugin))
 
@@ -1615,36 +1664,30 @@ def staff_plot_tool(editor, instrument_uid):
             for m, plugin in this.playing:
                 midi_event(m, plugin)
 
-    @gui.listen(gui.e_leaving)
-    def _leaving_(x, y):
-        this.nearest = None
-        this.beat_position = None
-        this.voice_lock = False
-
     @gui.drawing
     def _draw_(ui, comp):
-        beatline = comp.parent.parent.layout.inner
+        beatline = comp.layout.inner
         ctx = ui.ctx
         ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
         if this.voice_lock:
             ctx.set_source_rgba(0.0, 0.0, 1.0, 1.0)
         if this.nearest is not None:
             staff_uid, dynamics_uid, xs, ys = beatline.trajectories[this.nearest[0]]
+            bb = beatline.graphs[staff_uid].shape
             for i, (x,y) in enumerate(zip(xs, ys)):
                 if i == 0:
-                    ctx.move_to(x, y)
+                    ctx.move_to(x, bb.y + y)
                 else:
-                    ctx.line_to(x, y)
-                ctx.stroke()
-        if this.beat_position:
+                    ctx.line_to(x, bb.y + y)
+            ctx.stroke()
+        if this.position is not None:
             ctx.set_source_rgba(*beatline.instrument_colors.get(instrument_uid, (0.25,0.25,0.25,1.0)))
-            beat, position = this.beat_position
             x = this.mouse_x
-            y = comp.parent.layout.note_position(beat, position)
-            ctx.arc(x, y, 5, 0, 2*math.pi)
+            y = this.graph.layout.note_position(this.beat, this.position)
+            ctx.arc(x, this.graph.shape.y + y, 5, 0, 2*math.pi)
             ctx.fill()
 
-plot_tool = {'staff': staff_plot_tool}
+plot_tool = {'main': plot_tool_main}
 
 @gui.composable
 def staff_split_tool(editor, instrument_uid):
