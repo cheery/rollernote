@@ -14,16 +14,17 @@ def colorbox(color, *args, **kwargs):
         ui.ctx.fill()
 
 @gui.composable
-def label2(text, font_size=20):
+def label2(text, font_size=20, flexible_width=False, flexible_height=False):
     _ui = gui.ui.get()
     _ui.ctx.set_font_size(font_size)
     extents = _ui.ctx.text_extents(text)
-    gui.layout(gui.DynamicLayout(extents.width, extents.height))
+    gui.layout(gui.DynamicLayout(extents.width + 20, extents.height, flexible_width, flexible_height))
     @gui.drawing
     def _draw_(ui, comp):
         ui.ctx.set_source_rgba(0,0,0,1)
         ui.ctx.set_font_size(font_size)
-        ui.ctx.move_to(comp.shape.x, comp.shape.y + comp.shape.height)
+        ui.ctx.move_to(comp.shape.x + comp.shape.width/2 - extents.width/2,
+                       comp.shape.y + comp.shape.height/2 + extents.height/2)
         ui.ctx.show_text(text)
 
 @gui.composable

@@ -1649,7 +1649,57 @@ def super_tool_main(editor, document, instrument_uid):
                     if not this.ctrl:
                         this.note_selection = set()
                         this.seg_selection = set()
-            if button == 3:
+            if button == 3 and this.seg_selection:
+                voice = beatline.get_voice(this.nearest[0])
+                i0, i1 = min(this.seg_selection), max(this.seg_selection)
+                continuity = all(i in this.seg_selection for i in range(i0,i1))
+                @components.open_context_menu(comp, gx, gy)
+                def _context_menu_():
+                    def split_segments(c):
+                        def _fn_(x, y, button):
+                            segments = list(voice.segments)
+                            selection = this.seg_selection
+                            voice.segments[:] = []
+                            this.seg_selection = set()
+                            k = 0
+                            for i, seg in enumerate(segments):
+                                if i in selection:
+                                    for _ in range(c):
+                                        voice.segments.append(entities.VoiceSegment(list(seg.notes), seg.duration / c))
+                                        this.seg_selection.add(k)
+                                        k += 1
+                                else:
+                                    voice.segments.append(seg)
+                                    k += 1
+                            print(len(segments), len(voice.segments))
+                            gui.broadcast(e_document_change)
+                        return _fn_
+                    def mul_segments(c):
+                        def _fn_(x, y, button):
+                            for i in this.seg_selection:
+                                voice.segments[i].duration *= c
+                            gui.broadcast(e_document_change)
+                        return _fn_
+                    menu = gui.current_composition.get()
+                    menu.layout.max_width = 300
+                    @gui.row(flexible_width=True, height=32)
+                    def _row_():
+                        components.label2("split", flexible_height=True)
+                        for i in [2,3,5,7,11]:
+                            div = components.button2(f"{i}", flexible_width=True, flexible_height=True)
+                            div.listen(gui.e_button_down)(split_segments(i))
+                    @gui.row(flexible_width=True, height=32)
+                    def _row_():
+                        halve = components.button2(f"/2", flexible_width=True, flexible_height=True)
+                        halve.listen(gui.e_button_down)(mul_segments(Fraction(1, 2)))
+                        double = components.button2(f"*2", flexible_width=True, flexible_height=True)
+                        double.listen(gui.e_button_down)(mul_segments(Fraction(2)))
+                    retro = components.button2("retrograde", flexible_width=True)
+                    @retro.listen(gui.e_button_down)
+                    def _retro_down(x, y, button):
+                        voice.segments[i0:i1+1] = reversed(voice.segments[i0:i1+1])
+                        gui.broadcast(e_document_change)
+            elif button == 3:
                 this.voice_lock = not this.voice_lock
 
     @gui.listen(e_graph_button_up)
