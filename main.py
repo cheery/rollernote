@@ -23,6 +23,10 @@ def get_tempo_envelope(document):
                 return env
     return resolution.LinearEnvelope([ (0, default, 0) ])
 
+def setup_playback(document):
+    bpm = get_tempo_envelope(document)
+    return bpm, document.track.voices, dict((s.uid, s) for s in document.track.graphs)
+
 e_document_change = object()
 e_graph_button_down = object()
 e_graph_button_up = object()
@@ -186,9 +190,7 @@ def app(editor):
                     document = editor.document
                     document.store_plugins(editor.transport.plugins)
                     transport = audio.Transport(document.init_plugins(editor.pluginhost, block_length), document.mutes, block_length)
-                    bpm = get_tempo_envelope(editor.document)
-                    transport.play(bpm, editor.document.track.voices,
-                        dict((s.uid, s) for s in editor.document.track.graphs))
+                    transport.play(*setup_playback(editor.document))
                     output = audio.WAVOutput(transport, 'temp.wav')
                     while not transport.is_idle():
                         output.write_frame()
@@ -201,9 +203,7 @@ def app(editor):
                 @play.listen(gui.e_button_down)
                 def _play_down_(x, y, button):
                     if button == 1:
-                        bpm = get_tempo_envelope(editor.document)
-                        editor.transport.play(bpm, editor.document.track.voices,
-                            dict((s.uid, s) for s in editor.document.track.graphs))
+                        editor.transport.play(*setup_playback(editor.document))
                     if button == 3:
                         this.tool = transport_tool
                 gui.hspacing(5)
@@ -363,6 +363,9 @@ def app(editor):
                                             for note in seg.notes:
                                                 if note.instrument_uid == instrument.uid:
                                                     note.instrument_uid = None
+                                    editor.transport.keyboard.pop(instrument.uid)
+                                    editor.transport.keyboard_pressed.pop(instrument.uid)
+                                    editor.transport.refresh_events(*setup_playback(editor.document))
                                     sdl2.SDL_PauseAudio(0)
                                     gui.inform(components.e_dialog_leave, comp)
 
@@ -1189,6 +1192,7 @@ def staff_display(editor, document, track, staff, tool, instrument_uid):
     @gui.listen(e_document_change)
     def _document_change_():
         comp.set_dirty()
+        editor.transport.refresh_events(*setup_playback(editor.document))
 
     @gui.listen(e_margin_press) # TODO: remove when ready
     @gui.listen(gui.e_button_down)
@@ -1789,6 +1793,7 @@ def super_tool_main(editor, document, instrument_uid):
                         gui.broadcast(e_document_change)
             elif button == 3:
                 this.voice_lock = not this.voice_lock
+        gui.broadcast(e_document_change)
 
     @gui.listen(e_graph_button_up)
     @gui.listen(gui.e_button_up)
@@ -1842,6 +1847,7 @@ def super_tool_main(editor, document, instrument_uid):
                 this.playing.append((m, plugin))
         if key == sdl2.SDLK_LCTRL or key == sdl2.SDLK_RCTRL:
             this.ctrl = True
+        gui.broadcast(e_document_change)
 
     @gui.listen(gui.e_key_up)
     def _up_(key, modifier):
@@ -2076,6 +2082,7 @@ def staff_split_tool(editor, instrument_uid):
                         entities.VoiceSegment(n2, b * bu),
                     ]
                 _leaving_(x, y)
+        gui.broadcast(e_document_change)
 
     @gui.drawing
     def _draw_(ui, comp):
@@ -2246,6 +2253,7 @@ def staff_input_tool(editor, instrument_uid):
                 this.beat = 0.0
                 this.voice_uid = None
                 this.seg_index = 0
+        gui.broadcast(e_document_change)
 
     @gui.listen(gui.e_key_down)
     def _down_(key, repeat, modifier):
@@ -2381,6 +2389,7 @@ def staff_input_tool(editor, instrument_uid):
                 track.voices.remove(voice)
                 this.voice_uid = None
                 break
+        gui.broadcast(e_document_change)
 
     @gui.listen(gui.e_key_up)
     def _up_(key, modifier):
@@ -2490,6 +2499,7 @@ def envelope_input_tool(editor, instrument_uid):
                     i += 1
                 this.beat = beat
                 this.seg_index = i
+        gui.broadcast(e_document_change)
     @gui.listen(gui.e_text)
     def _text_(text):
         layout = comp.parent.layout
@@ -2562,6 +2572,7 @@ def envelope_input_tool(editor, instrument_uid):
             this.seg_index += 1
             this.beat += float(seg.duration)
             this._composition.set_dirty()
+        gui.broadcast(e_document_change)
     @gui.listen(gui.e_key_down)
     def _down_(key, repeat, modifier):
         layout = comp.parent.layout
@@ -2576,6 +2587,7 @@ def envelope_input_tool(editor, instrument_uid):
             if tiptap > 0 and len(this.taps) > 1:
                 tiptap /= len(this.taps)-1
                 this.tapped = round(60 / tiptap)
+        gui.broadcast(e_document_change)
 
         if key == sdl2.SDLK_a and this.base > -7:
             this.base -= 1
@@ -2690,6 +2702,7 @@ def chord_progression_input_tool(editor, instrument_uid):
                     i += 1
                 this.beat = beat
                 this.seg_index = i
+        gui.broadcast(e_document_change)
 
     @gui.listen(gui.e_key_down)
     def _down_(key, repeat, modifier):
@@ -2760,6 +2773,7 @@ def chord_progression_input_tool(editor, instrument_uid):
             if this.seg_index and this.seg_index < len(layout.chord_progression.segments):
                 this.beat += float(layout.chord_progression.segments[this.seg_index].duration)
                 this.seg_index += 1
+        gui.broadcast(e_document_change)
 
     @gui.drawing
     def _draw_(ui, comp):
