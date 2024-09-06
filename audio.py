@@ -108,7 +108,9 @@ class Transport:
 
     # We'd need better signaling from our plugins to tell whether they are idle or not.
     def is_idle(self):
-        return len(self.live_voices) == 0 and self.volume0 + self.volume1 == 0
+        v = self.volume0 + self.volume1
+        dbfs = 20 * math.log10(v) if v > 0 else 0
+        return len(self.live_voices) == 0 and dbfs < -60
 
     def run(self, now, audio0, audio1):
         mutelevel = min((self.mutes.get(uid, 0) for uid in self.plugins), default=0)
