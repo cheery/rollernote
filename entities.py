@@ -14,10 +14,10 @@ class Document:
         self.next_uid = next_uid
         self.mutes = {}
 
-    def init_plugins(self, pluginhost):
+    def init_plugins(self, pluginhost, block_length):
         plugins = {}
         for instrument in self.instruments:
-            plugins[instrument.uid] = plugin = pluginhost.plugin(instrument.plugin)
+            plugins[instrument.uid] = plugin = pluginhost.plugin(instrument.plugin, block_length)
             if len(instrument.patch) > 0:
                 plugin.restore(instrument.patch, instrument.data)
         return plugins

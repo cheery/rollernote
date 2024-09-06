@@ -182,9 +182,10 @@ def app(editor):
                 @record.listen(gui.e_button_down)
                 def _record_down_(x, y, button):
                     # TODO: Open a dialog
+                    block_length = 1024*2
                     document = editor.document
                     document.store_plugins(editor.transport.plugins)
-                    transport = audio.Transport(document.init_plugins(editor.pluginhost), document.mutes)
+                    transport = audio.Transport(document.init_plugins(editor.pluginhost, block_length), document.mutes, block_length)
                     bpm = get_tempo_envelope(editor.document)
                     transport.play(bpm, editor.document.track.voices,
                         dict((s.uid, s) for s in editor.document.track.graphs))
@@ -421,16 +422,20 @@ def app(editor):
             main_panel = next(main_scroller.children)
             beatline = main_panel.layout.inner
             beatballs = []
-            for voice in list(editor.transport.live_voices):
-                if voice.next_vseg > voice.last_vseg:
-                    t = (editor.time - voice.last_vseg) / (voice.next_vseg - voice.last_vseg)
-                else:
-                    t = 0
-                x0 = resolution.sequence_interpolation(voice.last_beat, beatline.beats, beatline.offsets, True)
-                x1 = resolution.sequence_interpolation(voice.beat, beatline.beats, beatline.offsets, True)
-                beat = voice.last_beat*(1-t) + voice.beat*t
-                x = x0*(1-t) + x1*t
+            if editor.transport.playing:
+                beat = editor.transport.beat
+                x = resolution.sequence_interpolation(beat, beatline.beats, beatline.offsets, True)
                 beatballs.append((beat, x))
+            #for voice in list(editor.transport.live_voices):
+            #    if voice.next_vseg > voice.last_vseg:
+            #        t = (editor.time - voice.last_vseg) / (voice.next_vseg - voice.last_vseg)
+            #    else:
+            #        t = 0
+            #    x0 = resolution.sequence_interpolation(voice.last_beat, beatline.beats, beatline.offsets, True)
+            #    x1 = resolution.sequence_interpolation(voice.beat, beatline.beats, beatline.offsets, True)
+            #    beat = voice.last_beat*(1-t) + voice.beat*t
+            #    x = x0*(1-t) + x1*t
+            #    beatballs.append((beat, x))
             this.beatballs = beatballs
         @gui.drawing
         def _draw_(ui, comp):
@@ -590,6 +595,15 @@ def app(editor):
                     bpm = get_tempo_envelope(editor.document)
                     editor.transport.play(bpm, editor.document.track.voices,
                         dict((s.uid, s) for s in editor.document.track.graphs))
+                if repeat == 0 and key == sdl2.SDLK_RETURN:
+                    k = 69
+                    editor.transport.state.instruments[0].keyboard_pending[k // 32] |= 1 << (k % 32)
+
+            @gui.listen(gui.e_key_up)
+            def _key_up_(key, modifier):
+                if key == sdl2.SDLK_RETURN:
+                    k = 69
+                    editor.transport.state.instruments[0].keyboard_pending[k // 32] &= ~(1 << (k % 32))
 
     gui.vspacing(5)
     @gui.row(height=32, flexible_width=True)
@@ -1907,7 +1921,8 @@ def transport_tool_main(editor, document, instrument_uid):
         dragging = False
     )
     @gui.listen(gui.e_motion)
-    def _motion_(x, y):
+    @gui.listen(e_graph_motion)
+    def _motion_(x, y, graph=None):
         beatline = comp.layout.inner
         x, y = comp.local_point(x, y)
         this.mouse_x = x
@@ -1917,6 +1932,7 @@ def transport_tool_main(editor, document, instrument_uid):
             this.head = this.beat
             editor.transport.play_start = min(this.tail, this.head)
             editor.transport.play_end   = max(this.tail, this.head)
+            editor.transport.update_loop()
 
     @gui.listen(gui.e_button_down)
     @gui.listen(e_graph_button_down)
@@ -1937,6 +1953,7 @@ def transport_tool_main(editor, document, instrument_uid):
                 def _clr_down_(x, y, button):
                     editor.transport.play_start = None
                     editor.transport.play_end = None
+                    editor.transport.update_loop()
                     comp.set_dirty()
                     gui.inform(components.e_dialog_leave, comp)
 
@@ -2868,13 +2885,15 @@ def staff_block(ctx, layout, x0, y0, block, smear):
 
 class Editor:
     def __init__(self):
+        block_length = 1024*2
         self.document = entities.load_document('document.mide.zip')
         self.history = commands.History(self.document)
         self.history.do(commands.DemoCommand())
         self.pluginhost = lv2.PluginHost()
         self.transport = audio.Transport(
-            self.document.init_plugins(self.pluginhost),
-            self.document.mutes)
+            self.document.init_plugins(self.pluginhost, block_length),
+            self.document.mutes,
+            block_length)
         self.audio_output = audio.DeviceOutput(self.transport)
         self.running = False
         self.time = 0.0
@@ -2902,7 +2921,7 @@ class Editor:
                     widget.payload.draw()
                 widget.window.refresh()
 
-            sdl2.SDL_Delay(20)
+            sdl2.SDL_Delay(60)
 
             events = sdl2.ext.get_events()
             for event in events:

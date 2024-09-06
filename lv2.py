@@ -17,8 +17,8 @@ class PluginHost:
             if str(i.get_class()) == "http://lv2plug.in/ns/lv2core#InstrumentPlugin":
                 yield str(i.get_uri()), str(i.get_name())
 
-    def plugin(self, uri):
-        plugin = Plugin(self, uri)
+    def plugin(self, uri, block_length):
+        plugin = Plugin(self, uri, block_length)
         self.plugins.add(plugin)
         return plugin
 
@@ -27,7 +27,7 @@ class PluginHost:
             plugin.close()
 
 class Plugin:
-    def __init__(self, plugins, uri):
+    def __init__(self, plugins, uri, block_length):
         self.widget = None
         self.plugins = plugins
         self.uri = uri
@@ -39,7 +39,7 @@ class Plugin:
         urid_map_ft.obj = lilv.LV2_URID_Map(None, urid_map_ft.hook)
         self.features.add(urid_map_ft)
         self.features.add(Feature(b"http://lv2plug.in/ns/ext/buf-size#boundedBlockLength"))
-        self.block_length = 1024 # TODO: get the value somehow from audio transport.
+        self.block_length = block_length
         self.block_length_c = (ctypes.c_int64 * 1)(self.block_length)
         
         options_ft = Feature(b"http://lv2plug.in/ns/ext/options#options")

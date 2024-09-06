@@ -6,29 +6,57 @@ import resolution
 import math
 import wave
 import entities
+import bisect
+
+# class InstrumentState(ctypes.Structure):
+#     _fields_ = [
+#         ('run', ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint)),
+#         ('handle', ctypes.c_void_p),
+#         ('output0', ctypes.c_void_p),
+#         ('output1', ctypes.c_void_p),
+#         ('input', ctypes.c_void_p),
+#         ('keyboard', ctypes.ARRAY(ctypes.c_uint, 4)),
+#         ('keyboard_pending', ctypes.ARRAY(ctypes.c_uint, 4)),
+#         ('MIDI_Event', ctypes.c_uint),
+#     ]
+# 
+# class TransportState(ctypes.Structure):
+#     _fields_ = [
+#         ('sample_rate', ctypes.c_int),
+#         ('block_length', ctypes.c_int),
+#         ('now', ctypes.c_double),
+#         ('instruments', ctypes.POINTER(InstrumentState)),
+#     ]
+# 
+# audio_loop = ctypes.CDLL('./audio_loop.so')
 
 class DeviceOutput:
-    def __init__(self, transport, block_length=1024):
+    def __init__(self, transport):
         self.transport = transport
-        self.block_length = block_length
+        self.block_length = transport.block_length
         self.audio_loop_c = sdl2.SDL_AudioCallback(self.audio_loop)
         wanted = sdl2.SDL_AudioSpec(44100, sdl2.AUDIO_F32, 2, self.block_length)
         wanted.callback = self.audio_loop_c
         wanted.userdata = None
+
+        #wanted = sdl2.SDL_AudioSpec(44100, sdl2.AUDIO_F32, 2, self.block_length)
+        #wanted.callback = ctypes.cast(audio_loop.audio_loop, sdl2.SDL_AudioCallback)
+        #wanted.userdata = ctypes.cast(ctypes.pointer(self.transport.state), ctypes.c_void_p)
 
         self.audio = sdl2.SDL_OpenAudio(ctypes.byref(wanted), None)
         sdl2.SDL_PauseAudio(0)
 
         self.chan0 = numpy.zeros(self.block_length, numpy.float32)
         self.chan1 = numpy.zeros(self.block_length, numpy.float32)
+        self.now = 0.0
 
     def audio_loop(self, _, stream, length):
-        now = sdl2.SDL_GetTicks64() / 1000.0
         self.chan0.fill(0)
         self.chan1.fill(0)
-        self.transport.run(now, self.chan0, self.chan1)
+        self.transport.run(self.now, self.chan0, self.chan1)
         data = numpy.dstack([self.chan0, self.chan1]).flatten()
         ctypes.memmove(stream, data.ctypes.data, min(self.block_length*8, length))
+        self.now += self.block_length / 44100
 
     def close(self):
         sdl2.SDL_PauseAudio(1)
@@ -37,7 +65,7 @@ class WAVOutput:
     def __init__(self, transport, filename, block_length=1024):
         self.transport = transport
         self.filename = filename
-        self.block_length = block_length
+        self.block_length = transport.block_length
         self.file = wave.open(filename, 'w')
         self.file.setnchannels(2)
         self.file.setsampwidth(2) # 16-bit
@@ -65,8 +93,8 @@ def get_dyn(envelope):
     return resolution.linear_envelope(envelope.segments, default=1.0)
 
 class Transport:
-    def __init__(self, plugins, mutes):
-        self.block_length = 1024
+    def __init__(self, plugins, mutes, block_length):
+        self.block_length = block_length
         self.mutes = mutes
         self.plugins = plugins
         self.time = 0.0
@@ -79,14 +107,90 @@ class Transport:
         self.play_start = None
         self.play_end   = None
 
+        # ins = []
+        # for uid, plugin in plugins.items():
+        #     ins.append(InstrumentState(
+        #        run = plugin.instance.get_descriptor().run,
+        #        handle = plugin.instance.get_handle(),
+        #        output0 = plugin.audio_outputs[0][1].ctypes.data,
+        #        output1 = plugin.audio_outputs[1][1].ctypes.data,
+        #        input = ctypes.cast(plugin.inputs['In'], ctypes.c_void_p),
+        #        MIDI_Event = plugin.MIDI_Event))
+        #        
+        # self.instruments = (InstrumentState*(len(ins)+1))(*ins)
+        # self.state = TransportState(
+        #     sample_rate = 44100,
+        #     block_length = self.block_length,
+        #     now = 0.0,
+        #     instruments = self.instruments)
+
+        # EXHIBIT A
+        self.keyboard = {}
+        self.keyboard_pressed = {}
+        self.velocities = {}
+        for uid in plugins:
+            self.keyboard[uid] = 0
+            self.keyboard_pressed[uid] = 0
+            self.velocities[uid] = [127]*128
+
+        self.events = []
+        self.eventi = 0
+        self.last_event = 0.0
+
+        self.offset = (0,0)
+
+        self.playing = False
+        self.begin = 0.0
+        self.end = 0.0
+        self.bpm = None
+        self.beat = 0.0
+
     def play(self, bpm, voices, graphs):
-        self.currently_playing = bpm, voices, graphs
-        self.live_voices.update([
-            LiveVoice(graphs[voice.staff_uid], voice, bpm,
-                      dyn = get_dyn(graphs.get(voice.dynamics_uid)))
-            for voice in voices
-            if len(voice.segments) > 0
-        ])
+        # EXHIBIT B
+        self.refresh_events(bpm, voices, graphs)
+        self.playing = True
+        self.bpm = bpm
+        self.update_loop()
+        self.beat = 0 if self.play_start is None else self.play_start
+        self.begin = self.time - self.offset[0]
+        self.end = self.offset[1] + self.begin
+
+    def refresh_events(self, bpm, voices, graphs):
+        # TODO: loop begin/loop end, muting
+        events = []
+        def insert_event(t, evt):
+            bisect.insort(events, (t, evt), key = lambda x: x[0])
+        for voice in voices:
+            smeared = entities.smear(graphs[voice.staff_uid].blocks)
+            beat = 0.0
+            dyn = get_dyn(graphs.get(voice.dynamics_uid))
+            for seg in voice.segments:
+                block = entities.by_beat(smeared, beat)
+                key = resolution.canon_key(block.canonical_key)
+                t0 = bpm.beat_to_time(beat)
+                t1 = bpm.beat_to_time(beat + float(seg.duration))
+                for note in seg.notes:
+                    m = resolution.resolve_pitch(note.pitch, key)
+                    insert_event(t0, ('note-on',  note.instrument_uid, m, round(127 * dyn.value(beat))))
+                    insert_event(t1, ('note-off', note.instrument_uid, m, 127))
+                beat += float(seg.duration)
+        self.last_event = beat
+        self.events = events
+        self.eventi = 0
+
+
+    def update_loop(self):
+        if self.playing:
+            if self.play_start is not None:
+                t0 = self.bpm.beat_to_time(self.play_start)
+            else:
+                t0 = 0
+            if self.play_end is not None:
+                t1 = self.bpm.beat_to_time(self.play_end)
+            else:
+                t1 = self.bpm.beat_to_time(self.last_event)
+            self.offset = t0, t1
+            self.end = self.offset[1] + self.begin
 
     def init_livevoice(self, lv, now):
         vseg = now
@@ -110,15 +214,45 @@ class Transport:
     def is_idle(self):
         v = self.volume0 + self.volume1
         dbfs = 20 * math.log10(v) if v > 0 else 0
-        return len(self.live_voices) == 0 and dbfs < -60
+        return len(self.live_voices) == 0 and dbfs < -60 and self.playing
 
     def run(self, now, audio0, audio1):
-        mutelevel = min((self.mutes.get(uid, 0) for uid in self.plugins), default=0)
-        mutelevel = min(0, mutelevel)
         for plugin in self.plugins.values():
             for e in plugin.pending_events:
                 e()
             plugin.pending_events.clear()
+
+        # EXHIBIT D
+        if self.playing:
+            while self.eventi < len(self.events):
+                t, evt = self.events[self.eventi]
+                if now - self.begin < t:
+                    break
+                if evt[0] == 'note-on':
+                    _, uid, m, vel = evt
+                    self.keyboard_pressed[uid] |= 1 << m
+                    self.velocities[uid][m] = vel
+                elif evt[0] == 'note-off':
+                    _, uid, m, vel = evt
+                    self.keyboard_pressed[uid] &= ~(1 << m)
+                    self.velocities[uid][m] = vel
+                self.eventi += 1
+            if self.end <= now and self.loop:
+                for uid in self.keyboard_pressed:
+                    self.keyboard_pressed[uid] = 0
+                self.flush_keyboard()
+                self.begin = now - self.offset[0]
+                self.end = self.offset[1] + self.begin
+                self.eventi = 0
+            elif self.end <= now:
+                for uid in self.keyboard_pressed:
+                    self.keyboard_pressed[uid] = 0
+                self.playing = False
+                
+            self.beat = self.bpm.time_to_beat(now - self.begin)
+
+        mutelevel = min((self.mutes.get(uid, 0) for uid in self.plugins), default=0)
+        mutelevel = min(0, mutelevel)
 
         if len(self.live_voices) == 0 and self.loop and self.currently_playing:
             self.play(*self.currently_playing)
@@ -176,6 +310,9 @@ class Transport:
                 still_live.add(lv)
         self.live_voices = still_live
 
+        # EXHIBIT C
+        self.flush_keyboard()
+
         for plugin in self.plugins.values():
             plugin.instance.run(self.block_length)
             audio0 += plugin.audio_outputs[0][1]
@@ -199,6 +336,20 @@ class Transport:
                 #seq[0].body.unit = plugin.get_urid('https://lv2plug.in/ns/ext/time#beat')
                 #seq[0].body.pad  = 0
         self.time = now
+
+    def flush_keyboard(self):
+        for uid, plugin in self.plugins.items():
+            velocities = self.velocities[uid]
+            buf = plugin.inputs['In']
+            pressed = self.keyboard_pressed[uid]
+            delta = self.keyboard[uid] ^ pressed
+            for i in range(128):
+                if (delta >> i) & 1:
+                    if (pressed >> i) & 1:
+                        plugin.push_midi_event(buf, [0x90, i, velocities[i]])
+                    else:
+                        plugin.push_midi_event(buf, [0x80, i, velocities[i]])
+            self.keyboard[uid] = pressed
 
 class Meter:
     def __init__(self):

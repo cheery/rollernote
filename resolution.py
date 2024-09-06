@@ -2,6 +2,7 @@ from fractions import Fraction
 import entities
 import colorsys
 import bisect
+import math
 
 char_accidental = {
    -2: chr(119083),
@@ -242,14 +243,12 @@ class LinearEnvelope:
     def __init__(self, vector):
         self.vector = vector # vector consists of list of triples:
                              # position, constant, change rate
+        self.time_segments = None
 
     def value(self, position):
-        i = 0
-        y = None
-        for j, (p, k0, k1) in enumerate(self.vector):
-            if p <= position:
-                y = (position-p)*k1 + k0
-        return y
+        i = bisect.bisect_right(self.vector, position, key=lambda v: v[0]) - 1
+        p, c, k = self.vector[i]
+        return (position - p)*k + c
 
     def area(self, position, duration, f=lambda x: x):
         i = 0
@@ -286,6 +285,39 @@ class LinearEnvelope:
                 return positive > 0
         else:
             return False
+
+    def _time_segments(self):
+        time = 0.0
+        for i, (p, c, k) in enumerate(self.vector):
+            yield time
+            if i+1 < len(self.vector):
+                q = self.vector[i+1][0]
+                if k == 0:
+                    time += (q - p) * 60 / c
+                else:
+                    time += 60 / k * math.log((k * (q - p) + c) / c)
+
+    def beat_to_time(self, beat):
+        if self.time_segments is None:
+            self.time_segments = list(self._time_segments())
+        i = bisect.bisect_right(self.vector, beat, key=lambda v: v[0]) - 1
+        time = self.time_segments[i]
+        p, c, k = self.vector[i]
+        if k == 0:
+            return time + (beat - p) * 60 / c
+        else:
+            return time + 60 / k * math.log((k * (beat - p) + c) / c)
+
+    def time_to_beat(self, time):
+        if self.time_segments is None:
+            self.time_segments = list(self._time_segments())
+        i = bisect.bisect_right(self.time_segments, time) - 1
+        t0 = self.time_segments[i]
+        p, c, k = self.vector[i]
+        if k == 0:
+            return p + (time - t0)*c / 60
+        else:
+            return p + c * (math.exp(k*(time - t0) / 60) - 1) / k
 
 #                                        1.0            0.5
 def golden_ratio_color(index, saturation=0.7, lightness=0.5, alpha=1.0):
