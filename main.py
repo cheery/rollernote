@@ -1759,6 +1759,43 @@ def super_tool_main(editor, document, instrument_uid):
                                 beat += float(seg.duration)
                             this.moving_width = x1 - x0
                             gui.inform(components.e_dialog_leave, comp)
+                    j = components.button2("join", flexible_width=True, disabled=not continuity)
+                    if continuity:
+                        @j.listen(gui.e_button_down)
+                        def _join_down_(x, y, button):
+                            layout = beatline.layouts[this.graph_uid]
+                            beat = 0
+                            duration = 0
+                            pitches = {}
+                            positions = set()
+                            for seg in voice.segments[:i0]:
+                                beat += float(seg.duration)
+                            canonical_key = entities.by_beat(layout.smeared, beat).canonical_key
+                            new_key = resolution.canon_key(canonical_key)
+                            for seg in voice.segments[i0:i1+1]:
+                                canonical_key = entities.by_beat(layout.smeared, beat).canonical_key
+                                key = resolution.canon_key(canonical_key)
+                                for note in seg.notes:
+                                    p = resolution.resolve_pitch(note.pitch, key)
+                                    positions.add(note.pitch.position)
+                                    pitches[p] = note.instrument_uid
+                                beat += float(seg.duration)
+                                duration += seg.duration
+                            enh = list(resolution.chord_enharmonics(list(pitches), new_key))
+                            if len(enh) > 0:
+                                distance = lambda p: min(abs(p - q) for q in positions)
+                                score = lambda ps: sum(distance(p.position) + resolution.pitch_complexity(p) for p in ps)
+                                choice = min(enh, key=score)
+                                def ins(p):
+                                    m = resolution.resolve_pitch(p, new_key)
+                                    return pitches[m]
+                                notes = [entities.Note(p, ins(p)) for p in choice]
+                                seg = entities.VoiceSegment(notes, duration=duration)
+                                voice.segments[i0:i1+1] = [seg]
+                                this.seg_selection = set()
+                                this.note_selection = set()
+                                gui.broadcast(e_document_change)
+                                gui.inform(components.e_dialog_leave, comp)
                     @gui.row(flexible_width=True, height=32)
                     def _row_():
                         components.label2("split", flexible_height=True)

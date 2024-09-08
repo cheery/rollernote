@@ -78,11 +78,11 @@ def enharmonics(pitch, key=base_key):
 
 # Convert canonically represented chord to notated form,
 # such that no note intersects an another.
-def chord_enharmonics(canonical_pitches):
+def chord_enharmonics(canonical_pitches, key=base_key):
     Y = {}
     positions = set()
     for pitch in canonical_pitches:
-        for n in enharmonics(pitch):
+        for n in enharmonics(pitch, key):
             insert_in_list(Y, n, ('canon', pitch))
             insert_in_list(Y, n, ('staff', n.position))
             positions.add(n.position)
