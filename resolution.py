@@ -3,6 +3,12 @@ import entities
 import colorsys
 import bisect
 import math
+import random
+from itertools import groupby, islice
+from operator import attrgetter
+from collections import namedtuple
+import ctypes
+import numpy as np
 
 char_accidental = {
    -2: chr(119083),
@@ -509,3 +515,334 @@ def closest_fraction(value, n, m): # Using Farey sequence
     # Convert floating-point value to a Fraction
     frac = Fraction.from_float(value)
     return frac
+
+# Voice Separation - A Local Optimisation Approach
+# https://ismir2002.ismir.net/proceedings/02-FP01-6.pdf
+
+VoiceSeparationSettings = namedtuple('VoiceSeparationSettings', [
+    'max_voices',
+    'pitch_penalty',
+    'gap_penalty',
+    'chord_penalty',
+    'overlap_penalty',
+    'cross_penalty',
+    'pitch_lookback',
+])
+
+class Note:
+    def __init__(self, uid, onset, duration, pitch):
+        self.uid = uid
+        self.onset = onset
+        self.duration = duration
+        self.pitch = pitch
+        self.offset = onset + duration
+
+    def overlaps(self, other):
+        a = (self.onset <= other.onset and self.offset > other.onset)
+        b = (self.onset > other.onset and other.offset > self.onset)
+        return a or b
+ 
+    def __repr__(self):
+        return f"Note({self.uid}, {self.onset}, {self.duration}, {self.pitch})"
+
+Chord = namedtuple('Chord', ['prev', 'this'])
+
+def voice_separation(notes, settings):
+    notes.sort(key=lambda x: x.onset)
+    def segment_notes(notes):
+        current_slice = []
+        for note in notes:
+            if not current_slice:
+                # Start a new slice if the current slice is empty
+                current_slice.append(note)
+            else:
+                # Check if the note overlaps with all notes in the current slice
+                if all(note.overlaps(n) for n in current_slice):
+                    current_slice.append(note)
+                else:
+                    # If it doesn't overlap with all, finalize the current slice and start a new one
+                    yield current_slice
+                    current_slice = [note]
+        # Append the last slice
+        if current_slice:
+            yield current_slice
+
+    def stochastic_local_search(total, slice, chords):
+        # Initialize all notes in the slice to the first voice (stored as a list of lists)
+        best_solution = [[] for _ in range(settings.max_voices)]
+        best_solution[0].extend(slice)
+        best_cost = calculate_total_cost(total, best_solution, chords)
+        max_iterations = len(slice) * settings.max_voices * 3
+        #print('initial', best_solution)
+        #debug_print(total, best_solution)
+        solution = best_solution
+        solus = [best_solution]
+        no_improvement_counter = 0
+        while no_improvement_counter < max_iterations:
+            # 80%: Choose the neighboring solution with the lowest cost
+            if random.random() <= 0.8:
+                solution = get_lowest_cost_neighbor(total, solution, chords)
+            else:
+                # 20%: Random neighboring solution
+                solution = get_random_neighbor(solution)
+            new_cost = calculate_total_cost(total, solution, chords)
+            if new_cost < best_cost:
+                best_solution = solution
+                best_cost = new_cost
+                no_improvement_counter = 0  # Reset if improvement is found
+                #print('improved', best_solution)
+                #debug_print(total, best_solution)
+                solus.append(best_solution)
+            else:
+                no_improvement_counter += 1
+        #order = determine_voice_order(best_solution)
+        #if voice_order:
+        #    s = set(order) & set(voice_order)
+        #    a = [v for v in voice_order if v in s]
+        #    b = [v for v in order if v in s]
+        #    if a != b:
+        #        for sol in solus:
+        #            print('SOLUTION')
+        #            for voice in sol:
+        #                print('  ', voice)
+        #            debug_print(total, sol)
+        #voice_order = order
+        return best_solution
+
+    def get_lowest_cost_neighbor(total, voices, chords):
+        # Find the neighboring solution with the lowest cost by trying all single note voice switches
+        best_neighbor = None
+        best_cost = float('inf')
+        for voice_index, voice in enumerate(voices):
+            for note in list(voice):
+                voices[voice_index].remove(note)
+                for new_voice_index in range(settings.max_voices):
+                    if new_voice_index != voice_index:
+                        voices[new_voice_index].append(note)
+                        cost = calculate_total_cost(total, voices, chords)
+                        if cost < best_cost:
+                            best_cost = cost
+                            best_neighbor = [voice[:] for voice in voices]
+                        voices[new_voice_index].remove(note)
+                voices[voice_index].append(note)
+        return best_neighbor
+    
+    def get_random_neighbor(voices):
+        # Choose a random note and switch its voice randomly
+        random_voice = random.choice([v for v in voices if v])  # Choose a non-empty voice
+        random_note = random.choice(random_voice)
+        random_voice_index = voices.index(random_voice)
+        # Move note to a random different voice
+        new_voice_index = random.choice([i for i in range(settings.max_voices) if i != random_voice_index])
+        new_voices = [voice[:] for voice in voices]
+        new_voices[random_voice_index].remove(random_note)
+        new_voices[new_voice_index].append(random_note)
+        return new_voices
+
+    def group_notes_by_onset(notes):
+        for onset, group in groupby(notes, key=attrgetter('onset')):
+            yield list(group) # Group notes with the same onset time
+
+    def calculate_total_cost(total, solution, chords):
+        chords = chords[:]
+        l_chords = [[] for _ in range(settings.max_voices)]
+        for i, voice in enumerate(solution):
+            for chord in group_notes_by_onset(voice):
+                chords[i] = Chord(chords[i], chord)
+                l_chords[i].append(chords[i])
+        
+        pp = calculate_pitch_penalty(l_chords) * settings.pitch_penalty
+        gp = calculate_gap_penalty(l_chords) * settings.gap_penalty
+        cp = calculate_chord_penalty(l_chords) * settings.chord_penalty
+        op = calculate_overlap_penalty(l_chords) * settings.overlap_penalty
+        rp = calculate_cross_penalty(l_chords) * settings.cross_penalty
+        return pp + gp + cp + op + rp
+
+    def chord_pitch(chord, reference_pitch):
+        """
+        Returns the nearest pitch in the chord in relation to the reference pitch.
+        """
+        nearest = min(chord, key=lambda note: abs(note.pitch - reference_pitch))
+        return nearest.pitch
+
+    def calculate_pitch_penalty(chords_groups):
+        pD = 0
+        for voice_index, chords in enumerate(chords_groups):
+            if chords:
+                pvD = 0
+                for chord in chords:
+                    if chord.prev is None:
+                        continue
+                    for note in chord.this:
+                        prev = chord.prev
+                        i = 0
+                        prior_pitch = chord_pitch(prev.this, note.pitch)
+                        while prev.prev and i < settings.pitch_lookback:
+                            prev = prev.prev
+                            p = chord_pitch(prev.this, note.pitch)
+                            prior_pitch = 0.8 * prior_pitch + 0.2 * p
+                            i += 1
+                        distance = abs(note.pitch - prior_pitch)
+                        pvD += (1 - pvD) * min(1, distance / 128)
+                pD += (1 - pD) * pvD
+        return pD
+
+    def calculate_gap_penalty(chords_groups):
+        gD = 0
+        cNotes = 0
+        for voice_index, chords in enumerate(chords_groups):
+            if chords:
+                for chord in chords:
+                    if chord.prev is None:
+                        offset = 0
+                    else:
+                        offset = max(note.offset for note in chord.prev.this)
+                    gD += max(0, min(1, (chord.this[0].onset - offset) / 4))
+                    cNotes += 1
+        return gD / cNotes
+
+    def calculate_chord_penalty(chords_groups):
+        cD = 0
+        for voice_index, chords in enumerate(chords_groups):
+            if chords:
+                for chord in chords:
+                    minDuration = min(n.duration for n in chord.this)
+                    maxDuration = max(n.duration for n in chord.this)
+                    minPitch = min(n.pitch for n in chord.this)
+                    maxPitch = max(n.pitch for n in chord.this)
+                    pDuration = 1 - minDuration / maxDuration
+                    pRange = min((maxPitch - minPitch)/24, 1)
+                    p = pDuration + (1 - pDuration) * pRange
+                    cD = cD + (1 - cD) * p
+        return cD
+
+    def calculate_overlap_penalty(chords_groups):
+        oD = 0
+        for voice_index, chords in enumerate(chords_groups):
+            if chords:
+                ovD = 0
+                for chord in chords:
+                    if chord.prev is None:
+                        oDist = 0
+                    else:
+                        x = max(chord.prev.this, key=attrgetter('duration'))
+                        y = chord.this[0]
+                        if x.overlaps(y):
+                            oDist = 1 - (y.onset - x.onset) / x.duration
+                        else:
+                            oDist = 0
+                    ovD = ovD + (1 - ovD) * oDist
+                oD = oD + (1 - oD) * ovD
+        return oD
+
+    def calculate_cross_penalty(chords_groups):
+        def get_prior(x):
+            if x and x[0].prev:
+                return x[0].prev.this
+            return []
+        def get_all(x):
+            return sum((t.this for t in x), [])
+        voice_order = determine_voice_order([get_prior(v) for v in chords_groups])
+        order = determine_voice_order([get_all(v) for v in chords_groups])
+        s = set(order) & set(voice_order)
+        a = [v for v in voice_order if v in s]
+        b = [v for v in order if v in s]
+        return int(a != b)
+            
+    def determine_voice_order(solution):
+        voices = [i for i, v in enumerate(solution) if v]
+        voices.sort(key=lambda i: sum(n.pitch for n in solution[i]) / len(solution[i]))
+        return voices
+
+    total_voice_assignment = [[] for _ in range(settings.max_voices)]  # Create lists for each voice
+    chords = [None for _ in range(settings.max_voices)]
+    for slice in segment_notes(notes):
+        voice_assignment = stochastic_local_search(total_voice_assignment, slice, chords)
+        # Concatenate voice assignments for each voice
+        for i, voice in enumerate(voice_assignment):
+            total_voice_assignment[i].extend(voice)
+            for chord in group_notes_by_onset(voice):
+                chords[i] = Chord(chords[i], chord)
+    return total_voice_assignment
+
+#settings = VoiceSeparationSettings(
+#    max_voices=6,
+#    pitch_penalty = 1,
+#    gap_penalty = 1,
+#    chord_penalty = 1,
+#    overlap_penalty = 1,
+#    pitch_lookback = 0)
+#    
+# Example usage
+# notes = [
+#     Note(None, 0, 1, 60),  # C4
+#     Note(None, 0, 2, 50),
+#     Note(None, 1, 1, 62),  # D4
+#     Note(None, 2, 1, 64),  # E4
+#     #Note(None, 2, 2, 52),
+#     Note(None, 3, 1, 65),  # F4
+#     Note(None, 4, 1, 67)   # G4
+# ]
+# 
+# voices = voice_separation(notes, settings)
+# for i, voice in enumerate(voices):
+#     print(f'voice {i}')
+#     for note in voice:
+#         print(f"  {note}")
+
+# Load the shared library
+lib = ctypes.CDLL('./voice_separation.so')  # Use 'voice_separation.dll' on Windows
+
+# Define the C structure in Python
+class Descriptor(ctypes.Structure):
+    _fields_ = [
+        ('max_notes', ctypes.c_int),
+        ('onset', ctypes.POINTER(ctypes.c_double)),
+        ('duration', ctypes.POINTER(ctypes.c_double)),
+        ('position', ctypes.POINTER(ctypes.c_int)),
+        ('offset', ctypes.POINTER(ctypes.c_double)),
+        ('voice', ctypes.POINTER(ctypes.c_int)),
+        ('link', ctypes.POINTER(ctypes.c_int)),
+        ('max_voices', ctypes.c_int),
+        ('pitch_penalty', ctypes.c_double),
+        ('gap_penalty', ctypes.c_double),
+        ('chord_penalty', ctypes.c_double),
+        ('overlap_penalty', ctypes.c_double),
+        ('cross_penalty', ctypes.c_double),
+        ('pitch_lookback', ctypes.c_int),
+    ]
+
+def voice_separation(notes, settings):
+    notes.sort(key=attrgetter('onset'))
+    max_notes = len(notes)
+    onset = np.array([n.onset for n in notes], dtype=np.float64)
+    duration = np.array([n.duration for n in notes], dtype=np.float64)
+    offset = np.array([n.offset for n in notes], dtype=np.float64)
+    voice = np.zeros(max_notes, dtype=np.int32) - 1
+    link = np.zeros(max_notes, dtype=np.int32) - 1
+    position = np.array([n.pitch for n in notes], dtype=np.int32)
+    desc = Descriptor(
+        max_notes=max_notes,
+        onset=onset.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        duration=duration.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        position=position.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        offset=offset.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+        voice=voice.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        link=link.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
+        max_voices=settings.max_voices,
+        pitch_penalty=settings.pitch_penalty,
+        gap_penalty=settings.gap_penalty,
+        chord_penalty=settings.chord_penalty,
+        overlap_penalty=settings.overlap_penalty,
+        cross_penalty=settings.cross_penalty,
+        pitch_lookback=settings.pitch_lookback,
+    )
+    lib.voice_separation(ctypes.byref(desc))
+    voices = []
+    for i in range(desc.max_voices):
+        voice = []
+        for k in range(desc.max_notes):
+            if desc.voice[k] == i:
+                voice.append(notes[k])
+        voices.append(voice)
+    return voices

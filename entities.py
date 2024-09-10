@@ -40,11 +40,28 @@ def load_document(filename):
                 instrument = Instrument.from_json(instrument_json, zf)
                 instrument.uid = uid
             instruments.append(instrument)
-    return Document(
+
+    document = Document(
         track = Track.from_json(track_json),
         instruments = instruments,
         next_uid = UidGenerator(document_json['next_uid']),
     )
+    for voice in document.track.voices:
+        for graph in document.track.graphs:
+            if graph.uid == voice.staff_uid:
+                pos = Fraction(0)
+                for seg in voice.segments:
+                    for note in seg.notes:
+                        graph.notes.append(Note2(
+                            uid = document.next_uid(),
+                            position = pos,
+                            duration = seg.duration,
+                            pitch = note.pitch,
+                            timbre = note.instrument_uid,
+                        ))
+                    pos += seg.duration
+    document.track.voices = []
+    return document
 
 def save_document(filename, document):
     with zipfile.ZipFile(filename, 'w') as zf:
@@ -80,13 +97,13 @@ class Track:
     def from_json(record):
         return Track(
             graphs = [graph_from_json(a) for a in record['graphs']],
-            voices = [Voice.from_json(a) for a in record['voices']],
+            voices = [Voice.from_json(a) for a in record.get('voices', [])],
         )
 
     def as_json(self):
         return {
             'graphs': [graph.as_json() for graph in self.graphs],
-            'voices': [voice.as_json() for voice in self.voices]
+            'voices': [voice.as_json() for voice in self.voices],
         }
 
 def graph_from_json(record):
@@ -96,6 +113,7 @@ def graph_from_json(record):
             top = record['top'],
             bot = record['bot'],
             blocks = [StaffBlock.from_json(a) for a in record['blocks']],
+            notes  = [Note2.from_json(a) for a in record.get('notes', ())],
         )
     elif record['type'] == 'chord_progression':
         return ChordProgression(
@@ -179,11 +197,12 @@ class EnvelopeSegment:
         }
 
 class Staff:
-    def __init__(self, uid, top, bot, blocks):
+    def __init__(self, uid, top, bot, blocks, notes):
         self.uid = uid
         self.top = top
         self.bot = bot
         self.blocks = blocks
+        self.notes  = notes
 
     def as_json(self):
         return {
@@ -192,6 +211,7 @@ class Staff:
             'top': self.top,
             'bot': self.bot,
             'blocks': [block.as_json() for block in self.blocks],
+            'notes': [note.as_json() for note in self.notes],
         }
 
 # Staff is required to have at least one at beat=0, with all parameters present.
@@ -344,10 +364,44 @@ class Note:
             'instrument_uid': self.instrument_uid,
         }
 
+class Note2:
+    def __init__(self, uid, position, duration, pitch, timbre):
+        self.uid = uid
+        self.position = position
+        self.duration = duration
+        self.pitch = pitch
+        self.timbre = timbre
+
+    @staticmethod
+    def from_json(record):
+        position, accidental = record['pitch']
+        pitch = Pitch(position, accidental)
+        numerator, denominator = record['position']
+        position = Fraction(numerator, denominator)
+        numerator, denominator = record['duration']
+        duration = Fraction(numerator, denominator)
+        return Note(
+            uid = record['uid'],
+            position = position,
+            duration = duration,
+            pitch = pitch,
+            timbre = record['timbre'],
+        )
+        
+    def to_json(self):
+        return {
+            'uid': self.uid,
+            'position': self.position.as_integer_ratio(),
+            'duration': self.duration.as_integer_ratio(),
+            'pitch': self.pitch.to_pair(),
+            'timbre': self.timbre,
+        }
+
 class Pitch:
     def __init__(self, position, accidental=None):
         self.position = position
         self.accidental = accidental
+        assert position is not None
 
     def __repr__(self):
         a = "p"
