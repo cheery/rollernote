@@ -127,7 +127,7 @@ def app(editor):
                                         clef = 3,
                                         mode = None
                                     )
-                                ])
+                                ], [])
                             ],
                             voices = []
                         ),
@@ -135,7 +135,7 @@ def app(editor):
                         next_uid = entities.UidGenerator(300),
                     )
                     editor.transport.plugins = {}
-                    editor.transport.live_voices.clear()
+                    editor.transport.refresh_events(*setup_playback(editor.document))
                     editor.transport.mutes = editor.document.mutes
                     sdl2.SDL_PauseAudio(0)
                 gui.hspacing(5)
