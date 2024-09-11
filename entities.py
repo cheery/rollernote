@@ -371,6 +371,7 @@ class Note2:
         self.duration = duration
         self.pitch = pitch
         self.timbre = timbre
+        assert duration != 0
 
     @staticmethod
     def from_json(record):

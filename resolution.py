@@ -412,6 +412,7 @@ def fragmented_note(n, d):
     return base_note(n) / d
 
 def as_fragment(x):
+    assert x != 0
     n, d = x.as_integer_ratio()
     a = 0
     while n & 1 == 0 and d & 1 == 0:

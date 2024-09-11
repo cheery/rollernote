@@ -127,10 +127,12 @@ class Transport:
         # EXHIBIT A
         self.keyboard = {}
         self.keyboard_pressed = {}
+        self.keyboard_offset = {}
         self.velocities = {}
         for uid in plugins:
             self.keyboard[uid] = 0
             self.keyboard_pressed[uid] = 0
+            self.keyboard_offset[uid] = 0
             self.velocities[uid] = [127]*128
 
         self.events = []
@@ -269,6 +271,7 @@ class Transport:
                 elif evt[0] == 'note-off':
                     _, uid, m, vel = evt
                     self.keyboard_pressed[uid] &= ~(1 << m)
+                    self.keyboard_offset[uid] |= 1 << m
                     self.velocities[uid][m] = vel
                 self.eventi += 1
             if self.end <= now and self.loop:
@@ -381,13 +384,18 @@ class Transport:
             if mutelevel != self.mutes.get(uid, 0):
                 pressed = 0
             delta = self.keyboard[uid] ^ pressed
+            offset = self.keyboard_pressed[uid] & self.keyboard_offset[uid]
             for i in range(128):
                 if (delta >> i) & 1:
                     if (pressed >> i) & 1:
                         plugin.push_midi_event(buf, [0x90, i, velocities[i]])
                     else:
                         plugin.push_midi_event(buf, [0x80, i, velocities[i]])
+                elif (offset >> i) & 1:
+                    plugin.push_midi_event(buf, [0x80, i, velocities[i]])
+                    plugin.push_midi_event(buf, [0x90, i, velocities[i]])
             self.keyboard[uid] = pressed
+            self.keyboard_offset[uid] = 0
 
 class Meter:
     def __init__(self):

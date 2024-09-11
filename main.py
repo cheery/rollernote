@@ -365,6 +365,7 @@ def app(editor):
                                                     note.instrument_uid = None
                                     editor.transport.keyboard.pop(instrument.uid)
                                     editor.transport.keyboard_pressed.pop(instrument.uid)
+                                    editor.transport.keyboard_offset.pop(instrument.uid)
                                     editor.transport.refresh_events(*setup_playback(editor.document))
                                     sdl2.SDL_PauseAudio(0)
                                     gui.inform(components.e_dialog_leave, comp)
@@ -412,6 +413,7 @@ def app(editor):
                     editor.transport.plugins[uid] = plugin
                     editor.transport.keyboard[uid] = 0
                     editor.transport.keyboard_pressed[uid] = 0
+                    editor.transport.keyboard_offset[uid] = 0
                     editor.transport.velocities[uid] = 128*[127]
                     new_instrument.set_dirty()
                     sdl2.SDL_PauseAudio(0)
