@@ -1776,7 +1776,6 @@ def super_tool_main(editor, document, instrument_uid):
                                 note.pitch = min(enh, key=cost)
                         gui.broadcast(e_document_change)
                     return _fn_
-
                 def set_accidental(k):
                     def _fn_(x, y, button):
                         for note in graph.layout.staff.notes:
@@ -1826,6 +1825,27 @@ def super_tool_main(editor, document, instrument_uid):
                     this.note_selection = set()
                     gui.inform(components.e_dialog_leave, comp)
                     gui.broadcast(e_document_change)
+                inv = components.button2('invert', flexible_width=True)
+                @inv.listen(gui.e_button_down)
+                def _inv_down_(x, y, button):
+                    pivot = resolution.mean(note.pitch.position
+                                            for note in list(graph.layout.staff.notes)
+                                            if note.uid in this.note_selection)
+                    pivot = round(pivot)
+                    for note in list(graph.layout.staff.notes):
+                        if note.uid in this.note_selection:
+                            pos = (pivot - (note.pitch.position - pivot))
+                            note.pitch = entities.Pitch(pos, note.pitch.accidental)
+                    pivot2 = resolution.mean(note.pitch.position
+                                            for note in list(graph.layout.staff.notes)
+                                            if note.uid in this.note_selection)
+                    pivot2 = round(pivot2)
+                    for note in list(graph.layout.staff.notes):
+                        if note.uid in this.note_selection:
+                            pos = note.pitch.position + (pivot - pivot2)
+                            note.pitch = entities.Pitch(pos, note.pitch.accidental)
+                    gui.broadcast(e_document_change)
+
                 def split_notes(c):
                     def _fn_(x, y, button):
                         for note in list(graph.layout.staff.notes):
