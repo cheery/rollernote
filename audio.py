@@ -164,6 +164,7 @@ class Transport:
         def insert_event(t, evt):
             bisect.insort(events, (t, evt), key = lambda x: x[0])
 
+        last_beat = 0.0
         for graph in graphs.values():
             if not isinstance(graph, entities.Staff):
                 continue
@@ -171,13 +172,16 @@ class Transport:
             smeared = entities.smear(graph.blocks)
             for note in graph.notes:
                 p0 = float(note.position)
+                p1 = float(note.position) + float(note.duration)
                 block = entities.by_beat(smeared, p0)
                 key = resolution.canon_key(block.canonical_key)
                 m = resolution.resolve_pitch(note.pitch, key)
                 t0 = bpm.beat_to_time(p0)
-                t1 = bpm.beat_to_time(p0 + float(note.duration))
-                insert_event(t0, ('note-on',  note.timbre, m, round(127 * dyn.value(p0))))
-                insert_event(t1, ('note-off', note.timbre, m, 127))
+                t1 = bpm.beat_to_time(p1)
+                if note.timbre is not None:
+                    insert_event(t0, ('note-on',  note.timbre, m, round(127 * dyn.value(p0))))
+                    insert_event(t1, ('note-off', note.timbre, m, 127))
+                last_beat = max(last_beat, p1)
 
         for voice in voices:
             if mutelevel != get_mutelevel(voice):
@@ -191,11 +195,14 @@ class Transport:
                 t0 = bpm.beat_to_time(beat)
                 t1 = bpm.beat_to_time(beat + float(seg.duration))
                 for note in seg.notes:
+                    if note.instrument_uid is None:
+                        continue
                     m = resolution.resolve_pitch(note.pitch, key)
                     insert_event(t0, ('note-on',  note.instrument_uid, m, round(127 * dyn.value(beat))))
                     insert_event(t1, ('note-off', note.instrument_uid, m, 127))
                 beat += float(seg.duration)
-        self.last_event = bpm.time_to_beat(events[-1][0] if len(events) > 0 else 0)
+                last_beat = max(last_beat, t1)
+        self.last_event = last_beat
         self.events = events
         self.eventi = 0
         for uid in self.keyboard_pressed:

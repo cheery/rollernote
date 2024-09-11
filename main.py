@@ -438,7 +438,7 @@ def app(editor):
             main_panel = next(main_scroller.children)
             ui.ctx.set_source_rgba(0.5, 0.5, 0.5, 1.0)
             for beat, x in this.beatballs:
-                ui.ctx.arc(x*main_panel.layout.scale_x, comp.shape.y + 45 - 25 * abs(math.sin(beat * math.pi)), 5, 0, 2*math.pi)
+                ui.ctx.arc((x - main_panel.layout.scroll_x)*main_panel.layout.scale_x, comp.shape.y + 45 - 25 * abs(math.sin(beat * math.pi)), 5, 0, 2*math.pi)
                 ui.ctx.stroke()
 
     @gui.sub
@@ -1380,6 +1380,8 @@ class StaffLayout(GraphLayout):
         super().__init__(flexible_width=True, height=self.span * 5)
         self.top_line = self.graph_point(staff.top*12 - 1)
         self.bot_line = self.graph_point(staff.bot*12 + 3)
+        # Extend by one measure
+        self.last_beat += self.beats_in_this_measure2(self.last_beat)[1]
 
     def graph_point(self, index):
         return self.reference - (index - self.staff.bot*12)*5
@@ -1644,6 +1646,9 @@ def super_tool_main(editor, document, instrument_uid):
         beat1 = None,
         beat = 0.0,
         position = None,
+        moving = False,
+        moving_beat = 0,
+        moving_prev_position = None,
     )
     this = gui.lazybundle(**init)
     if this.document != document:
@@ -1679,6 +1684,13 @@ def super_tool_main(editor, document, instrument_uid):
         x, y = comp.local_point(x, y)
         this.mouse_x = x
         this.mouse_y = y
+        if this.moving:
+            new_beat = (this.mouse_x - this.pressed_x) // 40
+            for note in beatline.layouts[this.graph_uid].staff.notes:
+                if note.uid in this.note_selection:
+                    note.position = max(0, new_beat + this.moving_prev_position[note.uid])
+            this.moving_beat = new_beat
+            return
         if this.pressing:
             this.head = int(resolution.sequence_interpolation(x + 20, beatline.offsets, beatline.beats))
         if graph is not None and isinstance(graph.layout, StaffLayout) and this.graph_uid == graph.layout.uid:
@@ -1710,7 +1722,9 @@ def super_tool_main(editor, document, instrument_uid):
         x, y = comp.local_point(gx, gy)
         this.pressed_x = x
         this.pressed_y = y
-        if button == 1 and graph is not None:
+        if button == 1 and this.moving:
+            this.moving = False
+        elif button == 1 and graph is not None:
             collision = False
             if this.head is not None:
                 sx = resolution.sequence_interpolation(this.beat0, beatline.beats, beatline.offsets, True)
@@ -1819,10 +1833,18 @@ def super_tool_main(editor, document, instrument_uid):
                                 note.position = (note.position - this.beat0) * c + this.beat0
                         gui.broadcast(e_document_change)
                     return _fn_
-        #        m = components.button2("move", flexible_width=True, disabled=not active)
-        #            if active:
-        #                @m.listen(gui.e_button_down)
-        #                def _move_down_(x, y, button):
+                m = components.button2("move", flexible_width=True)
+                @m.listen(gui.e_button_down)
+                def _move_down_(gx, gy, button):
+                    this.moving = True
+                    this.moving_beat = 0
+                    this.moving_prev_position = dict()
+                    this.pressed_x, this.pressed_y = comp.local_point(gx, gy)
+                    for note in list(graph.layout.staff.notes):
+                        if note.uid in this.note_selection:
+                            this.moving_prev_position[note.uid] = note.position
+                 
+
         #                    layout = beatline.layouts[this.graph_uid]
         #                    this.moving = True
         #                    this.moving_i0 = i0 - 1
@@ -1842,12 +1864,16 @@ def super_tool_main(editor, document, instrument_uid):
         #                            this.moving_bu1 = entities.by_beat(layout.smeared, beat).beat_unit
         #                        beat += float(seg.duration)
         #                    this.moving_width = x1 - x0
-        #                    gui.inform(components.e_dialog_leave, comp)
-        #            j = components.button2("join", flexible_width=True, disabled=not continuity)
-        #            if continuity:
-        #                @j.listen(gui.e_button_down)
-        #                def _join_down_(x, y, button):
-        #                    layout = beatline.layouts[this.graph_uid]
+                    gui.inform(components.e_dialog_leave, comp)
+                chord = components.button2("chord", flexible_width=True)
+                @chord.listen(gui.e_button_down)
+                def _chord_down_(x, y, button):
+                    layout = beatline.layouts[this.graph_uid]
+                    for note in list(graph.layout.staff.notes):
+                        if note.uid in this.note_selection:
+                            note.position = this.beat0
+                            note.duration = this.beat1 - this.beat0
+                    # TODO: "reflow" the notes.
         #                    beat = 0
         #                    duration = 0
         #                    pitches = {}
@@ -1880,6 +1906,7 @@ def super_tool_main(editor, document, instrument_uid):
         #                        this.note_selection = set()
         #                        gui.broadcast(e_document_change)
         #                        gui.inform(components.e_dialog_leave, comp)
+                    gui.broadcast(e_document_change)
                 @gui.row(flexible_width=True, height=32)
                 def _row_():
                     components.label2("split", flexible_height=True)
@@ -1892,14 +1919,15 @@ def super_tool_main(editor, document, instrument_uid):
                     halve.listen(gui.e_button_down)(mul_notes(Fraction(1, 2)))
                     double = components.button2(f"*2", flexible_width=True, flexible_height=True)
                     double.listen(gui.e_button_down)(mul_notes(Fraction(2)))
-        #            retro = components.button2("retrograde", flexible_width=True, disabled=not continuity)
-        #            if continuity:
-        #                @retro.listen(gui.e_button_down)
-        #                def _retro_down(x, y, button):
-        #                    voice.segments[i0:i1+1] = reversed(voice.segments[i0:i1+1])
-        #                    gui.broadcast(e_document_change)
-        #    elif button == 3:
-        #        this.voice_lock = not this.voice_lock
+                retro = components.button2("retrograde", flexible_width=True)
+                @retro.listen(gui.e_button_down)
+                def _retro_down(x, y, button):
+                    b0 = this.beat0
+                    b1 = this.beat1
+                    for note in list(graph.layout.staff.notes):
+                        if note.uid in this.note_selection:
+                            note.position = b1 - (note.position - b0) - note.duration
+                    gui.broadcast(e_document_change)
         gui.broadcast(e_document_change)
 
     @gui.listen(e_graph_button_up)

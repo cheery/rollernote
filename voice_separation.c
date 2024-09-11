@@ -2,6 +2,11 @@
 #include <stdlib.h>
 #include <math.h>
 
+// Define constants for the LCG (from Numerical Recipes)
+#define LCG_A 1664525
+#define LCG_C 1013904223
+#define LCG_M 4294967296  // 2^32
+
 typedef struct {
   int max_notes;
   double *onset;
@@ -17,6 +22,7 @@ typedef struct {
   double overlap_penalty;
   double cross_penalty;
   int pitch_lookback;
+  unsigned int lcg;
 } Descriptor;
 
 int overlaps(Descriptor* m, int a, int b) {
@@ -24,8 +30,17 @@ int overlaps(Descriptor* m, int a, int b) {
            (m->onset[a] >  m->onset[b] && m->offset[b] > m->onset[a]);
 }
 
-double random_double() {
-    return rand() / (double)RAND_MAX;
+unsigned int lcg_random(Descriptor* m) {
+    m->lcg = (LCG_A * m->lcg + LCG_C) % LCG_M;
+    return m->lcg;
+}
+
+double random_double(Descriptor* m) {
+    return (double)lcg_random(m) / (double)LCG_M;
+}
+
+int random_range(Descriptor* m, int min, int max) {
+    return (lcg_random(m) % (max - min)) + min;
 }
 
 int next_slice(Descriptor* m, int* start, int* stop) {
@@ -361,8 +376,8 @@ void lowest_cost_neighbor(Descriptor* m, int start, int stop, int* links) {
 
 void random_neighbour(Descriptor* m, int start, int stop) {
     int index, voice_index;
-    index = rand() % (stop - start) + start;
-    voice_index = rand() % (m->max_voices - 1);
+    index = random_range(m, start, stop);
+    voice_index = random_range(m, 0, m->max_voices-1);
     if (voice_index >= m->voice[index]) voice_index++;
     m->voice[index] = voice_index;
 }
@@ -379,7 +394,7 @@ void stochastic_local_search(Descriptor* m, int start, int stop, int* links) {
     best_cost = calculate_total_cost(m, start, stop, links, 0);
     no_improvement_counter = 0;
     while (no_improvement_counter < max_iterations) {
-        if (random_double() <= 0.8) {
+        if (random_double(m) <= 0.8) {
             lowest_cost_neighbor(m, start, stop, links);
         } else {
             random_neighbour(m, start, stop);

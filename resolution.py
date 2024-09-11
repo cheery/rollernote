@@ -810,6 +810,7 @@ class Descriptor(ctypes.Structure):
         ('overlap_penalty', ctypes.c_double),
         ('cross_penalty', ctypes.c_double),
         ('pitch_lookback', ctypes.c_int),
+        ('lcg', ctypes.c_uint),
     ]
 
 def voice_separation(notes, settings):
@@ -836,6 +837,7 @@ def voice_separation(notes, settings):
         overlap_penalty=settings.overlap_penalty,
         cross_penalty=settings.cross_penalty,
         pitch_lookback=settings.pitch_lookback,
+        lcg = 0,
     )
     lib.voice_separation(ctypes.byref(desc))
     voices = []
