@@ -1764,6 +1764,19 @@ def super_tool_main(editor, document, instrument_uid):
                                 note.pitch = entities.Pitch(note.pitch.position+c, note.pitch.accidental)
                         gui.broadcast(e_document_change)
                     return _fn_
+                def chromatic_transpose(c): # TODO: check correctness
+                    layout = beatline.layouts[this.graph_uid]
+                    def _fn_(x, y, button):
+                        for note in graph.layout.staff.notes:
+                            if note.uid in this.note_selection:
+                                key = resolution.canon_key(entities.by_beat(layout.smeared, note.position).canonical_key)
+                                m = resolution.resolve_pitch(note.pitch, key) + c
+                                enh = resolution.enharmonics(m, key)
+                                cost = lambda p: abs(note.pitch.position - p.position) + resolution.pitch_complexity(p)
+                                note.pitch = min(enh, key=cost)
+                        gui.broadcast(e_document_change)
+                    return _fn_
+
                 def set_accidental(k):
                     def _fn_(x, y, button):
                         for note in graph.layout.staff.notes:
@@ -1787,12 +1800,16 @@ def super_tool_main(editor, document, instrument_uid):
                     tup.listen(gui.e_button_down)(transpose(1))
                     _8va = components.button2('8va', flexible_width=True)
                     _8va.listen(gui.e_button_down)(transpose(7))
+                    _chr = components.button2('chr', flexible_width=True)
+                    _chr.listen(gui.e_button_down)(chromatic_transpose(1))
                 @gui.row(flexible_width=True)
                 def _row_():
                     tdo = components.button2('down', flexible_width=True)
                     tdo.listen(gui.e_button_down)(transpose(-1))
                     _8vb = components.button2('8vb', flexible_width=True)
                     _8vb.listen(gui.e_button_down)(transpose(-7))
+                    _chr = components.button2('chr', flexible_width=True)
+                    _chr.listen(gui.e_button_down)(chromatic_transpose(-1))
                 ins = components.button2('instrument', flexible_width=True)
                 @ins.listen(gui.e_button_down)
                 def _ins_down_(x, y, button):
