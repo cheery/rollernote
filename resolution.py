@@ -227,9 +227,9 @@ def linear_envelope(segments, default):
             current_value = value
         else:
             next_value = find_next_value(i, segments)
-            if segment.control > 0 and next_value <= current_value:
+            if segment.control > 0 and next_value is not None and next_value <= current_value:
                 next_value = None
-            if segment.control < 0 and next_value >= current_value:
+            if segment.control < 0 and next_value is not None and next_value >= current_value:
                 next_value = None
             if next_value is not None:
                 end_value = next_value

@@ -315,7 +315,7 @@ class VoiceSegment:
     def as_json(self):
         return {
             'duration': self.duration.as_integer_ratio(),
-            'notes': [note.to_json() for note in self.notes]
+            'notes': [note.as_json() for note in self.notes]
         }
 
 class Instrument:
@@ -358,7 +358,7 @@ class Note:
             instrument_uid = record['instrument_uid'],
         )
         
-    def to_json(self):
+    def as_json(self):
         return {
             'pitch': self.pitch.to_pair(),
             'instrument_uid': self.instrument_uid,
@@ -389,7 +389,7 @@ class Note2:
             timbre = record['timbre'],
         )
         
-    def to_json(self):
+    def as_json(self):
         return {
             'uid': self.uid,
             'position': self.position.as_integer_ratio(),

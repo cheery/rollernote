@@ -765,6 +765,7 @@ class BeatlineLayout(gui.ColumnLayout):
             start, count = layout.beats_in_this_measure2(beat)
             remain = count - (position - start)
             while remain < duration:
+                assert remain > 0
                 self.insert_event(beat, evt, (remain, obj, graph_uid))
                 duration -= remain
                 beat += float(remain)
