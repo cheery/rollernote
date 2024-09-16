@@ -216,8 +216,12 @@ class Success(Command):
     def __call__(self, ab : Stream):
         subs = ab.frame.subs
         chrs = ab.frame.chrs
-        ab.frame = delay(fail(ab.frame))
-        return subs, chrs
+        if ab.frame.cont.cont is None:
+            ab.frame = delay(fail(ab.frame))
+            return subs, chrs
+        else:
+            cont = ab.frame.cont.cont
+            ab.frame.cont = Cont(cont.cont, cont.env, cont.code, cont.pc)
 
 class Fail(Command):
     def __call__(self, ab : Stream):

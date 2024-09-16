@@ -11,7 +11,7 @@ tokens = (
     'BAR', 'COMMA', 'SEMICOLON', 'EQUALS',
     'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'MODULO',
     'LE', 'GE', 'LT', 'GT',
-    'TILDE', 'QUESTION',
+    'TILDE', 'QUESTION', 'AT'
 )
 
 # Regular expressions for simple tokens
@@ -34,6 +34,7 @@ t_LT = r'<'
 t_GT = r'>'
 t_TILDE = r'~'
 t_QUESTION = r'\?'
+t_AT = r'@'
 
 # Reserved keywords
 reserved = {
@@ -116,8 +117,20 @@ def p_declaration(p):
 
 # Datatype declaration
 def p_data_declaration(p):
-    '''data_declaration : DATA VAR LBRACE constructors RBRACE'''
-    p[0] = ast.DataDeclaration(p[2], p[4], p.lineno(1))
+    '''data_declaration : DATA VAR LBRACE constructors RBRACE
+                        | DATA VAR LPAREN atoms RPAREN LBRACE constructors RBRACE'''
+    if len(p) == 6:
+        p[0] = ast.DataDeclaration(p[2], [], p[4], p.lineno(1))
+    else:
+        p[0] = ast.DataDeclaration(p[2], p[4], p[7], p.lineno(1))
+
+def p_atoms(p):
+    '''atoms : ATOM
+             | ATOM COMMA atoms'''
+    if len(p) == 2:
+        p[0] = [p[1]]
+    else:
+        p[0] = [p[1]] + p[3]
 
 def p_constructors(p):
     '''constructors : constructor
@@ -128,7 +141,7 @@ def p_constructors(p):
         p[0] = [p[1]] + p[3]
 
 def p_constructor(p):
-    '''constructor : ATOM LPAREN vars RPAREN
+    '''constructor : ATOM LPAREN types RPAREN
                    | ATOM'''
     if len(p) == 2:
         p[0] = (p[1], [])
@@ -138,12 +151,24 @@ def p_constructor(p):
 def p_params(p):
     '''params : expr
               | expr COMMA params
-       vars : VAR
-            | VAR COMMA vars'''
+       types : type
+             | type COMMA types'''
     if len(p) == 2:
         p[0] = [p[1]]
     else:
         p[0] = [p[1]] + p[3]
+
+def p_type(p):
+    '''type : ATOM
+            | VAR
+            | VAR LPAREN types RPAREN'''
+    if len(p) == 2:
+        if p[1][0].isupper():
+            p[0] = ast.Term(p[1], [])
+        else:
+            p[0] = ast.Variable(p[1])
+    else:
+        p[0] = ast.Term(p[1], p[3])
 
 def p_term(p):
     '''term : ATOM
@@ -159,7 +184,7 @@ def p_term(p):
 
 # Type declaration
 def p_type_declaration(p):
-    '''type_declaration : TYPE ATOM LPAREN vars RPAREN'''
+    '''type_declaration : TYPE ATOM LPAREN types RPAREN'''
     p[0] = ast.TypeDeclaration(p[2], p[4], p.lineno(1))
 
 # Rule declaration
@@ -173,18 +198,18 @@ def p_rule_declaration(p):
 
 # Constraint declaration
 def p_constraint_declaration(p):
-    '''constraint_declaration : CONSTRAINT ATOM LPAREN vars RPAREN
+    '''constraint_declaration : CONSTRAINT ATOM LPAREN types RPAREN
                               | CONSTRAINT ATOM
-                              | heads BAR guards LBRACE goals RBRACE
-                              | heads LBRACE goals RBRACE'''
+                              | AT heads BAR guards LBRACE goals RBRACE
+                              | AT heads LBRACE goals RBRACE'''
     if len(p) == 6:
         p[0] = ast.ConstraintDeclaration(p[2], p[4], p.lineno(1))
     elif len(p) == 2:
         p[0] = ast.ConstraintDeclaration(p[2], [], p.lineno(1))
     elif len(p) == 7:
-        p[0] = ast.CHRDeclaration(p[1], p[3], p[5], p.lineno(4))
+        p[0] = ast.CHRDeclaration(p[2], p[4], p[6], p.lineno(1))
     else:
-        p[0] = ast.CHRDeclaration(p[1], [], p[3], p.lineno(2))
+        p[0] = ast.CHRDeclaration(p[2], [], p[4], p.lineno(1))
 
 def p_heads(p):
     '''heads : head
@@ -271,11 +296,11 @@ def p_expr(p):
 
 def p_int_literal(p):
     '''int_literal : INT'''
-    p[0] = ast.IntLiteral(p[1])
+    p[0] = ast.IntLiteral(p[1], core.Variable())
 
 def p_string_literal(p):
     '''string_literal : STRING'''
-    p[0] = ast.StringLiteral(p[1])
+    p[0] = ast.StringLiteral(p[1], core.Variable())
 
 def p_query(p):
     '''query : QUESTION goal'''
@@ -295,18 +320,21 @@ parser = yacc.yacc(debug=False)
 # Test input for parser (extended example)
 input_str = '''
 # CHRs
-# constraint vs. rule
-# type checking
-# simple types
-# parametric types
+# type errors
+# literal constructors
 
 constraint foo(Int)
-type append(List, List, List)
+type append(List(a), List(a), List(a))
 
-data List { nil | cons(Int, List) }
+data List(a) { nil | cons(a, List(a)) }
 
 append(nil, X, X) {}
 append(cons(H, T), L2, cons(H, L3)) { append(T, L2, L3) }
+
+? append(X, Y, cons(0, cons(1, nil)))
+? foo(5)
+
+@ ~foo(X) | X > 5 { }
 
 #data Thing { foo(Uid, Fractional, String) | bar | guux(Int) }
 #type rule(Int, Uid, String)
@@ -314,16 +342,16 @@ append(cons(H, T), L2, cons(H, L3)) { append(T, L2, L3) }
 #goal {}
 #constraint foo(Int, Thing)
 #~foo(X, bar(Y)) | X > 5 { goal }
-? append(X, Y, cons(0, cons(1, nil)))
 '''
 
 # Parse the input
 result = parser.parse(input_str)
-bd = builder.Builder({}, {}, {}, [], None)
+bd = builder.Builder({}, {}, {}, {}, [], None)
 for decl in result.declarations:
     decl.register(bd)
 
 print(bd.datadecls)
+print(bd.termdecls)
 print(bd.typedecls)
 print(bd.chrd)
 
@@ -337,6 +365,46 @@ fnf = {
 
 module = {}
 
+g = builder.defaultdict(list)
+for sig, decls in bd.rules.items():
+    refs = []
+    for decl in decls:
+        refs.extend(decl.goal.references())
+    g[sig] = refs
+sccs = builder.Graph(g).sccs()
+
+for sigs in reversed(sccs):
+    mutor = core.Mutor(core.Map().mutate(), [])
+    refs = {}
+    for sig in sigs:
+        refs[sig] = [core.Variable() for _ in range(sig[1])]
+    for sig in sigs:
+        decls = bd.rules[sig]
+        vari = list(set(decl.variables()))
+        vari.sort()
+        tenv = dict((v, core.Variable()) for v in vari)
+        targs = [arg.infer(tenv, bd.termdecls, mutor) for arg in decl.args]
+        decl.goal.infer(tenv, bd.termdecls, bd.typedecls, refs, mutor)
+        for a, b in zip(refs[sig], targs):
+            a = core.deepwalk(a, mutor.subs)
+            b = core.deepwalk(b, mutor.subs)
+            assert core.unify(a, b, mutor)
+    for sig in sigs:
+        targs = []
+        lineno = bd.rules[sig][0].lineno
+        for a in refs[sig]:
+            targs.append(core.deepwalk(a, mutor.subs))
+        if sig in bd.typedecls:
+            tyenv = [core.Variable() for _ in range(bd.typedecls[sig][1])]
+            uargs = [a.eva(tyenv, mutor.subs) for a in bd.typedecls[sig][2]]
+            for a, b in zip(uargs, targs):
+                a = core.deepwalk(a, mutor.subs)
+                b = core.deepwalk(b, mutor.subs)
+                assert core.unify(a, b, mutor)
+        else:
+            uargs = [t.functor for t in targs]
+            bd.typedecls[sig] = False, uargs, lineno
+
 for sig, decls in bd.rules.items():
     def build(decls):
         for decl in decls:
@@ -345,7 +413,7 @@ for sig, decls in bd.rules.items():
             code = [core.Fresh(len(env))]
             for i, arg in enumerate(decl.args, len(env)):
                 code.append(core.Unify(core.Ix(i), arg.as_core(env, fnf)))
-            code.extend(decl.goal.construct(env, fnf))
+            code.extend(decl.goal.construct(env, fnf, bd.typedecls))
             code.append(core.Success())
             yield code
     total = None
@@ -359,11 +427,12 @@ for sig, decls in bd.rules.items():
 if bd.query is not None:
     env = list(set(bd.query.goal.variables()))
     env.sort()
-    code = bd.query.goal.construct(env, fnf)
+    code = bd.query.goal.construct(env, fnf, bd.typedecls)
     code.append(core.Success())
     venv = [core.Variable() for _ in env]
 
-    stream = core.Stream(module, [], core.init_frame(venv, code))
+    chrp = core.CHRProgram([])
+    stream = core.Stream(module, chrp, core.init_frame(venv, code))
     names = dict(zip(env, venv))
     for subs, chrs in core.run(stream):
         show = core.Show(subs, names)
