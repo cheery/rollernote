@@ -273,12 +273,14 @@ def unify(u, v, mutor : Mutor):
             mutor.subs[v] = u
             mutor.vari.append((v, u))
             return True
-    elif u.functor == v.functor and len(u.args) == len(v.args):
-        for a,b in zip(u.args, v.args):
-            if not unify(a, b, mutor):
-                return False
-        return True
-    return False
+    elif isinstance(u, Term) and isinstance(v, Term):
+        if u.functor == v.functor and len(u.args) == len(v.args):
+            for a,b in zip(u.args, v.args):
+                if not unify(a, b, mutor):
+                    return False
+            return True
+        return False
+    return u == v
 
 def eq(u, v, subs : Subs):
     if isinstance(u, Term) and isinstance(v, Term):
@@ -378,10 +380,21 @@ class Decon(Guard):
     arity : int
     ix : int
     def __call__(self, env : Env, subs : Subs):
-        obj = walk(env[ix], subs)
+        obj = walk(env[self.ix], subs)
         if isinstance(obj, Term) and obj.functor == self.functor and obj.arity == self.arity:
-            for x in reversed(obj.args):
-                env.insert(0, x)
+            del env[self.ix]
+            env.extend(obj.args)
+            return True
+        return False
+
+@dataclass
+class Deconst(Guard):
+    value : Any
+    ix : int
+    def __call__(self, env : Env, subs : Subs):
+        obj = walk(env[self.ix], subs)
+        if obj == self.value:
+            del env[self.ix]
             return True
         return False
 

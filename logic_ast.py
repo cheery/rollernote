@@ -61,6 +61,11 @@ class RuleDeclaration(Declaration):
             yield from arg.variables()
         yield from self.goal.variables()
 
+    def apply(self, subs):
+        for arg in self.args:
+            arg.apply(subs)
+        self.goal.apply(subs)
+
 @dataclass
 class ConstraintDeclaration(Declaration):
     name : str
@@ -86,6 +91,15 @@ class CHRDeclaration(Declaration):
     def register(self, builder):
         builder.chrd.append(self)
 
+    def apply(self, subs):
+        for _, _, args in self.heads:
+            for arg in args:
+                arg.apply(subs)
+        for _, x, y in self.guards:
+            x.apply(subs)
+            y.apply(subs)
+        self.goal.apply(subs)
+
 class Goal:
     pass
 
@@ -97,6 +111,10 @@ class Unify(Goal):
     def variables(self):
         yield from self.a.variables()
         yield from self.b.variables()
+
+    def apply(self, subs):
+        self.a.apply(subs)
+        self.b.apply(subs)
 
 @dataclass
 class Invoke(Goal):
@@ -138,13 +156,16 @@ class Invoke(Goal):
             if sig in refs:
                 uargs = refs[sig]
             else:
-                assert False, "TODO"
-                aa, _ = typedecls[sig]
-                uargs = [core.Term(a, []) for a in aa]
+                tyenv = [core.Variable() for _ in range(typedecls[sig][1])]
+                uargs = [a.eva(tyenv, mutor.subs) for a in typedecls[sig][2]]
             for a, b in zip(uargs, targs):
                 a = core.deepwalk(a, mutor.subs)
                 b = core.deepwalk(b, mutor.subs)
                 assert core.unify(a, b, mutor)
+
+    def apply(self, subs):
+        for arg in self.args:
+            arg.apply(subs)
 
 @dataclass
 class Conj(Goal):
@@ -164,9 +185,13 @@ class Conj(Goal):
         yield from self.a.references()
         yield from self.b.references()
 
-    def infer(self, tenv, termdecls, typedecls, mutor):
-        self.a.infer(tenv, termdecls, typedecls, mutor)
-        self.b.infer(tenv, termdecls, typedecls, mutor)
+    def infer(self, tenv, termdecls, typedecls, refs, mutor):
+        self.a.infer(tenv, termdecls, typedecls, refs, mutor)
+        self.b.infer(tenv, termdecls, typedecls, refs, mutor)
+
+    def apply(self, subs):
+        self.a.apply(subs)
+        self.b.apply(subs)
 
 @dataclass
 class Disj(Goal):
@@ -186,9 +211,13 @@ class Disj(Goal):
         yield from self.a.references()
         yield from self.b.references()
 
-    def infer(self, tenv, termdecls, typedecls, mutor):
-        self.a.infer(tenv, termdecls, typedecls, mutor)
-        self.b.infer(tenv, termdecls, typedecls, mutor)
+    def infer(self, tenv, termdecls, typedecls, refs, mutor):
+        self.a.infer(tenv, termdecls, typedecls, refs, mutor)
+        self.b.infer(tenv, termdecls, typedecls, refs, mutor)
+
+    def apply(self, subs):
+        self.a.apply(subs)
+        self.b.apply(subs)
 
 class Expr:
     pass
@@ -218,6 +247,10 @@ class Term(Expr):
             assert core.unify(ta, tb, mutor)
         return core.Term(ty, tyenv)
 
+    def apply(self, subs):
+        for arg in self.args:
+            arg.apply(subs)
+
 @dataclass
 class Variable(Expr):
     name : str
@@ -230,6 +263,9 @@ class Variable(Expr):
 
     def infer(self, tenv, termdecls, mutor):
         return tenv[self.name]
+
+    def apply(self, subs):
+        pass
 
 @dataclass
 class IntLiteral(Expr):
@@ -245,6 +281,9 @@ class IntLiteral(Expr):
     def infer(self, tenv, termdecls, mutor):
         return self.ty
 
+    def apply(self, subs):
+        self.ty = core.deepwalk(self.ty, subs)
+
 @dataclass
 class StringLiteral(Expr):
     value : int
@@ -259,6 +298,9 @@ class StringLiteral(Expr):
     def infer(self, tenv, termdecls, mutor):
         return self.ty
 
+    def apply(self, subs):
+        self.ty = core.deepwalt(self.ty, subs)
+
 @dataclass
 class Query(Declaration):
     goal : Goal
@@ -269,3 +311,6 @@ class Query(Declaration):
             builder.query = self
         else:
             builder.query.goal = Conj(builder.query.goal, self.goal)
+
+    def apply(self, subs):
+        self.goal.apply(subs)

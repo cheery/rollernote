@@ -204,9 +204,9 @@ def p_constraint_declaration(p):
                               | AT heads LBRACE goals RBRACE'''
     if len(p) == 6:
         p[0] = ast.ConstraintDeclaration(p[2], p[4], p.lineno(1))
-    elif len(p) == 2:
+    elif len(p) == 3:
         p[0] = ast.ConstraintDeclaration(p[2], [], p.lineno(1))
-    elif len(p) == 7:
+    elif len(p) == 8:
         p[0] = ast.CHRDeclaration(p[2], p[4], p[6], p.lineno(1))
     else:
         p[0] = ast.CHRDeclaration(p[2], [], p[4], p.lineno(1))
@@ -217,7 +217,7 @@ def p_heads(p):
     if len(p) == 4:
         p[0] = [p[1]] + p[3]
     else:
-        p[0] = p[1]
+        p[0] = [p[1]]
 
 def p_head(p):
     '''head : ATOM
@@ -319,7 +319,6 @@ parser = yacc.yacc(debug=False)
 
 # Test input for parser (extended example)
 input_str = '''
-# CHRs
 # type errors
 # literal constructors
 
@@ -332,9 +331,9 @@ append(nil, X, X) {}
 append(cons(H, T), L2, cons(H, L3)) { append(T, L2, L3) }
 
 ? append(X, Y, cons(0, cons(1, nil)))
-? foo(5)
+? foo(5), foo(4)
 
-@ ~foo(X) | X > 5 { }
+@ ~foo(X) | X > 4 { }
 
 #data Thing { foo(Uid, Fractional, String) | bar | guux(Int) }
 #type rule(Int, Uid, String)
@@ -350,15 +349,16 @@ bd = builder.Builder({}, {}, {}, {}, [], None)
 for decl in result.declarations:
     decl.register(bd)
 
-print(bd.datadecls)
-print(bd.termdecls)
-print(bd.typedecls)
-print(bd.chrd)
+def customdiv(x, y):
+    if isinstance(x, Fraction) and isinstance(y, Fraction):
+        return x / y
+    else:
+        return x // y
 
 fnf = {
     '+': core.FnF('+', core.operator.add),
     '-': core.FnF('-', core.operator.sub),
-    '/': core.FnF('/', core.operator.truediv),
+    '/': core.FnF('/', customdiv),
     '*': core.FnF('*', core.operator.mul),
     '%': core.FnF('%', core.operator.mod),
 }
@@ -380,22 +380,23 @@ for sigs in reversed(sccs):
         refs[sig] = [core.Variable() for _ in range(sig[1])]
     for sig in sigs:
         decls = bd.rules[sig]
-        vari = list(set(decl.variables()))
-        vari.sort()
-        tenv = dict((v, core.Variable()) for v in vari)
-        targs = [arg.infer(tenv, bd.termdecls, mutor) for arg in decl.args]
-        decl.goal.infer(tenv, bd.termdecls, bd.typedecls, refs, mutor)
-        for a, b in zip(refs[sig], targs):
-            a = core.deepwalk(a, mutor.subs)
-            b = core.deepwalk(b, mutor.subs)
-            assert core.unify(a, b, mutor)
+        for decl in decls:
+            vari = list(set(decl.variables()))
+            vari.sort()
+            tenv = dict((v, core.Variable()) for v in vari)
+            targs = [arg.infer(tenv, bd.termdecls, mutor) for arg in decl.args]
+            decl.goal.infer(tenv, bd.termdecls, bd.typedecls, refs, mutor)
+            for a, b in zip(refs[sig], targs):
+                a = core.deepwalk(a, mutor.subs)
+                b = core.deepwalk(b, mutor.subs)
+                assert core.unify(a, b, mutor)
     for sig in sigs:
         targs = []
         lineno = bd.rules[sig][0].lineno
         for a in refs[sig]:
             targs.append(core.deepwalk(a, mutor.subs))
         if sig in bd.typedecls:
-            tyenv = [core.Variable() for _ in range(bd.typedecls[sig][1])]
+            tyenv = [object() for _ in range(bd.typedecls[sig][1])]
             uargs = [a.eva(tyenv, mutor.subs) for a in bd.typedecls[sig][2]]
             for a, b in zip(uargs, targs):
                 a = core.deepwalk(a, mutor.subs)
@@ -404,6 +405,88 @@ for sigs in reversed(sccs):
         else:
             uargs = [t.functor for t in targs]
             bd.typedecls[sig] = False, uargs, lineno
+
+    for sig in sigs:
+        decls = bd.rules[sig]
+        for decl in decls:
+            decl.apply(mutor.subs)
+
+for c in bd.chrd:
+    mutor = core.Mutor(core.Map().mutate(), [])
+    vari = list()
+    for delete, name, args in c.heads:
+        for a in args:
+            vari.extend(a.variables())
+    vari = list(set(vari))
+    vari.sort()
+    tenv = dict((v, core.Variable()) for v in vari)
+    for delete, name, args in c.heads:
+        sig = name, len(args)
+        targs = [arg.infer(tenv, bd.termdecls, mutor) for arg in args]
+        tyenv = [object() for _ in range(bd.typedecls[sig][1])]
+        uargs = [a.eva(tyenv, mutor.subs) for a in bd.typedecls[sig][2]]
+        for a, b in zip(uargs, targs):
+            a = core.deepwalk(a, mutor.subs)
+            b = core.deepwalk(b, mutor.subs)
+            assert core.unify(a, b, mutor)
+    for opname, x, y in c.guards:
+        x = x.infer(tenv, bd.termdecls, mutor)
+        y = y.infer(tenv, bd.termdecls, mutor)
+        x = core.deepwalk(x, mutor.subs)
+        y = core.deepwalk(y, mutor.subs)
+        assert core.unify(x, y, mutor)
+    c.goal.infer(tenv, bd.termdecls, bd.typedecls, {}, mutor)
+    c.apply(mutor.subs)
+
+chr_list = []
+for c in bd.chrd:
+    head = []
+    deletes = ()
+    env = []
+    enva = []
+    guards = []
+    for i, (delete, name, args) in enumerate(c.heads):
+        enva.extend(args)
+        head.append((name, len(args)))
+        if delete:
+            deletes += (i,)
+    ix = 0
+    while ix < len(enva):
+        t = enva[ix]
+        if isinstance(t, ast.Term):
+            guards.append(core.Decon(t.functor, len(t.args), ix))
+            enva.extend(t.args)
+            del enva[ix]
+        elif isinstance(t, ast.Variable):
+            if t.name in env:
+                guards.append(core.Eq(Ix(env.index(t.name)), Ix(ix)))
+            env.append(t.name)
+            ix += 1
+        else:
+            guards.append(core.Deconst(t.as_value(), ix))
+            del enva[ix]
+    for opname, x, y in c.guards:
+        x = x.as_core(env, fnf)
+        y = y.as_core(env, fnf)
+        if opname == '=':
+            guards.append(core.Eq(x, y))
+        elif opname == '<':
+            guards.append(core.Op(core.operator.lt, x, y))
+        elif opname == '>':
+            guards.append(core.Op(core.operator.gt, x, y))
+        else:
+            assert False, opname
+    code = c.goal.construct(env, fnf, bd.typedecls)
+    code.append(core.Success())
+    chr_list.append(core.CHR(head, guards, code, deletes))
+
+if bd.query is not None:
+    mutor = core.Mutor(core.Map().mutate(), [])
+    vari = list(set(bd.query.goal.variables()))
+    tenv = dict((v, core.Variable()) for v in vari)
+    bd.query.goal.infer(tenv, bd.termdecls, bd.typedecls, {}, mutor)
+    bd.query.apply(mutor.subs)
+    
 
 for sig, decls in bd.rules.items():
     def build(decls):
@@ -431,7 +514,7 @@ if bd.query is not None:
     code.append(core.Success())
     venv = [core.Variable() for _ in env]
 
-    chrp = core.CHRProgram([])
+    chrp = core.CHRProgram(chr_list)
     stream = core.Stream(module, chrp, core.init_frame(venv, code))
     names = dict(zip(env, venv))
     for subs, chrs in core.run(stream):
