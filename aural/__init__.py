@@ -1,8 +1,8 @@
 import ctypes
 import sdl2
-import lilv
+from . import lilv
 import numpy
-import resolution
+from music import resolution
 import math
 import wave
 import entities

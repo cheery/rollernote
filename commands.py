@@ -1,7 +1,7 @@
 """
     Commands record actions made for document.
 """
-import gui
+from visual import gui
 
 class DemoCommand:
     def __init__(self):

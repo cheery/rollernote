@@ -1,4 +1,4 @@
-import lilv
+from . import lilv
 import ctypes
 import urllib.parse
 import os

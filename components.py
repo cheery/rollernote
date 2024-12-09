@@ -1,4 +1,4 @@
-import gui
+from visual import gui
 import sdl2
 from contextlib import contextmanager
 

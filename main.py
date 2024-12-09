@@ -1,13 +1,13 @@
 import sdl2.ext
 import entities
-import cairo_renderer
+from visual import cairo_renderer
 import cairo
-import lv2
-import audio
+from aural import lv2
+import aural as audio
 import commands
-import gui
+from visual import gui
 import math
-import resolution
+from music import resolution
 import bisect
 import random
 import components
@@ -144,7 +144,7 @@ def app(editor):
                 def _save_down_(x, y, button):
                     document = editor.document
                     document.store_plugins(editor.transport.plugins)
-                    entities.save_document('document.mide.zip', editor.document)
+                    entities.save_document('data/document.mide.zip', editor.document)
                 gui.hspacing(5)
                 # Editor history
                 history = editor.history
@@ -3089,7 +3089,7 @@ def staff_block(ctx, layout, x0, y0, block, smear):
 class Editor:
     def __init__(self):
         block_length = 1024*2
-        self.document = entities.load_document('document.mide.zip')
+        self.document = entities.load_document('data/document.mide.zip')
         self.history = commands.History(self.document)
         self.history.do(commands.DemoCommand())
         self.pluginhost = lv2.PluginHost()

@@ -37,7 +37,7 @@ xlib_surface_create.argtypes = [
   c_int, # height
   ]
 
-x11_helper = ctypes.CDLL('./x11_helper.so')
+x11_helper = ctypes.CDLL('./visual/x11_helper.so')
 get_default_visual = x11_helper.get_default_visual
 get_default_visual.restype = ctypes.c_void_p
 get_default_visual.argtypes = [ ctypes.c_void_p ]

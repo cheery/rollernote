@@ -4,7 +4,7 @@
 import math
 import inspect
 import cairo
-import cairo_renderer
+from . import cairo_renderer
 from contextlib import contextmanager
 from contextvars import ContextVar
 

@@ -792,7 +792,7 @@ def voice_separation(notes, settings):
 #         print(f"  {note}")
 
 # Load the shared library
-lib = ctypes.CDLL('./voice_separation.so')  # Use 'voice_separation.dll' on Windows
+lib = ctypes.CDLL('./music/voice_separation.so')  # Use 'voice_separation.dll' on Windows
 
 # Define the C structure in Python
 class Descriptor(ctypes.Structure):
