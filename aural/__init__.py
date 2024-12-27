@@ -50,6 +50,12 @@ class DeviceOutput:
         self.chan1 = numpy.zeros(self.block_length, numpy.float32)
         self.now = 0.0
 
+    def lock(self):
+        sdl2.SDL_LockAudio()
+
+    def unlock(self):
+        sdl2.SDL_UnlockAudio()
+
     def audio_loop(self, _, stream, length):
         self.chan0.fill(0)
         self.chan1.fill(0)
@@ -106,6 +112,7 @@ class Transport:
         self.loop = False
         self.play_start = None
         self.play_end   = None
+        self.messages = []
 
         # ins = []
         # for uid, plugin in plugins.items():
@@ -375,6 +382,15 @@ class Transport:
                 #seq[0].atom.type = plugin.get_urid("http://lv2plug.in/ns/ext/atom#Sequence")
                 #seq[0].body.unit = plugin.get_urid('https://lv2plug.in/ns/ext/time#beat')
                 #seq[0].body.pad  = 0
+        mutelevel = min((self.mutes.get(uid, 0) for uid in self.plugins), default=0)
+        mutelevel = min(0, mutelevel)
+        for uid, plugin in self.plugins.items():
+            buf = plugin.inputs['In']
+            if mutelevel == self.mutes.get(uid, 0):
+                for msg in self.messages:
+                    plugin.push_midi_event(buf, msg.bytes())
+        self.messages.clear()
+
         self.time = now
 
     def flush_keyboard(self):
