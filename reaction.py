@@ -1,5 +1,6 @@
 # "Deprecating the observer pattern" -paper
 import bisect
+import random
 from contextvars import ContextVar
 from collections import namedtuple, deque
 
@@ -11,16 +12,20 @@ class Engine:
         self.sinks = set()
         self.firing = {}
 
-    def observe(self, flow):
+    def observe(self, *flows):
         def _observe_(func):
-            sink = Sink(self, flow, func)
-            flow.connect(sink)
+            sink = Sink(self, flows, func)
+            for flow in flows:
+                flow.connect(sink)
             self.sinks.add(sink)
             return sink
         return _observe_
 
     def send(self, event, value):
-        self.firing[event] = Some(value)
+        if event in self.firing:
+            self.firing[event].append(value)
+        else:
+            self.firing[event] = [value]
 
     def step(self):
         queue = deque()
@@ -42,27 +47,29 @@ class Engine:
             else:
                 reactive.step(enqueue, firing)
         for sink in out:
-            sink.func(firing[sink.source].value)
+            sink.func(*(firing[s].value for s in sink.sources))
 
 class Sink:
-    __slots__ = ['engine', 'source', 'func', 'level']
-    def __init__(self, engine, source, func):
+    __slots__ = ['engine', 'sources', 'func', 'level']
+    def __init__(self, engine, sources, func):
         self.engine = engine
-        self.source = source
+        self.sources = sources
         self.func = func
 
     def relevel(self):
-        self.level = self.source.level
+        self.level = max(s.level for s in self.sources) + 1
 
     def discard(self):
         engine.sinks.discard(self)
-        self.source.discard(self)
+        for source in self.sources:
+            source.discard(self)
 
 class Flow:
     __slots__ = ['sources', 'dependents', 'level']
     def __init__(self, sources=None):
         self.sources = [] if sources is None else sources
         self.dependents = set()
+        self.relevel()
 
     def relevel(self):
         self.level = 0 if len(self.sources) == 0 else 1 + max(s.level for s in self.sources)
@@ -88,16 +95,60 @@ class Event(Flow):
 
 never = Event()
 
+def merge_nondet(xs, ys):
+    merged = []
+    i, j = 0, 0
+    while i < len(xs) and j < len(ys):
+        if random.choice([False,True]):
+            merged.append(xs[i])
+            i += 1
+        else:
+            merged.append(ys[j])
+            j += 1
+    return merged + xs[i:] + ys[j:]
+
 class Merge(Event):
     __slots__ = ['func']
-    def __init__(self, func, x, y):
+    def __init__(self, x, y, func=merge_nondet):
         super().__init__([x, y])
         self.func = func
 
     def step(self, enqueue, firing):
         x, y = self.sources
-        firing[self] = Some(self.func(self.x.get(firing), self.y.get(firing)))
+        firing[self] = self.func(firing.get(x, []), firing.get(y, []))
         super().step(enqueue, firing)
+
+class Snapshot(Event):
+    __slots__ = ['func']
+    def __init__(self, func, event, *sources):
+        super().__init__([event] + list(sources))
+        self.func = func
+
+    def step(self, enqueue, firing):
+        event = self.sources[0]
+        if event in firing:
+            snap = [s.value for s in self.sources[1:]]
+            firing[self] = [self.func(v, *snap) for v in firing[event]]
+            super().step(enqueue, firing)
+
+class Collect(Event):
+    __slots__ = ['func']
+    def __init__(self, func, event):
+        super().__init__([event])
+        self.func = func
+
+    def step(self, enqueue, firing):
+        event = self.sources[0]
+        result = []
+        for v in firing[event]:
+            match self.func(v):
+                case Some(a):
+                    result.append(a)
+                case _:
+                    pass
+        if len(result) > 0:
+            firing[self] = result
+            super().step(enqueue, firing)
 
 class MapE(Event):
     __slots__ = ['func']
@@ -107,7 +158,7 @@ class MapE(Event):
 
     def step(self, enqueue, firing):
         event = self.sources[0]
-        firing[self] = Some(self.func(firing[event]))
+        firing[self] = [self.func(v) for v in firing[event]]
         super().step(enqueue, firing)
 
 class FilterE(Event):
@@ -118,8 +169,23 @@ class FilterE(Event):
 
     def step(self, enqueue, firing):
         event = self.sources[0]
-        result = self.func(firing[event])
-        if isinstance(result, Some):
+        result = [v for v in firing[event] if self.func(v)]
+        if len(result) > 0:
+            firing[self] = result
+            super().step(enqueue, firing)
+
+class Expand(Event):
+    __slots__ = ['func']
+    def __init__(self, func, event):
+        super().__init__([event])
+        self.func = func
+
+    def step(self, enqueue, firing):
+        event = self.sources[0]
+        result = []
+        for v in firing[event]:
+            result.extend(self.func(v))
+        if len(result) > 0:
             firing[self] = result
             super().step(enqueue, firing)
 
@@ -135,11 +201,11 @@ class Cell(Flow):
 
 class Hold(Cell):
     __slots__ = []
-    def __init__(self, initial, event):
+    def __init__(self, initial, event=never):
         super().__init__(initial, [event])
 
     def step(self, enqueue, firing):
-        self.value = firing[self.sources[0]].value
+        self.value = firing[self.sources[0]][-1]
         super().step(enqueue, firing)
 
 class Compute(Cell):
@@ -153,6 +219,29 @@ class Compute(Cell):
         self.value = self.func(*(s.value for s in self.sources))
         super().step(enqueue, firing)
 
+#class Previous(Cell):
+#    __slots__ = ['next_value']
+#    def __init__(self, source, initial=None):
+#        super().__init__(initial, [source])
+#        self.next_value = source.value
+#
+#    def step(self, enqueue, firing):
+#        self.value = self.next_value
+#        self.next_value = self.sources[0].value
+#        super().step(enqueue, firing)
+
+class Changes(Event):
+    def __init__(self, source):
+        self.prev_value = source.value
+        super().__init__([source])
+
+    def step(self, enqueue, firing):
+        prev = self.prev_value
+        self.prev_value = current = self.sources[0].value
+        if current != prev:
+            firing[self] = [(prev, current)]
+            super().step(enqueue, firing)
+
 class Switch(Event):
     __slots__ = []
     def __init__(self, cell):
@@ -160,19 +249,13 @@ class Switch(Event):
 
     def step(self, enqueue, firing):
         event, current = self.sources
-        match firing.get(event):
-            case Some(upcoming):
-                 current.discard(self)
-                 upcoming.connect(self)
-                 self.sources[1] = upcoming
-            case _:
-                 pass
-        match firing.get(current):
-            case Some(_) as v:
-                 firing[self] = v
-                 super().step(enqueue, firing)
-            case _:
-                 pass
+        if upcoming := firing.get(event):
+            current.discard(self)
+            upcoming.connect(self)
+            self.sources[1] = upcoming
+        if vs := firing.get(current):
+            firing[self] = vs
+            super().step(enqueue, firing)
 
 class Join(Cell):
     __slots__ = []

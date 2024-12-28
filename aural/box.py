@@ -1,6 +1,8 @@
 import reaction
 import math
 import inspect
+from collections import namedtuple
+from reaction import *
 
 class Bay:
     def __init__(self, event_engine, engine, locator, pulse):
@@ -33,8 +35,8 @@ class Patch(reaction.Flow):
                 assert default
                 value = default['value']
                 if default['ratio']:
-                    lower = hint['lower']
-                    upper = hint['upper']
+                    lower = hint['lower'] or 0.0
+                    upper = hint['upper'] or 0.0
                     u = value
                     w = 1.0 - value
                     if hint['logarithmic']:
@@ -160,137 +162,121 @@ adsr = PluginTemplate(
 def midi_to_freq(key, tuning=440.0):
     return 2 ** ((key - 69) / 12.0) * 442.0
 
+On = namedtuple('On', ['note', 'velocity'])
+Off = namedtuple('Off', ['note'])
 
-# class AsFrequency:
-#     def __init__(self, clavier, output, tuning):
-#         self.clavier = clavier
-#         self.output = output
-#         self.tuning = tuning
-# 
-#     def run(self):
-#         hz = self.output[0]
-#         for evt in self.clavier.events:
-#             if evt[1] == 'on':
-#                 hz = midi_to_freq(evt[2], self.tuning)
-#         self.output[0] = hz
-# 
-# def as_frequency(clavier, initial_key=69, tuning=440.0):
-#     cell = CellPlan(midi_to_freq(initial_key, tuning))
-#     @just_deploy
-#     def _impl_(locator, engine, mapping):
-#         return AsFrequency(clavier, register(cell, engine, mapping), tuning)
-#     return cell
-# 
-# class Channel:
-#     def __init__(self, gate, trig, hz, velo, wiring, out):
-#         self.gate   = gate
-#         self.trig   = trig
-#         self.hz     = hz
-#         self.velo   = velo
-#         self.wiring = wiring
-#         self.out    = out
-#         self.time = 0.0
-#         self.key  = 69
-# 
-#     def run(self):
-#         self.wiring.run()
-#         self.trig.fill(-1.0)
-# 
-# class Polyphonic:
-#     def __init__(self, clavier, channels, output):
-#         self.clavier = clavier
-#         self.channels = channels
-#         self.output = output
-#         self.active = {}
-#         self.i = 0
-# 
-#     def key_on(self, key, vel=1.0):
-#         if key in self.active and self.active[key].key == key:
-#             chan = self.active[key]
-#         else:
-#             chan = min(self.channels, key=lambda chan: chan.time)
-#         chan.key = key
-#         chan.time = self.i
-#         chan.velo[0] = vel
-#         chan.hz[0] = midi_to_freq(key)
-#         chan.gate.fill(1.0)
-#         chan.trig[0] = 1.0
-#         self.active[chan.key] = chan
-# 
-#     def key_off(self, key):
-#         chan = self.active[key]
-#         if chan.key == key:
-#             chan.gate.fill(-1.0)
-# 
-#     def run(self):
-#         for evt in self.clavier.events:
-#             if evt[1] == 'on':
-#                 self.key_on(*evt[2:])
-#             if evt[1] == 'off':
-#                 self.key_off(*evt[2:])
-#         self.i += 1
-#         self.output.fill(0.0)
-#         for chan in self.channels:
-#             chan.run()
-#             self.output += chan.out
-# 
-# def polyphonic(voices=16):
-#     def _polyphonic_(clavier, channel):
-#         wout = BufferPlan()
-#         @just_deploy
-#         def _impl_(locator, engine, mapping):
-#             that = Template()
-#             gate = BufferPlan(-1.0)
-#             trig = BufferPlan(-1.0)
-#             hz   = CellPlan(440.0)
-#             velo = CellPlan(1.0)
-#             out  = wrap(that, channel, gate, trig, hz, velo)
-#             out  = wrap(that, stratify, out)
-#             channels = []
-#             for i in range(voices):
-#                 mapping_ = {}
-#                 g = register(gate, engine, mapping_)
-#                 t = register(trig, engine, mapping_)
-#                 h = register(hz,   engine, mapping_)
-#                 v = register(velo, engine, mapping_)
-#                 ut = register(out, engine, mapping_)
-#                 wiring = that.wire(locator, engine, mapping_)
-#                 chan = Channel(g,t,h,v,wiring,ut)
-#                 channels.append(chan)
-#             return Polyphonic(clavier, channels, register(wout, engine, mapping))
-#         return wout
-#     return _polyphonic_
-# 
-# class Clavier:
-#     def __init__(self):
-#         self.incoming = []
-#         self.events = []
-# 
-#     def run(self):
-#         self.events = self.incoming
-#         self.incoming = []
-# 
-#     def key_on(self, key, velocity=1.0):
-#         self.incoming.append((0.0, 'on', key, velocity))
-# 
-#     def key_off(self, key):
-#         self.incoming.append((0.0, 'off', key))
-# 
-# class Song:
-#     def __init__(self, engine, song, loop=None):
-#         self.engine = engine
-#         self.song = song
-#         self.loop = loop
-#         self.time = 0.0
-#         self.events = []
-# 
-#     def run(self):
-#         ntime = self.time + self.engine.sample_step
-#         i = bisect.bisect_left(self.song, self.time, key=lambda evt: evt[0])
-#         j = bisect.bisect_right(self.song, ntime, key=lambda evt: evt[0])
-#         self.events = self.song[i:j]
-#         while self.loop and self.loop <= ntime:
-#             ntime -= self.loop
-#             j = bisect.bisect_right(self.song, ntime, key=lambda evt: evt[0])
-#             self.events += self.song[:j]
-#         self.time = ntime
+def as_frequency(initial_key, notes, tuning=440.0):
+    def _onset_freqs_(m):
+        if isinstance(m, On):
+            return Some(midi_to_freq(m.note, tuning))
+    freqs = Collect(_onset_freqs_, notes)
+    return Hold(midi_to_freq(initial_key, tuning), freqs)
+
+def as_velocity(initial, notes):
+    def _onset_velocities_(m):
+        if isinstance(m, On):
+            return Some(m.volume)
+    velocities = Collect(_onset_velocities_, notes)
+    return Hold(initial, velocities)
+
+def as_gate(initial, notes, func=lambda x: x):
+    def _gate_(m):
+        if isinstance(m, On):
+            return Some(func(1.0))
+        if isinstance(m, Off):
+            return Some(func(0.0))
+    gate = Collect(_gate_, notes)
+    return Hold(func(initial), gate)
+
+def as_trig(bay, notes):
+    def _trig_(m):
+        if isinstance(m, On):
+            return Some(None)
+    def _hammer_(trig, pulse):
+        if len(trig) > 0:
+            strike = bay.engine.full(0.0)
+            strike[0] = 1.0
+            return [strike]
+        else:
+            return [bay.engine.full(0.0)]
+    return Hold(bay.engine.full(0.0), Merge(Collect(_trig_, notes), bay.pulse, _hammer_))
+    
+class Multiplex:
+    def __init__(self, voices):
+        self.keys = [69 for voice in range(voices)]
+        self.time = [float('-inf') for voice in range(voices)]
+
+    def __call__(self, event, time):
+        match event:
+            case On(n, v):
+                try:
+                    i = self.keys.index(n)
+                except ValueError:
+                    i = min(range(len(self.keys)), key=lambda i: self.time[i])
+                    self.keys[i] = n
+                self.time[i] = time
+                return i, event
+            case Off(n):
+                try:
+                    return self.keys.index(n), event
+                except ValueError:
+                    return -1, event
+
+def select(i, mux):
+    def _this_(k):
+        if k[0] == i:
+            return Some(k[1])
+    return Collect(_this_, mux)
+
+def multiplex(func, now, notes, voices=16):
+    mux = Snapshot(Multiplex(voices), notes, now)
+    outs = []
+    for i in range(voices):
+        outs.append(func(select(i, mux)))
+    return Compute(lambda *s: sum(s), outs)
+
+def monophonic(bay, tuning=440):
+    def _monophonic_(notes, channel_func, *extra):
+        gate = as_gate(0.0, notes, bay.engine.full)
+        trig = as_trig(bay, notes)
+        freq = as_frequency(69, notes, tuning)
+        velocity = as_velocity(0.0, notes)
+        return channel_func(bay, gate, trig, freq, velocity, *extra)
+    return _monophonic_
+
+def polyphonic(bay, now, voices=16, tuning=440):
+    def _polyphonic_(notes, channel_func, *extra):
+        def _func_(this):
+            return monophonic(bay, tuning)(this, channel_func, *extra)
+        return multiplex(_func_, now, notes, voices)
+    return _polyphonic_
+
+def schedule(t, data, loop=None):
+    def _exp_(tu):
+        w, u = tu
+        if loop:
+            t = w % loop
+            u = u + (t - w)
+        else:
+            t = w
+        i = bisect.bisect_left(data, t, key=lambda evt: evt[0])
+        j = bisect.bisect_right(data, u, key=lambda evt: evt[0])
+        yield from [x[1] for x in data[i:j]]
+        while loop and loop <= u:
+            u -= loop
+            j = bisect.bisect_right(data, u, key=lambda evt: evt[0])
+            yield from [x[1] for x in data[:j]]
+    return Expand(_exp_, Changes(t))
+
+def music(t, tempo, notes, loop=False):
+    data = []
+    br = 60.0 / tempo
+    p = 0.0
+    for duration, chord in notes:
+        d = br * duration
+        for key in chord:
+            data.append((p, On(key, 1.0)))
+        for key in chord:
+            data.append((p + d, Off(key)))
+        p += d
+    return schedule(t, data, p if loop else None)
