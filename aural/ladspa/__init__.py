@@ -169,8 +169,10 @@ def decode_port_hint(hint):
 def cell(value=0.0):
     return (capi.Data*1)(value)
 
+ladspa_paths = os.getenv("LADSPA_PATH").split(':')
+
 class Locator:
-    def __init__(self, paths):
+    def __init__(self, paths=ladspa_paths):
         self.paths = paths
         self.modules = {}
         for path in paths:
