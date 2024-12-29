@@ -27,6 +27,10 @@ class Engine:
         else:
             self.firing[event] = [value]
 
+    def roll(self):
+        while len(self.firing) > 0:
+            self.step()
+
     def step(self):
         queue = deque()
         visited = set()
@@ -47,7 +51,13 @@ class Engine:
             else:
                 reactive.step(enqueue, firing)
         for sink in out:
-            sink.func(*(firing[s].value for s in sink.sources))
+            results = []
+            for s in sink.sources:
+                if isinstance(s, Cell):
+                    results.append(s.value)
+                else:
+                    results.append(firing.get(s, []))
+            sink.func(*results)
 
 class Sink:
     __slots__ = ['engine', 'sources', 'func', 'level']
@@ -60,7 +70,7 @@ class Sink:
         self.level = max(s.level for s in self.sources) + 1
 
     def discard(self):
-        engine.sinks.discard(self)
+        self.engine.sinks.discard(self)
         for source in self.sources:
             source.discard(self)
 
@@ -81,7 +91,7 @@ class Flow:
                 source.connect(self)
 
     def discard(self, dependent):
-        self.sinks.discard(dependent)
+        self.dependents.discard(dependent)
         if len(self.dependents) == 0:
             for source in self.sources:
                 source.discard(self)
@@ -196,7 +206,7 @@ class Cell(Flow):
         self.value = initial
 
     def step(self, enqueue, firing):
-        firing[self] = Some(self.value)
+        firing[self] = None
         super().step(enqueue, firing)
 
 class Hold(Cell):
@@ -206,6 +216,17 @@ class Hold(Cell):
 
     def step(self, enqueue, firing):
         self.value = firing[self.sources[0]][-1]
+        super().step(enqueue, firing)
+
+class Memory(Cell):
+    __slots__ = ['func']
+    def __init__(self, initial, func, event):
+        super().__init__(initial, [event])
+        self.func = func
+
+    def step(self, enqueue, firing):
+        for value in firing[self.sources[0]]:
+            self.value = self.func(self.value, value)
         super().step(enqueue, firing)
 
 class Compute(Cell):
@@ -218,17 +239,6 @@ class Compute(Cell):
     def step(self, enqueue, firing):
         self.value = self.func(*(s.value for s in self.sources))
         super().step(enqueue, firing)
-
-#class Previous(Cell):
-#    __slots__ = ['next_value']
-#    def __init__(self, source, initial=None):
-#        super().__init__(initial, [source])
-#        self.next_value = source.value
-#
-#    def step(self, enqueue, firing):
-#        self.value = self.next_value
-#        self.next_value = self.sources[0].value
-#        super().step(enqueue, firing)
 
 class Changes(Event):
     def __init__(self, source):
