@@ -221,12 +221,24 @@ class Hold(Cell):
 class Memory(Cell):
     __slots__ = ['func']
     def __init__(self, initial, func, event):
+        assert isinstance(event, Event)
         super().__init__(initial, [event])
         self.func = func
 
     def step(self, enqueue, firing):
         for value in firing[self.sources[0]]:
             self.value = self.func(self.value, value)
+        super().step(enqueue, firing)
+
+class Accum(Cell):
+    __slots__ = ['func']
+    def __init__(self, initial, func, source):
+        assert isinstance(source, Cell)
+        super().__init__(initial, [source])
+        self.func = func
+
+    def step(self, enqueue, firing):
+        self.value = self.func(self.value, self.sources[0].value)
         super().step(enqueue, firing)
 
 class Compute(Cell):
