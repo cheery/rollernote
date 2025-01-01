@@ -74,31 +74,24 @@ class Patch(reaction.Flow):
         self.outputs = []
         for name in connection[len(sources):]:
             self.outputs.append(outputs[name])
-        self.plugin = None
 
-    def connect(self, dependent):
-        super().connect(dependent)
-        if len(self.dependents) == 1:
-            self.plugin = self.bay.engine(self.desc)
-            for i, (mode, data, cell) in enumerate(self.patch):
-                match mode:
-                    case 0 if cell is not None:
-                        data[0] = cell.value
-                    case 1:
-                        data = cell.value
-                    case _:
-                        pass
-                self.plugin.instance.connect_port(i, data)
+        self.plugin = self.bay.engine(self.desc)
+        for i, (mode, data, cell) in enumerate(self.patch):
+            match mode:
+                case 0 if cell is not None:
+                    data[0] = cell.value
+                case 1:
+                    data = cell.value
+                case _:
+                    pass
+            self.plugin.instance.connect_port(i, data)
 
-    def discard(self, dependent):
-        super().discard(dependent)
-        if len(self.dependents) == 0:
-            self.plugin.close()
-            self.plugin = None
+    def __del__(self):
+        self.plugin.close()
 
-    def step(self, enqueue, firing):
+    def step(self, get):
         pulse = self.sources[0]
-        if pulse in firing:
+        if get(pulse):
             for i, (mode, data, cell) in enumerate(self.patch):
                 match mode:
                     case 0:
@@ -116,7 +109,7 @@ class Patch(reaction.Flow):
                         cell.value = data[0]
                     case _:
                         pass
-            super().step(enqueue, firing)
+            return True
 
 class PluginTemplate:
     def __init__(self, model, inputs, py_names, outputs):

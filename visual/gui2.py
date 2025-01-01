@@ -21,20 +21,18 @@ class Varying:
     def wrap(self, ui, this):
         def _func_(new_value):
             self.value.detach()
-            new_value.attach(ui)
+            new_value.attach(ui, this)
             self.value = new_value
         return _func_
 
 class Frame:
-    def __init__(self, contents, layout=None, inside=None, keyboard=None, chars=None, motion=None, buttons=None):
+    def __init__(self, contents, layout=None, shape=None, inside=None, keyboard=None, chars=None, motion=None, buttons=None):
         self.parent = None
         self.contents = contents
-        for content in contents:
-            content.parent = self
         self.layout = layout or DynamicLayout(flexible_width=True, flexible_height=True)
         self.transform = identity_transform
         self.clipping = False
-        self.shape = hit
+        self.shape = shape or hit
         self.buttons  = buttons
         self.inside   = inside
         self.keyboard = keyboard
@@ -42,9 +40,15 @@ class Frame:
         self.motion   = motion
         self.subscriptions = []
 
-    def attach(self, ui):
+    def attach(self, ui, parent):
+        self.parent = parent
         for content in self.contents:
             if isinstance(content, Logic):
+                def initial_of(flow):
+                    if isinstance(flow, Cell):
+                        return flow.value
+                    return []
+                content.func(ui, self, *map(initial_of, content.sources))
                 self.subscriptions.append(
                     ui.engine.observe(*content.sources)(content.wrap(ui, self)))
             elif isinstance(content, Draw):
@@ -52,13 +56,14 @@ class Frame:
                     ui.engine.observe(*content.sources)(ui._refresh_))
             elif isinstance(content, Varying):
                 content.value = content.cell.value
-                content.value.attach(ui)
+                content.value.attach(ui, self)
                 self.subscriptions.append(
                     ui.engine.observe(content.cell)(content.wrap(ui, self)))
             else:
-                content.attach(ui)
+                content.attach(ui, self)
 
     def detach(self):
+        self.parent = None
         for obs in self.subscriptions:
             obs.discard()
         self.subscriptions = []
@@ -185,7 +190,7 @@ class GUI:
         self.under_motion = None
 
         self.root = scene(self, *args, **kwargs)
-        self.root.attach(self)
+        self.root.attach(self, None)
 
     def _refresh_(self, *_):
         self.widget.exposed = True
@@ -319,9 +324,9 @@ class DynamicLayout:
         for child in children:
             if isinstance(child.layout, StaticLayout):
                 shape = child.shape
-                child.layout.measure(child.children, shape.width, shape.height)
+                child.layout.measure(list(child.subframes()), shape.width, shape.height)
             elif child.layout is not None:
-                child.layout.measure(child.children, self.calc_width, self.calc_height)
+                child.layout.measure(list(child.subframes()), self.calc_width, self.calc_height)
 
     def __call__(self, this, box, shallow=True):
         if shallow:

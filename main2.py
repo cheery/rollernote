@@ -19,6 +19,7 @@ import components
 import subprocess
 from fractions import Fraction
 import os
+from immutables import Map
 
 def get_tempo_envelope(document):
     default = random.randint(10, 200)
@@ -3043,8 +3044,319 @@ from aural.box import On, Off
 from aural.miditunes import *
 from components2 import *
 
+class Insert:
+    def __init__(self, index, value):
+        self.index = index
+        self.value = value
+
+    def do(self, xs):
+        xs.insert(self.index, self.value)
+        return xs
+
+class Remove:
+    def __init__(self, value):
+        self.value = value
+
+    def do(self, xs):
+        xs.remove(self.value)
+        return xs
+
+class ListControl:
+    def __init__(self, initial, mutator):
+        self.mutator = mutator
+        self.list = Memory(initial, lambda xs,c: c.do(xs), mutator)
+
+class ListView(gui2.Frame):
+    def __init__(self, static, control, *args, **kwargs):
+        self.static  = static
+        self.control = control
+        super().__init__([], *args, **kwargs)
+
+    def attach(self, ui, parent):
+        @gui2.logic(self.control.mutator, self.control.list)
+        def _logic_(ui, this, cmds, contents):
+            for cmd in cmds:
+                if isinstance(cmd, Insert):
+                    self.contents = self.static + contents[:] + [_logic_]
+                    cmd.value.attach(ui, this)
+                elif isinstance(cmd, Remove):
+                    self.contents = self.static + contents[:] + [_logic_]
+                    cmd.value.detach()
+                else:
+                    raise Exception("unknown command!!!")
+        self.contents = self.static + self.control.list.value[:] + [_logic_]
+        super().attach(ui, parent)
+
+    def detach(self, ui):
+        super().detach(ui)
+
+class MovableShape(gui2.StaticLayout):
+    def __init__(self, x, y, width, height, inner):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        super().__init__(inner)
+
+    def measure(self, children, available_width, available_height):
+        available_width = self.width
+        available_height = self.height
+        self.inner.measure(children, available_width, available_height)
+
+    def __call__(self, this, box, shallow=True):
+        bb = this.parent.shape
+        box = gui2.Box(bb.x + self.x, bb.y + self.y, self.width, self.height)
+        self.inner(this, box)
+
+import pandas as pd
+
+Inserted = namedtuple('Inserted', ['key', 'fields'])
+Erased   = namedtuple('Erased',   ['key'])
+Modified = namedtuple('Modified', ['key', 'name', 'value'])
+
+# pd.read_csv(name, dtype=..., index_col=...)
+# d.to_csv(name, index_label=...)
+
+class DatasetControl:
+    def __init__(self, engine, dataset):
+        self.engine = engine
+        self.modified = Event()
+        self.dataset = dataset
+        self.next_key = dataset.index.max()+1 if len(dataset) > 0 else 0
+
+    def insert(self, fields):
+        key, self.next_key = self.next_key, self.next_key+1
+        self.dataset.loc[key] = fields
+        self.engine.send(self.modified, Inserted(key, fields))
+        return key
+
+    def erase(self, key):
+        self.dataset = self.dataset.drop(key)
+        self.engine.send(self.modified, Erased(key))
+
+    def modify(self, key, name, value):
+        self.dataset.loc[key, name] = value
+        self.engine.send(self.modified, Modified(key, name, value))
+
+class DatasetView(gui2.Frame):
+    def __init__(self, static, control, func, *args, **kwargs):
+        self.static  = static
+        self.control = control
+        self.func    = func
+        self.table   = {}
+        super().__init__([], *args, **kwargs)
+
+    def attach(self, ui, parent):
+        @gui2.logic(self.control.modified)
+        def _logic_(ui, this, cmds):
+            for cmd in cmds:
+                if isinstance(cmd, Inserted):
+                    frame = self.func(self.control, cmd.key, dict(cmd.fields))
+                    self.contents.append(frame)
+                    self.table[cmd.key] = frame
+                    frame.attach(ui, this)
+                if isinstance(cmd, Erased):
+                    frame = self.table.pop(cmd.key)
+                    self.contents.remove(frame)
+                    frame.detach()
+        self.contents = self.static + [_logic_]
+        for key in self.control.dataset.index:
+            frame = self.func(self.control, key, dict(self.control.dataset.loc[key]))
+            self.contents.append(frame)
+            self.table[key] = frame
+        super().attach(ui, parent)
+
+    def detach(self, ui):
+        super().detach(ui)
+
+# TODO: redesign reaction networks a bit.
+# TODO: redesign layout code a bit.
+
 def demo(ui, editor):
     ui.ctx.select_font_face('FreeSerif')
+
+    dc = DatasetControl(ui.engine, pd.DataFrame(
+        data = { 'onset': pd.Series([80, 0], dtype='float32'),
+                 'offset': pd.Series([150, 50], dtype='float32'),
+                 'note': pd.Series([69, 80], dtype='uint16'),
+                 'velocity': pd.Series([1.0, 1.0], dtype='float32') },
+        index = pd.Series([0,1], dtype='uint32')))
+
+    def _refresh_(_):
+        onsets = dc.dataset.sort_values(by=['onset'])
+        return onsets
+    notebuf = Hold(_refresh_(None), MapE(_refresh_, dc.modified))
+
+    w = 0.0
+    playing = {}
+    @ui.engine.observe(notebuf, ui.now)
+    def _player_(onsets, now):
+        nonlocal w
+        t = (now % 5) / 5 * 800
+        if t < w:
+            w -= 800
+        assert w <= t
+        for x in range(len(onsets)):
+            m = onsets.iloc[x]
+            onset = m['onset']
+            offset = m['offset']
+            note = m['note']
+            isect = max(w, onset) <= min(t, offset)
+            if not isect:
+                continue
+            offset = (offset - onset) / 800 + now
+            if note in playing:
+                playing[note] = max(playing[note], offset)
+            else:
+                playing[note] = offset
+                editor.audio_output.lock()
+                editor.fire_midi_keyboard(ui, On(note, 1.0))
+                editor.audio_output.unlock()
+        for note, offset in list(playing.items()):
+            if offset <= now:
+                playing.pop(note)
+                editor.audio_output.lock()
+                editor.fire_midi_keyboard(ui, Off(note))
+                editor.audio_output.unlock()
+        w = t
+
+    @gui2.drawing(ui.now)
+    def _marker_(ui, this, now):
+        t = (now % 5) / 5 * 800
+        ui.ctx.set_source_rgba(0,1,0,1)
+        ui.ctx.move_to(this.shape.x + t, this.shape.y)
+        ui.ctx.line_to(this.shape.x + t, this.shape.y + this.shape.height)
+        ui.ctx.stroke()
+
+    def maker(dc, key, fields):
+        def _filter_(mod):
+            return isinstance(mod, Modified) and mod.key == key
+        def _modify_(fs, mod):
+            fs[mod.name] = mod.value
+            return fs
+        fs = Memory(fields, _modify_, FilterE(_filter_, dc.modified))
+
+        buttons = [Event(), Event(), Event()]
+        motion = Event()
+        pos = Hold((0,0), motion)
+        snap = Snapshot(lambda x, p, y: (p, y.copy()) if x else None, buttons[0], pos, fs)
+        snag = Hold(None, snap)
+        @gui2.logic(buttons[2])
+        def _remove_(ui, this, button):
+            for btn in button:
+                if btn:
+                    dc.erase(key)
+        @gui2.logic(snag, motion)
+        def _move_(ui, this, snag, xys):
+            if snag:
+                for x,y in xys:
+                    (x0, y0), fs = snag
+                    onset = fs['onset']
+                    offset = fs['offset']
+                    note = fs['note']
+                    dx = x - x0
+                    dy = (y0 - y) // 3
+                    dc.modify(key, 'onset', onset + dx)
+                    dc.modify(key, 'offset', offset + dx)
+                    dc.modify(key, 'note', note + dy)
+        @gui2.logic(fs)
+        def _set_position_(ui, this, fs):
+            modified = False
+            onset = fs['onset']
+            offset = fs['offset']
+            note = fs['note']
+            this.layout = MovableShape(onset, (127 - note)*3, offset - onset, 3, gui2.DynamicLayout())
+            this.shape = gui2.Box(0,0,0,0)
+        return gui2.Frame([
+            _remove_,
+            _move_,
+            _set_position_,
+            gui2.trace,
+        ], buttons=buttons, motion=motion)
+        
+    buttons = [Event(), Event(), Event()]
+    motion = Event()
+    pos = Hold((0,0), motion)
+    @gui2.logic(pos, buttons[0])
+    def _button0_(ui, this, xy, button):
+        for btn in button:
+            if btn:
+                x, y = xy
+                x -= this.shape.x
+                y -= this.shape.y
+                dc.insert({'onset': x,
+                           'offset': x+50,
+                           'note': 127 - (y//3),
+                           'velocity': 1.0})
+    dcv = DatasetView([gui2.trace, _button0_, _marker_], dc, maker,
+            gui2.DynamicLayout(width=800, height=128*3),
+            buttons=buttons,
+            motion=motion)
+
+    list_mutator = Event()
+    def make_box(ev, mut):
+        buttons = [Event(), Event(), Event()]
+        motion = Event()
+        pos = Hold((0,0), motion)
+        snap = Snapshot(lambda x, *y: y if x else None, buttons[0], pos, ev)
+        snag = Hold(None, snap)
+        @gui2.logic(buttons[2])
+        def _remove_(ui, this, button):
+            for btn in button:
+                if btn:
+                    ui.engine.send(list_mutator, Remove(this))
+        @gui2.logic(snag, motion)
+        def _move_(ui, this, snag, xys):
+            if snag:
+                for x,y in xys:
+                    (x0, y0), (onset, offset, note) = snag
+                    dx = x - x0
+                    dy = (y0 - y) // 3
+                    ui.engine.send(mut, (onset + dx, offset + dx, note + dy))
+        @gui2.logic(ev)
+        def _set_position_(ui, this, ev):
+            onset, offset, note = ev
+            this.layout = MovableShape(onset, (127 - note)*3, offset - onset, 3, gui2.DynamicLayout())
+            this.shape = gui2.Box(0,0,0,0)
+        return gui2.Frame([
+            _remove_,
+            _move_,
+            _set_position_,
+            gui2.trace,
+        ], buttons=buttons, motion=motion)
+
+    buttons = [Event(), Event(), Event()]
+    motion = Event()
+    pos = Hold((0,0), motion)
+
+    m1 = Event()
+    m2 = Event()
+    control = ListControl([
+        make_box(Hold((0, 100, 96), m1), m1),
+        make_box(Hold((0, 120, 102), m2), m2),
+    ], list_mutator)
+
+    @gui2.logic(pos, buttons[0])
+    def _button0_(ui, this, xy, button):
+        for btn in button:
+            if btn:
+                x, y = xy
+                x -= this.shape.x
+                y -= this.shape.y
+                m = Event()
+                nb = make_box(Hold((x, x+50, 127 - (y//3)), m), m)
+                ui.engine.send(list_mutator, Insert(-1, nb))
+        
+
+    micro_editor = ListView([gui2.trace, _button0_], control, gui2.DynamicLayout(width=800, height=128*3, flexible_width=True),
+                       buttons=buttons, motion=motion)
+
+    #return gui2.column([
+    #    scrollinglabel(Hold("hello world!"), ui.now, 150),
+    #    dcv,
+    #    micro_editor,
+    #])
+
     inside = Event()
 
     trace_color = Compute(lambda x: (1,0,0,1) if x else (0,0,0,1), [Hold(False, inside)])
@@ -3053,9 +3365,7 @@ def demo(ui, editor):
                                         math.sin(n+1)*0.5+0.5,
                                         math.sin(n+2)*0.5+0.5,
                                         1), [ui.now])
-    #position = Hold((50, 50), ui.mouse_position)
-    #radius = Compute(lambda now: 50 + 10 * math.sin(now), [ui.now])
-    #return gui2.Circle2(position, radius)
+
     btn_e = Event()
     btn = FilterE(lambda e: e, btn_e)
     start = Hold(0.0, Snapshot(lambda _, t: t, btn, ui.now))
@@ -3063,54 +3373,39 @@ def demo(ui, editor):
     testing = TextBox("testing")
 
     variety = [
-        (0.0, colorbox(Hold((1,0,0,1)), 50, 50)),
+        (0.0, scrollinglabel(Hold("hello world"), ui.now, 50)),
         (1.0, colorbox(Hold((0,1,0,1)), 50, 50)),
         (2.0, colorbox(Hold((0,0,1,1)), 50, 50)),
     ]
     various = Hold(variety[0][1], box.schedule(ui.now, variety, loop=3))
 
-    out0, out1 = editor.gui_channels
-
-
-    virtual_midi = [
-        [ 49, 50, 51, 52, 53, 54, 55, 56, 57, 48],
-        [113,119,101,114,116,121,117,105,111,112],
-        [ 97,115,100,102,103,104,106,107,108,246],
-        [122,120, 99,118, 98,110,109, 44, 46, 45],
-    ]
-
-    virtual_map = {cel: 57 + i + j*2
-        for i, row in enumerate(virtual_midi)
-        for j, cel in enumerate(row)}
-
-    midi_keyboard = Event()
-    @gui2.logic(midi_keyboard)
-    def _midi_logic_(ui, this, es):
-        editor.audio_output.lock()
-        for e in es:
-            k = virtual_map.get(e.sym, None)
-            if k is None:
-                continue
-            if isinstance(e, gui2.Down):
-                m = On(k, 1.0)
-            elif isinstance(e, gui2.Up):
-                m = Off(k)
-            editor.fire_midi_keyboard(ui, m)
-        editor.audio_output.unlock()
+    @gui2.drawing(ui.now)
+    def _clock_(ui, this, now):
+        bb = this.shape
+        angle = (now % 60) / 60 * math.pi * 2
+        ui.ctx.set_source_rgba(1,0,0,1)
+        x = bb.x + bb.width/2
+        y = bb.y + bb.height/2
+        ui.ctx.move_to(x, y)
+        ui.ctx.line_to(x + math.sin(angle) * bb.width/2,
+                       y - math.cos(angle) * bb.width/2)
+        ui.ctx.stroke()
 
     return gui2.column([
-        scrollinglabel(Hold("hello world"), ui.now, 50),
-        colorbox(favorite_color, 50, 50),
-        #label(Hold("Hello")),
-        label(Compute(lambda x,y: repr(x - y), [ui.now, start])),
-        textbox(testing),
-        gui2.Varying(various),
-        button(ui, Hold("test"), btn_e, Event(), Event()),
-        gui2.Frame([ gui2.trace ], gui2.DynamicLayout(width=100, height=50)),
-        gui2.Frame([ gui2.trace ], gui2.DynamicLayout(width=100, height=50), inside=inside),
-        gui2.Frame([ _midi_logic_, gui2.trace ], gui2.DynamicLayout(width=100, height=50), keyboard=midi_keyboard),
-        vu_meter(out0, out1),
-        oscilloscope(out0, out1),
+        gui2.row([
+            colorbox(favorite_color, 50, 50),
+            #label(Hold("Hello")),
+            #label(Compute(lambda x,y: repr(x - y), [ui.now, start])),
+            textbox(testing),
+            gui2.Varying(various),
+            button(ui, Hold("test"), btn_e, Event(), Event()),
+            clavier_visualizer(editor.gui_clavier, ui.now),
+            gui2.Frame([ gui2.trace, _clock_ ], gui2.DynamicLayout(width=100, height=100), inside=inside),
+            virtual_keyboard(editor, ui),
+            vu_meter(*editor.gui_channels),
+        ]),
+        oscilloscope(*editor.gui_channels),
+        dcv,
     ])
 
 class Editor:
@@ -3154,8 +3449,16 @@ class Editor:
         notes = self.clavier
 
         def make_channel(bay, gate, trig, hz, velocity):
-            #hz  = Compute(lambda h: h * bay.engine.sample_rate, [hz])
-            out = box.sawtooth_fc(bay, hz)
+            modulator = box.sawtooth_fc(bay, Hold(100.0))
+            hz  = Compute(lambda m, f: f / 4 + m*50.0, [modulator, hz])
+            out = box.sawtooth_fa(bay, hz)
+            env = box.adsr(bay, gate, trig, Hold(0.01), Hold(0.5), Hold(0.2), Hold(0.5))
+            return Compute(lambda x, y: x * y, [out, env])
+
+        def make_channel(bay, gate, trig, hz, velocity):
+            modulator = box.sawtooth_fc(bay, Hold(800.0))
+            hz  = Compute(lambda m, f: f / 2 + m*50.0, [modulator, hz])
+            out = box.sawtooth_fa(bay, hz)
             env = box.adsr(bay, gate, trig, Hold(0.01), Hold(0.5), Hold(0.2), Hold(0.5))
             return Compute(lambda x, y: x * y, [out, env])
 

@@ -1,5 +1,8 @@
 from reaction import *
 from visual import gui2
+from aural.box import On, Off
+from immutables import Map
+import sdl2
 import math
 
 def colorbox(color, width, height):
@@ -309,3 +312,75 @@ def vu_meter(out0, out1, width=20, height=90):
 
     return gui2.Frame([_draw_], gui2.DynamicLayout(width, height), buttons=buttons)
 
+def virtual_keyboard(editor, ui):
+    virtual_midi = [
+        [ 49, 50, 51, 52, 53, 54, 55, 56, 57, 48],
+        [113,119,101,114,116,121,117,105,111,112],
+        [ 97,115,100,102,103,104,106,107,108,246],
+        [122,120, 99,118, 98,110,109, 44, 46, 45],
+    ]
+
+    virtual_map = {cel: 57 + i + j*2
+        for i, row in enumerate(virtual_midi)
+        for j, cel in enumerate(row)}
+
+    midi_keyboard = Event()
+    @gui2.logic(midi_keyboard)
+    def _midi_logic_(ui, this, es):
+        editor.audio_output.lock()
+        for e in es:
+            k = virtual_map.get(e.sym, None)
+            if k is None:
+                continue
+            if isinstance(e, gui2.Down) and e.repeat == 0:
+                m = On(k, 1.0)
+                editor.fire_midi_keyboard(ui, m)
+            elif isinstance(e, gui2.Up):
+                m = Off(k)
+                editor.fire_midi_keyboard(ui, m)
+        editor.audio_output.unlock()
+
+    return gui2.Frame([ _midi_logic_, gui2.trace ], gui2.DynamicLayout(width=100, height=50), keyboard=midi_keyboard)
+
+def clavier_visualizer(clavier, now):
+    def hold_down(hold, e):
+        if isinstance(e, On):
+            hold = hold.set(e.note, e.velocity)
+        if isinstance(e, Off):
+            try:
+                hold = hold.delete(e.note)
+            except KeyError:
+                pass
+        return hold
+    hold = Memory(Map(), hold_down, clavier)
+
+    t_clavier = Snapshot(lambda x,t: (t,x), clavier, now)
+    def t_15(olds, new):
+        i = 0
+        while i < len(olds) and olds[i][0] + 15 <= new[0]:
+            i += 1
+        return olds[i:] + [new]
+    t15 = Memory([], t_15, t_clavier)
+
+    @gui2.drawing(hold, t15, now)
+    def track_display(ui, this, hold, t15, now):
+        bb = this.shape
+        s = now - 15
+        ui.ctx.set_source_rgba(1,0,0,1.0)
+        onsets  = [(t,e.note) for t,e in t15 if isinstance(e, On)]
+        offsets = [(t,e.note) for t,e in t15 if isinstance(e, Off)] + [(now,n) for n in hold]
+        for t, note in reversed(offsets):
+            b = t - s
+            o = [t for t,n in onsets if n == note]
+            a = ([0] + o)[bisect.bisect_right(o, t)] - s
+            ui.ctx.move_to(bb.x+a/15*bb.width, bb.y + 127 - note)
+            ui.ctx.line_to(bb.x+b/15*bb.width, bb.y + 127 - note)
+        ui.ctx.stroke()
+
+        ui.ctx.set_source_rgba(0,1,0,0.5)
+        for note, value in hold.items():
+            ui.ctx.move_to(bb.x,          bb.y + 127 - note)
+            ui.ctx.line_to(bb.x+bb.width, bb.y + 127 - note)
+        ui.ctx.stroke()
+
+    return gui2.Frame([ gui2.trace, track_display ], gui2.DynamicLayout(width=100, height=128))
