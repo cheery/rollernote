@@ -7,6 +7,9 @@ from weakref import WeakSet
 
 Some = namedtuple('Some', ['value'])
 
+class Reflow(Exception):
+    pass
+
 # Engine is an unit holding the flow network together.
 class Engine:
     __slots__ = ['observers', 'firing', 'event_lock']
@@ -59,8 +62,8 @@ class Engine:
         # each flow is visited only once.
         queue = deque()
         visited = set()
-        def enqueue(flow):
-            if flow not in visited:
+        def enqueue(flow, retry=False):
+            if flow not in visited or retry:
                 visited.add(flow)
                 bisect.insort_right(queue, flow, key=lambda r: r.depth)
         # we collect the currently firing events and prepare
@@ -73,23 +76,30 @@ class Engine:
                 enqueue(d)
         while queue:
             flow = queue.popleft()
-            if isinstance(flow, Observer):
-                assert flow in self.observers, "mixing of flow graphs between engines"
-                values = []
-                for s in flow.sources:
-                    if isinstance(s, Cell):
-                        values.append(s.value)
-                    else:
-                        values.append(firing.get(s, []))
-                flow.func(*values)
-            # each flow ending up to a queue will get to do a step
-            # where it may further enqueue flows and fire.
-            elif changed := flow.step(lambda s: firing.get(s, [])):
-                if isinstance(flow, Event):
-                    assert isinstance(changed, list), flow
-                firing[flow] = changed
-                for d in flow.dependents:
-                    enqueue(d)
+            try:
+                if isinstance(flow, Observer):
+                    assert flow in self.observers, "mixing of flow graphs between engines"
+                    values = []
+                    for s in flow.sources:
+                        if isinstance(s, Cell):
+                            values.append(s.value)
+                        else:
+                            values.append(firing.get(s, []))
+                    flow.func(*values)
+                # each flow ending up to a queue will get to do a step
+                # where it may further enqueue flows and fire.
+                elif changed := flow.step(lambda s: firing.get(s, [])):
+                    if isinstance(flow, Event):
+                        assert isinstance(changed, list), flow
+                    firing[flow] = changed
+                    for d in flow.dependents:
+                        enqueue(d)
+            # Sometimes the graph topology changes
+            except Reflow:
+                firing[flow] = True
+                flow.redepth()
+                queue = deque(sorted(queue, key=lambda r: r.depth))
+                enqueue(flow, retry=True)
 
 # Observers are the outwarding part of the flow network.
 # to make them process last, they get the maximum depth.
@@ -131,13 +141,15 @@ class Flow:
     # Depth may need to be recalculated if network structure changes.
     # Whenever that happens, it cascades through the network in order
     # to produce new depth values.
-    def redepth(self):
+    def stale(self):
         depth = 0 if len(self.sources) == 0 else 1 + max(s.depth for s in self.sources)
-        if self.depth != depth:
-            self.depth = depth
-            for d in self.dependents:
-                if isinstance(d, Flow):
-                    d.redepth()
+        return self.depth != depth
+
+    def redepth(self):
+        self.depth = 0 if len(self.sources) == 0 else 1 + max(s.depth for s in self.sources)
+        for d in self.dependents:
+            if isinstance(d, Flow):
+                d.redepth()
 
     def step(self, get):
         return False
@@ -411,33 +423,35 @@ class Changes(Event):
 # These two remaining implementations are a bit questionable.
 # Should we observe which value when the cell contents change?
 
-# Switch takes a cell containing events and transmits messages of that event.
-class Switch(Event):
-    __slots__ = []
-    def __init__(self, cell):
-        super().__init__([cell, cell.value])
-
-    def step(self, get):
-        event, current = self.sources
-        if upcoming := get(event):
-            current.dependents.discard(self)
-            upcoming.dependents.add(self)
-            self.sources[1] = upcoming
-            self.redepth()
-        return get(current)
+# # Switch takes a cell containing events and transmits messages of that event.
+# class Switch(Event):
+#     __slots__ = []
+#     def __init__(self, cell):
+#         super().__init__([cell, cell.value])
+# 
+#     def step(self, get):
+#         event, current = self.sources
+#         if upcoming := get(event):
+#             current.dependents.discard(self)
+#             upcoming.dependents.add(self)
+#             self.sources[1] = upcoming # BROKEN
+#             self.redepth()
+#             raise Reflow()
+#         return get(current)
 
 # Join merges nested cells into one.
 class Join(Cell):
     __slots__ = []
     def __init__(self, supercell):
         super().__init__(supercell.value.value, [supercell, supercell.value])
-
+ 
     def step(self, get):
         supercell, current = self.sources
-        if get(supercell):
+        if supercell.value != current:
             current.dependents.discard(self)
             supercell.value.dependents.add(self)
-            self.sources[1] = supercell.value
-            self.redepth()
+            self.sources[1] = current = supercell.value
+            if self.stale():
+                raise Reflow()
         self.value = current.value
-        return get(current)
+        return get(current) or get(self)
