@@ -109,7 +109,7 @@ class Patch(reaction.Flow):
                         cell.value = data[0]
                     case _:
                         pass
-            return True
+            return Some(None)
 
 class PluginTemplate:
     def __init__(self, model, inputs, py_names, outputs):
@@ -147,38 +147,39 @@ Off = namedtuple('Off', ['note'])
 
 def as_frequency(initial_key, notes, tuning=440.0):
     def _onset_freqs_(m):
-        if isinstance(m, On):
-            return Some(midi_to_freq(m.note, tuning))
+        if isinstance(m[-1], On):
+            return Some(midi_to_freq(m[-1].note, tuning))
     freqs = Collect(_onset_freqs_, notes)
     return Hold(midi_to_freq(initial_key, tuning), freqs)
 
 def as_velocity(initial, notes):
     def _onset_velocities_(m):
-        if isinstance(m, On):
-            return Some(m.volume)
+        if isinstance(m[-1], On):
+            return Some(m[-1].volume)
     velocities = Collect(_onset_velocities_, notes)
     return Hold(initial, velocities)
 
 def as_gate(initial, notes, func=lambda x: x):
     def _gate_(m):
-        if isinstance(m, On):
+        if isinstance(m[-1], On):
             return Some(func(1.0))
-        if isinstance(m, Off):
+        if isinstance(m[-1], Off):
             return Some(func(0.0))
     gate = Collect(_gate_, notes)
     return Hold(func(initial), gate)
 
 def as_trig(bay, notes):
-    def _trig_(m):
-        if isinstance(m, On):
-            return Some(None)
+    def _trig_(ms):
+        for m in ms:
+            if isinstance(m, On):
+                return Some(None)
     def _hammer_(trig, pulse):
-        if len(trig) > 0:
+        if trig:
             strike = bay.engine.full(0.0)
             strike[0] = 1.0
-            return [strike]
+            return Some(strike)
         else:
-            return [bay.engine.full(0.0)]
+            return Some(bay.engine.full(0.0))
     return Hold(bay.engine.full(0.0), Merge(Collect(_trig_, notes), bay.pulse, _hammer_))
     
 class Multiplex:
@@ -186,26 +187,33 @@ class Multiplex:
         self.keys = [69 for voice in range(voices)]
         self.time = [float('-inf') for voice in range(voices)]
 
-    def __call__(self, event, time):
-        match event:
-            case On(n, v):
-                try:
-                    i = self.keys.index(n)
-                except ValueError:
-                    i = min(range(len(self.keys)), key=lambda i: self.time[i])
-                    self.keys[i] = n
-                self.time[i] = time
-                return i, event
-            case Off(n):
-                try:
-                    return self.keys.index(n), event
-                except ValueError:
-                    return -1, event
+    def __call__(self, events, time):
+        out = []
+        for event in events:
+            match event:
+                case On(n, v):
+                    try:
+                        i = self.keys.index(n)
+                    except ValueError:
+                        i = min(range(len(self.keys)), key=lambda i: self.time[i])
+                        self.keys[i] = n
+                    self.time[i] = time
+                    out.append((i, event))
+                case Off(n):
+                    try:
+                        out.append((self.keys.index(n), event))
+                    except ValueError:
+                        out.append((-1, event))
+        return out
 
 def select(i, mux):
-    def _this_(k):
-        if k[0] == i:
-            return Some(k[1])
+    def _this_(ks):
+        out = []
+        for k in ks:
+            if k[0] == i:
+                out.append(k[1])
+        if out:
+            return Some(out)
     return Collect(_this_, mux)
 
 def multiplex(func, now, notes, voices=16):
@@ -246,7 +254,11 @@ def schedule(t, data, loop=None):
             u -= loop
             j = bisect.bisect_right(data, u, key=lambda evt: evt[0])
             yield from [x[1] for x in data[:j]]
-    return Expand(_exp_, Changes(t))
+    @collect(Changes(t))
+    def process(tu):
+        if result := list(_exp_(tu)):
+            return Some(result)
+    return process
 
 def music(t, tempo, notes, loop=False):
     data = []

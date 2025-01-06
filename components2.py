@@ -1,31 +1,67 @@
 from reaction import *
-from visual import gui2
+from visual import gui3
 from aural.box import On, Off
 from immutables import Map
 import sdl2
 import math
 
-def colorbox(color, width, height):
-    @gui2.drawing(color)
-    def _draw_(ui, this, color):
-        ui.ctx.set_source_rgba(*color)
-        this.shape.trace(ui.ctx)
-        ui.ctx.stroke()
-        this.shape.trace(ui.ctx)
-        ui.ctx.fill()
-    return gui2.Frame([_draw_], gui2.DynamicLayout(width, height))
-
-def label(text):
-    height = 20
-    @gui2.drawing(text)
-    def _draw_(ui, this, text):
-        bb = this.shape
+def clock(t):
+    @gui3.drawing(t)
+    def clock_hand(ui, this, t):
+        radius = min(this.width.value(), this.height.value())/2
+        x = this.hcenter.value()
+        y = this.vcenter.value()
         ui.ctx.set_source_rgba(0,0,0,1)
-        ui.ctx.set_font_size(20)
+        ui.ctx.arc(x, y, radius, 0, 2*math.pi)
+        ui.ctx.stroke()
+        angle = (t % 60) / 60 * math.pi * 2
+        ui.ctx.set_source_rgba(1,0,0,1)
+        ui.ctx.move_to(x, y)
+        ui.ctx.line_to(x + math.sin(angle) * radius,
+                       y - math.cos(angle) * radius)
+        ui.ctx.stroke()
+
+    return gui3.Frame([
+        gui3.trace((0,0,0,1)),
+        clock_hand,
+        gui3.Width(50),
+        gui3.Height(50),
+    ])
+
+def colorbox(color, width=5, height=5):
+    @gui3.drawing(color)
+    def colorfill(ui, this, color):
+        ui.ctx.set_source_rgba(*color)
+        ui.ctx.rectangle(*this.computed_box)
+        ui.ctx.stroke()
+        ui.ctx.rectangle(*this.computed_box)
+        ui.ctx.fill()
+    return gui3.Frame([
+        colorfill,
+        gui3.Width(width),
+        gui3.Height(height),
+    ])
+
+def label(text, height=20, color=(0,0,0,1)):
+    @gui3.drawing(text, height, color)
+    def textfill(ui, this, text, height, color):
+        x,y,w,h = this.computed_box
+        ui.ctx.set_source_rgba(*color)
+        ui.ctx.set_font_size(height)
         xt = ui.ctx.text_extents(text)
-        ui.ctx.move_to(bb.x + 5, bb.y + bb.height / 2 - xt.y_bearing / 2)
+        ui.ctx.move_to(x + 5, y + h / 2 - xt.y_bearing / 2)
         ui.ctx.show_text(text)
-    return gui2.Frame([_draw_], gui2.DynamicLayout(height=height, flexible_width=True))
+    def f0(ui, this, solver, text, height):
+        solver.addEditVariable(this.width, 'strong')
+    def f1(ui, this, solver, text, height):
+        ui.ctx.set_font_size(height)
+        xt = ui.ctx.text_extents(text)
+        solver.suggestValue(this.width, xt.width + 10)
+    return gui3.Frame([
+        textfill,
+        gui3.Height(height),
+        gui3.CustomLayout(f0, f1, text, height),
+    ])
 
 def triangle_wave(time):
     t = time % (2 * math.pi)
@@ -34,45 +70,41 @@ def triangle_wave(time):
     else:
         return 1 - 2 * ((t - math.pi) / math.pi)
 
-def scrollinglabel(text, time, width):
-    height = 20
-    @gui2.drawing(text, time, in_clip=True)
-    def _draw_(ui, this, text, time):
-        bb = this.shape
+def scrollinglabel(text, time, width, height=20):
+    @gui3.drawing(text, time)
+    def textfill(ui, this, text, time):
+        x,y,w,h = this.computed_box
+        ui.ctx.rectangle(x,y,w,h)
+        ui.ctx.clip()
         ui.ctx.set_source_rgba(0,0,0,1)
-        ui.ctx.set_font_size(20)
+        ui.ctx.set_font_size(height)
         xt = ui.ctx.text_extents(text)
         u = triangle_wave(time) * 0.5 + 0.5
         scroll_x = - max(0, xt.width - width + 10) * u
-        ui.ctx.move_to(bb.x + 5 + scroll_x, bb.y + bb.height / 2 - xt.y_bearing / 2)
+        ui.ctx.move_to(x + 5 + scroll_x, y + h / 2 - xt.y_bearing / 2)
         ui.ctx.show_text(text)
-    return gui2.Frame([_draw_], gui2.DynamicLayout(width=width, height=height))
+    return gui3.Frame([
+        textfill,
+        gui3.Width(width),
+        gui3.Height(height),
+    ])
 
 def initbuf(text):
     return len(text), len(text), text
 
-class TextBox:
-    def __init__(self, initial, set_text=None):
-        self.mutation = Event()
-        if set_text:
-            mutor = Merge(self.mutation, MapE(lambda text: lambda _: initbuf(text), set_text))
-        else:
-            mutor = self.mutation
-        def _updater_(x,f):
-            return f(x)
-        self.buffer  = Memory(initbuf(initial), _updater_, mutor)
-        self.text    = Compute(lambda x: x[2], [self.buffer])
-        self.changes = Changes(self.text)
-
 def delete_selection(buffer):
-    start = min(buffer[0], buffer[1])
-    end   = max(buffer[0], buffer[1])
-    text  = buffer[2][:start] + buffer[2][end:]
-    return start, start, text
+    pos,tail,text = buffer
+    if pos != tail:
+        start = min(pos, tail)
+        end   = max(pos, tail)
+        text  = text[:start] + text[end:]
+        return start, start, text
+    else:
+        return pos, tail, text
 
 def position_to_cursor(ui, this, x, text):
     ui.ctx.set_font_size(20)
-    x_offset = this.shape.x + 5
+    x_offset = this.left.value() + 5
     for i, char in enumerate(text):
         char_width = ui.ctx.text_extents(char)[4]
         if x_offset + char_width / 2 >= x:
@@ -80,183 +112,176 @@ def position_to_cursor(ui, this, x, text):
         x_offset += char_width
     return len(text)
 
-def textbox(control):
-    chars    = Event()
-    keyboard = Event()
-    motion   = Event()
-    buttons  = [Event(), Event(), Event()]
-    width  = 200
-    height = 20
+class TextControl:
+    def __init__(self, ui, initial):
+        self.ui = ui
+        self.modified = Source(ui.engine)
+        self.text     = Hold(initial, self.modified)
+        self.buffer   = initbuf(initial)
 
-    caret_event = Event()
-    caret = Hold(0, caret_event)
+    def set_text(self, text):
+        self.buffer = initbuf(text)
+        self.modified.send(text)
 
-    snap  = FilterE(lambda x: x, buttons[0])
-    drag  = Hold(False, buttons[0])
+def textbox(control, width=200, height=20):
+    mouse = gui3.MouseControl(control.ui)
+    keyboard = gui3.KeyboardControl(control.ui)
+    position = Hold((0,0), mouse.motion)
+    dragging = Hold(False, mouse.left.pressed)
+    @gui3.logic(mouse.left.down, position)
+    def mouse_click(ui, this, down, xy):
+        if down:
+            _, _, text = control.buffer
+            pos = position_to_cursor(ui, this, xy[0], text)
+            control.buffer = pos, pos, text
+    @gui3.logic(dragging, position)
+    def mouse_drag(ui, this, pressed, xy):
+        if pressed:
+            _, tail, text = control.buffer
+            pos = position_to_cursor(ui, this, xy[0], text)
+            control.buffer = pos, tail, text
+    @gui3.logic(keyboard.stream)
+    def keyboard_stream(ui, this, stream):
+        if stream is None:
+            return
+        for action in stream.value:
+            match action:
+                case gui3.Down(sym, repeat, modifiers):
+                    pos, tail, text = control.buffer
+                    modifiers = action.modifiers
+                    if sym == sdl2.SDLK_BACKSPACE and pos != tail:
+                        pos, tail, text = delete_selection((pos, tail, text))
+                        control.modified.send(text)
+                    elif sym == sdl2.SDLK_BACKSPACE and pos > 0:
+                        text = text[:pos - 1] + text[pos:]
+                        tail = pos = pos - 1
+                        control.modified.send(text)
+                    elif sym == sdl2.SDLK_DELETE and pos != tail:
+                        pos, tail, text = delete_selection((pos, tail, text))
+                        control.modified.send(text)
+                    elif sym == sdl2.SDLK_DELETE and pos < len(text):
+                        text = text[:pos] + text[pos + 1:]
+                        control.modified.send(text)
+                    elif sym == sdl2.SDLK_LEFT and pos > 0:
+                        pos = pos - 1
+                        if not (modifiers & sdl2.KMOD_SHIFT):
+                            tail = pos
+                    elif sym == sdl2.SDLK_RIGHT and pos < len(text):
+                        pos = pos + 1
+                        if not (modifiers & sdl2.KMOD_SHIFT):
+                            tail = pos
+                    elif sym == sdl2.SDLK_HOME:
+                        pos = 0
+                        if not (modifiers & sdl2.KMOD_SHIFT):
+                            tail = pos
+                    elif sym == sdl2.SDLK_END:
+                        pos = len(text)
+                        if not (modifiers & sdl2.KMOD_SHIFT):
+                            tail = pos
+                    control.buffer = pos,tail,text
+                case gui3.Up(sym, modifiers):
+                    pass
+                case gui3.Text(inp):
+                    pos,_,text = delete_selection(control.buffer)
+                    text = text[:pos] + inp + text[pos:]
+                    pos += len(inp)
+                    control.buffer = pos,pos,text
+                    control.modified.send(text)
 
-    def left_button_click(_, pos):
-        def mutor(buffer):
-            return pos, pos, buffer[2]
-        return mutor
-    mutations = Snapshot(left_button_click, snap, caret)
-
-    def dragging_motion(_, pos):
-        def mutor(buffer):
-            return pos, buffer[1], buffer[2]
-        return mutor
-    dragging  = FilterE(lambda x: x, Snapshot(lambda _, y: y, motion, drag))
-    mutations = Merge(mutations, Snapshot(dragging_motion, dragging, caret))
-
-    def char_stream(ch):
-        def mutor(buffer):
-            pos, tail, text = buffer
-            if pos != tail:
-                pos, tail, text = delete_selection((pos, tail, text))
-            text = text[:pos] + ch + text[pos:]
-            pos  = pos + len(ch)
-            return pos, pos, text
-        return mutor
-    mutations = Merge(mutations, MapE(char_stream, chars))
-
-    def key_stream(action):
-        def mutor(buffer):
-            pos, tail, text = buffer
-            key = action.sym
-            modifiers = action.modifiers
-            if key == sdl2.SDLK_BACKSPACE and pos != tail:
-                pos, tail, text = delete_selection((pos, tail, text))
-            elif key == sdl2.SDLK_BACKSPACE and pos > 0:
-                text = text[:pos - 1] + text[pos:]
-                tail = pos = pos - 1
-            elif key == sdl2.SDLK_DELETE and pos != tail:
-                pos, tail, text = delete_selection((pos, tail, text))
-            elif key == sdl2.SDLK_DELETE and pos < len(text):
-                text = text[:pos] + text[pos + 1:]
-            elif key == sdl2.SDLK_LEFT and pos > 0:
-                pos = pos - 1
-                if not (modifiers & sdl2.KMOD_SHIFT):
-                    tail = pos
-            elif key == sdl2.SDLK_RIGHT and pos < len(text):
-                pos = pos + 1
-                if not (modifiers & sdl2.KMOD_SHIFT):
-                    tail = pos
-            elif key == sdl2.SDLK_HOME:
-                pos = 0
-                if not (modifiers & sdl2.KMOD_SHIFT):
-                    tail = pos
-            elif key == sdl2.SDLK_END:
-                pos = len(text)
-                if not (modifiers & sdl2.KMOD_SHIFT):
-                    tail = pos
-            return pos, tail, text
-        if isinstance(action, gui2.Down):
-            return mutor
-        else:
-            return lambda x: x
-    mutations = Merge(mutations, MapE(key_stream, keyboard))
-
-    @gui2.logic(Snapshot(lambda xy, text: (xy, text), motion, control.text))
-    def _caret_logic_(ui, this, xyts):
-        for (x,y),text in xyts:
-            ui.engine.send(caret_event, position_to_cursor(ui, this, x, text))
-
-    @gui2.logic(mutations)
-    def _buffer_logic_(ui, this, muts):
-        for mut in muts:
-            ui.engine.send(control.mutation, mut)
-
-    @gui2.drawing(control.buffer)
-    def _draw_(ui, this, buffer):
-        pos, tail, text = buffer
+    @gui3.drawing(Hold(False, keyboard.focus))
+    def textfill(ui, this, focus):
+        pos, tail, text = control.buffer
         def text_position(pos):
             return 5 + ui.ctx.text_extents(text[:pos])[4]
-        bb = this.shape
+        x,y,w,h = this.computed_box
         ui.ctx.set_source_rgba(1, 1, 1, 1)
-        bb.trace(ui.ctx)
+        ui.ctx.rectangle(x,y,w,h)
         ui.ctx.fill()
         ui.ctx.set_source_rgba(0, 0, 0, 1)
-        bb.trace(ui.ctx)
+        ui.ctx.rectangle(x,y,w,h)
         ui.ctx.stroke()
-        ui.ctx.set_font_size(20)
+        ui.ctx.set_font_size(h)
         xt = ui.ctx.text_extents(text)
-        if pos != tail:
+        if focus and pos != tail:
             start = min(pos, tail)
             end = max(pos, tail)
             ui.ctx.set_source_rgba(0.6, 0.8, 1, 0.5)  # Light blue highlight
-            ui.ctx.rectangle(bb.x + text_position(start),
-                             bb.y + bb.height / 2 + xt.y_bearing,
-                             text_position(end) - text_position(start),
-                             20)
+            ui.ctx.rectangle(
+                x + text_position(start), y,
+                text_position(end) - text_position(start), h)
             ui.ctx.fill()
         ui.ctx.set_source_rgba(0,0,0,1)
-        ui.ctx.move_to(bb.x + 5, bb.y + bb.height / 2 - xt.y_bearing / 2)
+        ui.ctx.move_to(x + 5, y + h / 2 - xt.y_bearing / 2)
         ui.ctx.show_text(text)
-        if ui.keyboard_focus == this and pos == tail:
+        if focus and pos == tail:
             cursor_x = text_position(pos)
-            ui.ctx.move_to(bb.x + cursor_x, bb.y + bb.height / 2 - xt.y_bearing / 2)
-            ui.ctx.line_to(bb.x + cursor_x, bb.y + bb.height / 2 + xt.y_bearing / 2)
+            ui.ctx.move_to(x + cursor_x, y + h / 2 - xt.y_bearing / 2)
+            ui.ctx.line_to(x + cursor_x, y + h / 2 + xt.y_bearing / 2)
             ui.ctx.stroke()
-    return gui2.Frame([_caret_logic_, _buffer_logic_, _draw_], gui2.DynamicLayout(width=width, height=height, flexible_width=True),
-               chars=chars,
-               keyboard=keyboard,
-               motion=motion,
-               buttons=buttons)
+    return gui3.Frame([
+        mouse_click,
+        mouse_drag,
+        keyboard_stream,
+        textfill,
+        gui3.Width(width),
+        gui3.Height(height),
+    ], keyboard=keyboard, mouse=mouse)
 
-def button(ui, text, left, middle, right):
-    buttons = [left, middle, right]
-    b0 = Hold(False, buttons[0])
-    b1 = Hold(False, buttons[1])
-    b2 = Hold(False, buttons[2])
-    pressed = Compute(lambda x,y,z: x or y or z, [b0,b1,b2])
-    disabled = False
-    ui.ctx.set_font_size(20)
-    xt = ui.ctx.text_extents(text.value) # TODO: Everything should be changing!!!
-    width = xt.width + 20
-    height = xt.height + 10
-    @gui2.drawing(pressed, text)
-    def _draw_(ui, this, pressed, text):
-        bb = this.shape
+def button(ui, text, height=20, mouse=None, disabled=False):
+    mouse = mouse or gui3.MouseControl(ui)
+    left = Hold(False, mouse.left.pressed)
+    middle = Hold(False, mouse.middle.pressed)
+    right = Hold(False, mouse.right.pressed)
+    pressed = compute(left, middle, right)(lambda x,y,z: x or y or z)
+    @compute(pressed, promote(disabled))
+    def color(pressed, disabled):
+        if not disabled:
+            a = 1*int(pressed)
+            return a,a,a,1
+        else:
+            return 0.5,0.5,0.5,1
+
+    @gui3.drawing(pressed, disabled, color)
+    def buttonfill(ui, this, pressed, disabled, color):
+        x,y,w,h = this.computed_box
+        ui.ctx.set_font_size(h)
         if pressed and not disabled:
             ui.ctx.set_source_rgba(0, 0, 0, 1)
-            bb.trace(ui.ctx)
+            ui.ctx.rectangle(x,y,w,h)
             ui.ctx.fill()
         else:
             ui.ctx.set_source_rgba(1, 1, 1, 1)
-            bb.trace(ui.ctx)
+            ui.ctx.rectangle(x,y,w,h)
             ui.ctx.fill()
-        ui.ctx.set_font_size(20)
-        if not disabled:
-            a = 1*int(pressed)
-            ui.ctx.set_source_rgba(a,a,a,1)
-        else:
-            ui.ctx.set_source_rgba(0.5, 0.5, 0.5, 1)
-        xt = ui.ctx.text_extents(text)
-        ui.ctx.move_to(
-            bb.x + bb.width / 2 - xt.width / 2,
-            bb.y + bb.height / 2 - xt.y_bearing / 2)
-        ui.ctx.show_text(text)
-        bb.trace(ui.ctx)
+        ui.ctx.set_source_rgba(*color)
+        ui.ctx.rectangle(x,y,w,h)
         ui.ctx.stroke()
-    return gui2.Frame([_draw_], gui2.DynamicLayout(width, height), buttons=buttons)
+    return gui3.Frame([
+        buttonfill,
+    ] + label(text, height, color).contents, mouse=mouse)
 
 def oscilloscope(out0, out1, width=500, height=150):
-    @gui2.drawing(out0, out1)
+    @gui3.drawing(out0, out1)
     def oscillos(ui, this, left, right):
-        bb = this.shape
-        r  = bb.height / 2
+        x,y,w,h = this.computed_box
+        r  = h / 2
         ui.ctx.set_source_rgba(1,0,0,0.5)
-        ui.ctx.move_to(bb.x, bb.y + r - r*left[0])
+        ui.ctx.move_to(x, y + r - r*left[0])
         for i in range(1, len(left)):
             t = i / len(left)
-            ui.ctx.line_to(bb.x + t*bb.width, bb.y + r - r*left[i])
+            ui.ctx.line_to(x + t*w, y + r - r*left[i])
         ui.ctx.stroke()
         ui.ctx.set_source_rgba(0,1,0,0.5)
-        ui.ctx.move_to(bb.x, bb.y + r - r*right[0])
+        ui.ctx.move_to(x, y + r - r*right[0])
         for i in range(1, len(right)):
             t = i / len(right)
-            ui.ctx.line_to(bb.x + t*bb.width, bb.y + r - r*right[i])
+            ui.ctx.line_to(x + t*w, y + r - r*right[i])
         ui.ctx.stroke()
-    return gui2.Frame([ oscillos ], gui2.DynamicLayout(width=width, height=height))
+    return gui3.Frame([
+        oscillos,
+        gui3.Width(width),
+        gui3.Height(height),
+    ])
 
 def get_volume(out):
     r0 = math.sqrt(sum(out*out) / len(out))
@@ -270,47 +295,44 @@ def decay_function(decay = 0.60):
         return max(new, old*decay)
     return _decay_
 
-def vu_meter(out0, out1, width=20, height=90):
+def vu_meter(ui, out0, out1, width=20, height=90):
     def to_scaler(v):
         if v > 0:
             dbfs = 20 * math.log10(v)
             return min(1.0, max(0.0, 1 - (dbfs / -96)))
         else:
             return 0.0
-    buttons = [Event(), Event(), Event()]
+    mouse = gui3.MouseControl(ui)
+    volume0 = Accum(0.0, decay_function(), [Compute(get_volume, [out0])])
+    volume1 = Accum(0.0, decay_function(), [Compute(get_volume, [out1])])
 
-    volume0 = Accum(0.0, decay_function(), Compute(get_volume, [out0]))
-    volume1 = Accum(0.0, decay_function(), Compute(get_volume, [out1]))
-    clip0   = Compute(get_clip, [out0, Hold(False, buttons[0])])
-    clip1   = Compute(get_clip, [out1, Hold(False, buttons[0])])
-    clipping0 = Accum(0, lambda x,y: max(x,y)%2, clip0)
-    clipping1 = Accum(0, lambda x,y: max(x,y)%2, clip0)
+    clip0   = Compute(get_clip, [out0, Hold(False, mouse.left.pressed)])
+    clip1   = Compute(get_clip, [out1, Hold(False, mouse.left.pressed)])
+    clipping0 = Accum(0, lambda x,y: max(x,y)%2, [clip0])
+    clipping1 = Accum(0, lambda x,y: max(x,y)%2, [clip0])
 
-    @gui2.drawing(volume0, volume1, clipping0, clipping1)
+    @gui3.drawing(volume0, volume1, clipping0, clipping1)
     def _draw_(ui, this, vol0, vol1, clip0, clip1):
-        bb = this.shape
-        ctx = ui.ctx
-        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
-        bb.trace(ctx)
-        ctx.fill()
-        bb.trace(ctx)
-        ctx.stroke()
-        ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
-        h0 = to_scaler(vol0) * (bb.height - 10)
-        ctx.rectangle(bb.x+1, bb.y+bb.height - h0,
-                      bb.width // 2 - 2, h0)
-        ctx.fill()
-        h1 = to_scaler(vol1) * (bb.height - 10)
-        ctx.rectangle(bb.x+bb.width//2+1, bb.y+bb.height - h1, 8, h1)
-        ctx.fill()
-        ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
+        x,y,w,h = this.computed_box
+        ui.ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
+        ui.ctx.rectangle(x,y,w,h)
+        ui.ctx.fill()
+        ui.ctx.rectangle(x,y,w,h)
+        ui.ctx.stroke()
+        ui.ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
+        h0 = to_scaler(vol0) * (h - 10)
+        ui.ctx.rectangle(x+1, y+h - h0, w // 2 - 2, h0)
+        ui.ctx.fill()
+        h1 = to_scaler(vol1) * (h - 10)
+        ui.ctx.rectangle(x+w//2+1, y+h - h1, 8, h1)
+        ui.ctx.fill()
+        ui.ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
         if clip0:
-            ctx.rectangle(bb.x, bb.y, bb.width//2, 10)
+            ui.ctx.rectangle(x, y, w//2, 10)
         if clip1:
-            ctx.rectangle(bb.x+bb.width//2, bb.y, bb.width//2, 10)
-        ctx.fill()
-
-    return gui2.Frame([_draw_], gui2.DynamicLayout(width, height), buttons=buttons)
+            ui.ctx.rectangle(x+w//2, y, w//2, 10)
+        ui.ctx.fill()
+    return gui3.Frame([_draw_, gui3.Width(width), gui3.Height(height)], mouse=mouse)
 
 def virtual_keyboard(editor, ui):
     virtual_midi = [
@@ -324,63 +346,78 @@ def virtual_keyboard(editor, ui):
         for i, row in enumerate(virtual_midi)
         for j, cel in enumerate(row)}
 
-    midi_keyboard = Event()
-    @gui2.logic(midi_keyboard)
-    def _midi_logic_(ui, this, es):
-        editor.audio_output.lock()
-        for e in es:
-            k = virtual_map.get(e.sym, None)
-            if k is None:
-                continue
-            if isinstance(e, gui2.Down) and e.repeat == 0:
-                m = On(k, 1.0)
-                editor.fire_midi_keyboard(ui, m)
-            elif isinstance(e, gui2.Up):
-                m = Off(k)
-                editor.fire_midi_keyboard(ui, m)
-        editor.audio_output.unlock()
+    keyboard = gui3.KeyboardControl(ui)
 
-    return gui2.Frame([ _midi_logic_, gui2.trace ], gui2.DynamicLayout(width=100, height=50), keyboard=midi_keyboard)
+    @gui3.logic(keyboard.stream)
+    def _midi_logic_(ui, this, actions):
+        if actions:
+            editor.audio_output.lock()
+            for action in actions.value:
+                if isinstance(action, (gui3.Down,gui3.Up)):
+                    k = virtual_map.get(action.sym, None)
+                    if k is None:
+                        continue
+                    if isinstance(action, gui3.Down) and action.repeat == 0:
+                        m = On(k, 1.0)
+                        editor.fire_midi_keyboard(ui, m)
+                    elif isinstance(action, gui3.Up):
+                        m = Off(k)
+                        editor.fire_midi_keyboard(ui, m)
+            editor.audio_output.unlock()
+    return gui3.Frame([
+        gui3.trace((0,0,0,1)),
+        _midi_logic_,
+        gui3.Width(100),
+        gui3.Height(50),
+    ], keyboard=keyboard)
 
 def clavier_visualizer(clavier, now):
-    def hold_down(hold, e):
-        if isinstance(e, On):
-            hold = hold.set(e.note, e.velocity)
-        if isinstance(e, Off):
-            try:
-                hold = hold.delete(e.note)
-            except KeyError:
-                pass
-        return hold
-    hold = Memory(Map(), hold_down, clavier)
+    def hold_down(holdr, esn):
+        hold,release = holdr
+        es,now = esn
+        for e in es:
+            if isinstance(e, On):
+                hold = hold.set(e.note, now)
+            if isinstance(e, Off):
+                try:
+                    release.add((hold[e.note], now, e.note))
+                    hold = hold.delete(e.note)
+                except KeyError:
+                    pass
+        return hold,release
+    wth_time = snapshot(clavier, now)(lambda es,t: (es,t))
+    holdr = Memory((Map(),set()), hold_down, wth_time)
+    @compute(holdr, now)
+    def t15(holdr, now):
+        _,release = holdr
+        for s,e,n in list(release):
+            if e < now-15:
+                release.discard((s,e,n))
+        return release
 
-    t_clavier = Snapshot(lambda x,t: (t,x), clavier, now)
-    def t_15(olds, new):
-        i = 0
-        while i < len(olds) and olds[i][0] + 15 <= new[0]:
-            i += 1
-        return olds[i:] + [new]
-    t15 = Memory([], t_15, t_clavier)
-
-    @gui2.drawing(hold, t15, now)
-    def track_display(ui, this, hold, t15, now):
-        bb = this.shape
-        s = now - 15
+    @gui3.drawing(holdr, t15, now)
+    def track_display(ui, this, holdr, t15, now):
+        x,y,w,h = this.computed_box
+        begin = now - 15
         ui.ctx.set_source_rgba(1,0,0,1.0)
-        onsets  = [(t,e.note) for t,e in t15 if isinstance(e, On)]
-        offsets = [(t,e.note) for t,e in t15 if isinstance(e, Off)] + [(now,n) for n in hold]
-        for t, note in reversed(offsets):
-            b = t - s
-            o = [t for t,n in onsets if n == note]
-            a = ([0] + o)[bisect.bisect_right(o, t)] - s
-            ui.ctx.move_to(bb.x+a/15*bb.width, bb.y + 127 - note)
-            ui.ctx.line_to(bb.x+b/15*bb.width, bb.y + 127 - note)
+        for s,e,n in t15:
+            a = max(s - begin, 0)
+            b = max(e - begin, 0)
+            ui.ctx.move_to(x+a/15*w, y + 127 - n)
+            ui.ctx.line_to(x+b/15*w, y + 127 - n)
         ui.ctx.stroke()
 
-        ui.ctx.set_source_rgba(0,1,0,0.5)
-        for note, value in hold.items():
-            ui.ctx.move_to(bb.x,          bb.y + 127 - note)
-            ui.ctx.line_to(bb.x+bb.width, bb.y + 127 - note)
-        ui.ctx.stroke()
+        hold,_ = holdr
+        for note, s in hold.items():
+            a = max(s - begin, 0)
+            ui.ctx.set_source_rgba(0,0,1,0.5)
+            ui.ctx.move_to(x+a/15*w,   y + 127 - note)
+            ui.ctx.line_to(x+w, y + 127 - note)
+            ui.ctx.stroke()
 
-    return gui2.Frame([ gui2.trace, track_display ], gui2.DynamicLayout(width=100, height=128))
+    return gui3.Frame([
+        gui3.trace((0,0,0,1)),
+        track_display,
+        gui3.Width(100),
+        gui3.Height(128),
+    ])

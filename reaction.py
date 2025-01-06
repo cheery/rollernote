@@ -117,10 +117,13 @@ class Engine:
                 assert flow.engine is self, "mixing of flow graphs between engines"
                 values = []
                 for s in flow.sources:
-                    if isinstance(s, Cell):
-                        values.append(s.value)
+                    if isinstance(s, Flow):
+                        if isinstance(s, Cell):
+                            values.append(s.value)
+                        else:
+                            values.append(query(primed, s))
                     else:
-                        values.append(primed.get(s))
+                        values.append(s)
                 flow.func(*values)
             else:
                 try:
@@ -149,8 +152,10 @@ class Observer:
         self.func = func
         self.depth = max_depth
         for s in sources:
-            s.dependents.add(self)
-        self.engine.observers.add(self)
+            if isinstance(s, Flow):
+                s.dependents.add(self)
+        if any(isinstance(s, Flow) for s in sources):
+            self.engine.observers.add(self)
 
     def discard(self):
         """
@@ -159,8 +164,9 @@ class Observer:
         The observer is disconnected so that it won't prime after being discarded.
         """
         self.engine.observers.discard(self)
-        for source in self.sources:
-            source.dependents.discard(self)
+        for s in self.sources:
+            if isinstance(s, Flow):
+                s.dependents.discard(self)
 
 class Flow:
     """
@@ -225,16 +231,17 @@ class Source(Event):
     """
     Sources are events that come from outside of the network.
     """
-    __slots__ = ['engine']
-    def __init__(self, engine):
+    __slots__ = ['engine', 'evolve']
+    def __init__(self, engine, evolve=lambda _, v: v):
         self.engine = engine
+        self.evolve = evolve
         super().__init__()
 
-    def send(self, value, evolve=lambda _, v: v):
+    def send(self, value, evolve=None):
         """
         Calls Engine.send with this event.
         """
-        self.engine.send(self, value, evolve)
+        self.engine.send(self, value, evolve or self.evolve)
 
 never = Event()
 """
@@ -363,6 +370,13 @@ class Cell(Flow):
         super().__init__(sources)
         self.value = initial
 
+    def step(self, get):
+        """
+        Some cells are passively driven by their sources,
+        therefore it'd be nice if they prime up when agitated.
+        """
+        return Some(None)
+
 class Hold(Cell):
     """
     Hold is the simplest cell. Whenever an event occurs,
@@ -476,3 +490,21 @@ class Join(Cell):
                 raise FlowChanged()
         self.value = current.value
         return get(current) or get(self)
+
+def sample(item):
+    if isinstance(item, Flow):
+        if isinstance(item, Cell):
+            return item.value
+    else:
+        return item
+
+def as_stream(pending, new):
+    if isinstance(pending, Some):
+        return pending.value + [new]
+    return [new]
+
+def promote(value):
+    if isinstance(value, Flow):
+        return value
+    else:
+        return Hold(value)

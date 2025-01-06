@@ -20,7 +20,6 @@ class Varying:
 
     def wrap(self, ui, this):
         def _func_(new_value):
-            self.value.detach()
             new_value.attach(ui, this)
             self.value = new_value
         return _func_

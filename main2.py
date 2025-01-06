@@ -10,7 +10,7 @@ import cairo
 from aural import lv2
 import aural as audio
 import commands
-from visual import gui, gui2
+from visual import gui, gui2, gui3
 import math
 from music import resolution
 import bisect
@@ -3090,24 +3090,6 @@ class ListView(gui2.Frame):
     def detach(self, ui):
         super().detach(ui)
 
-class MovableShape(gui2.StaticLayout):
-    def __init__(self, x, y, width, height, inner):
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-        super().__init__(inner)
-
-    def measure(self, children, available_width, available_height):
-        available_width = self.width
-        available_height = self.height
-        self.inner.measure(children, available_width, available_height)
-
-    def __call__(self, this, box, shallow=True):
-        bb = this.parent.shape
-        box = gui2.Box(bb.x + self.x, bb.y + self.y, self.width, self.height)
-        self.inner(this, box)
-
 import pandas as pd
 
 Inserted = namedtuple('Inserted', ['key', 'fields'])
@@ -3118,84 +3100,196 @@ Modified = namedtuple('Modified', ['key', 'name', 'value'])
 # d.to_csv(name, index_label=...)
 
 class DatasetControl:
-    def __init__(self, engine, dataset):
-        self.engine = engine
-        self.modified = Event()
+    def __init__(self, ui, dataset):
+        self.modified = Source(ui.engine, as_stream)
         self.dataset = dataset
         self.next_key = dataset.index.max()+1 if len(dataset) > 0 else 0
 
     def insert(self, fields):
         key, self.next_key = self.next_key, self.next_key+1
         self.dataset.loc[key] = fields
-        self.engine.send(self.modified, Inserted(key, fields))
+        self.modified.send(Inserted(key, fields))
         return key
 
     def erase(self, key):
         self.dataset = self.dataset.drop(key)
-        self.engine.send(self.modified, Erased(key))
+        self.modified.send(Erased(key))
 
     def modify(self, key, name, value):
         self.dataset.loc[key, name] = value
-        self.engine.send(self.modified, Modified(key, name, value))
+        self.modified.send(Modified(key, name, value))
 
-class DatasetView(gui2.Frame):
-    def __init__(self, static, control, func, *args, **kwargs):
-        self.static  = static
+class DatasetView(gui3.Detail):
+    def __init__(self, control, func):
         self.control = control
         self.func    = func
-        self.table   = {}
-        super().__init__([], *args, **kwargs)
+        self.table   = dict()
 
-    def attach(self, ui, parent):
-        @gui2.logic(self.control.modified)
-        def _logic_(ui, this, cmds):
-            for cmd in cmds:
-                if isinstance(cmd, Inserted):
-                    frame = self.func(self.control, cmd.key, dict(cmd.fields))
-                    self.contents.append(frame)
-                    self.table[cmd.key] = frame
-                    frame.attach(ui, this)
-                if isinstance(cmd, Erased):
-                    frame = self.table.pop(cmd.key)
-                    self.contents.remove(frame)
-                    frame.detach()
-        self.contents = self.static + [_logic_]
+    def attach(self, ui, this):
         for key in self.control.dataset.index:
             frame = self.func(self.control, key, dict(self.control.dataset.loc[key]))
-            self.contents.append(frame)
+            this.contents.append(frame)
             self.table[key] = frame
-        super().attach(ui, parent)
-
-    def detach(self, ui):
-        super().detach(ui)
-
-# TODO: redesign reaction networks a bit.
-# TODO: redesign layout code a bit.
+        @ui.engine.observe(self.control.modified)
+        def _logic_(cmds):
+            if not cmds:
+                return
+            for cmd in cmds.value:
+                if isinstance(cmd, Inserted):
+                    frame = self.func(self.control, cmd.key, dict(cmd.fields))
+                    this.contents.append(frame)
+                    self.table[cmd.key] = frame
+                    frame.attach(ui, this)
+                    ui.reconstrain()
+                if isinstance(cmd, Erased):
+                    frame = self.table.pop(cmd.key)
+                    this.contents.remove(frame)
+                    frame.detach()
+                    ui.reconstrain()
 
 def demo(ui, editor):
     ui.ctx.select_font_face('FreeSerif')
+    editor.gui_channele = [Source(ui.engine), Source(ui.engine)]
+    editor.gui_channels = [Hold(editor.bay.engine.zeros(), e) for e in editor.gui_channele]
+    editor.gui_clavier = Source(ui.engine, as_stream)
 
-    dc = DatasetControl(ui.engine, pd.DataFrame(
-        data = { 'onset': pd.Series([80, 0], dtype='float32'),
-                 'offset': pd.Series([150, 50], dtype='float32'),
+    mouse = gui3.MouseControl(ui)
+    @mapE(mouse.inside)
+    def color_inside(inside):
+        if inside:
+            return (1,0,0,1)
+        else:
+            return (0,0,0,1)
+    color = Hold((0,0,0,1), color_inside)
+
+    favorite_color = compute(ui.now)(
+       lambda n: (math.sin(n)*0.5+0.5,
+                  math.sin(n+1)*0.5+0.5,
+                  math.sin(n+2)*0.5+0.5, 1))
+
+    @compute(ui.now)
+    def iskulause(t):
+        return ["huvittava", "toistava", "teksti"][int(t % 3)]
+
+    textctl = TextControl(ui, "Hello world!")
+
+    dc = DatasetControl(ui, pd.DataFrame(
+        data = { 'onset': pd.Series([0.1, 0.3], dtype='float32'),
+                 'offset': pd.Series([0.3, 0.6], dtype='float32'),
                  'note': pd.Series([69, 80], dtype='uint16'),
                  'velocity': pd.Series([1.0, 1.0], dtype='float32') },
         index = pd.Series([0,1], dtype='uint32')))
 
-    def _refresh_(_):
-        onsets = dc.dataset.sort_values(by=['onset'])
-        return onsets
-    notebuf = Hold(_refresh_(None), MapE(_refresh_, dc.modified))
+    def _builder_(control, key, fields):
+        return gui3.Container([
+            gui3.Column(),
+            gui3.trace((1,0,0,1)),
+            label(repr(float(fields['onset']))),
+            label(repr(float(fields['offset']))),
+            label(repr(int(fields['note']))),
+        ])
+    dcv1 = gui3.Container([
+        gui3.Row(),
+        DatasetView(dc, _builder_),
+    ])
+
+    def _builder2_(control, key, fields):
+        @collect(control.modified)
+        def this_thing(mods):
+            out = []
+            for mod in mods:
+                if isinstance(mod, Modified) and mod.key == key:
+                    out.append(mod)
+            if out:
+                return Some(out)
+        def _modify_(fs, mods):
+            for mod in mods:
+                fs[mod.name] = mod.value
+            return fs
+        fields = Memory(fields, _modify_, this_thing)
+
+        mouse = gui3.MouseControl(ui)
+        pos = Hold((0,0), mouse.motion)
+        #bas = Hold((0,0), snapshot(mouse.left.down, pos)(lambda _, pos: pos))
+        @gui3.logic(pos,Hold(False,mouse.left.pressed), mouse.right.down)
+        def on_drag(ui, this, xy, pressed, right):
+            if pressed:
+                x, y = xy
+                x0,y0,w,h = this.parent.computed_box
+                x -= x0
+                y -= y0
+                control.modify(key, 'onset', x/800)
+                control.modify(key, 'offset', x/800+0.1)
+                note = 127 - (y // 3)
+                control.modify(key, 'note', max(0, min(127, note)))
+            if right:
+                dc.erase(key)
+        x0 = gui3.Variable()
+        x1 = gui3.Variable()
+        y0 = gui3.Variable()
+        y1 = gui3.Variable()
+        def f0(ui, this, solver, fields):
+            solver.addEditVariable(x0, 'strong')
+            solver.addEditVariable(x1, 'strong')
+            solver.addEditVariable(y0, 'strong')
+            solver.addEditVariable(y1, 'strong')
+            solver.addConstraint(this.left == x0 + this.parent.left)
+            solver.addConstraint(this.right == x1 + this.parent.left)
+            solver.addConstraint(this.top == y0 + this.parent.top)
+            solver.addConstraint(this.bottom == y1 + this.parent.top)
+        def f1(ui, this, solver, fields):
+            solver.suggestValue(x0, 800 * float(fields['onset']))
+            solver.suggestValue(x1, 800 * float(fields['offset']))
+            solver.suggestValue(y0, 3*(127 - int(fields['note'])))
+            solver.suggestValue(y1, 3*(128 - int(fields['note'])))
+        return gui3.Container([
+            on_drag,
+            gui3.CustomLayout(f0, f1, fields),
+            gui3.Column(),
+            gui3.trace((1,0,0,1)),
+            label(compute(fields)(lambda fields: repr(int(fields['note'])))),
+        ], mouse=mouse)
+    dc_mouse = gui3.MouseControl(ui)
+    pos = Hold((0,0), dc_mouse.motion)
+    @gui3.logic(dc_mouse.left.down, pos)
+    def dc_button(ui, this, left, xy):
+        if left:
+            x, y = xy
+            x -= this.left.value()
+            y -= this.top.value()
+            dc.insert({'onset': x/800,
+                       'offset': x/800+0.1,
+                       'note': 127 - (y//3),
+                       'velocity': 1.0})
+
+    @gui3.drawing(ui.now)
+    def visualz(ui, this, now):
+        x,y,w,h = this.computed_box
+        t = (now % 5) / 5 * w
+        ui.ctx.set_source_rgba(1,0,0,1)
+        ui.ctx.move_to(x + t, y)
+        ui.ctx.line_to(x + t, y+h)
+        ui.ctx.stroke()
+        
+    dcv2 = gui3.Container([
+        dc_button,
+        visualz,
+        gui3.trace((0,0,0,1)),
+        gui3.Width(800),
+        gui3.Height(128*3),
+        DatasetView(dc, _builder2_),
+    ], mouse=dc_mouse)
 
     w = 0.0
     playing = {}
-    @ui.engine.observe(notebuf, ui.now)
-    def _player_(onsets, now):
+    @ui.engine.observe(ui.now)
+    def _player_(now):
         nonlocal w
-        t = (now % 5) / 5 * 800
+        t = (now % 5) / 5
         if t < w:
-            w -= 800
+            w -= 1
         assert w <= t
+        onsets = dc.dataset
         for x in range(len(onsets)):
             m = onsets.iloc[x]
             onset = m['onset']
@@ -3204,7 +3298,7 @@ def demo(ui, editor):
             isect = max(w, onset) <= min(t, offset)
             if not isect:
                 continue
-            offset = (offset - onset) / 800 + now
+            offset = (offset - onset) + now
             if note in playing:
                 playing[note] = max(playing[note], offset)
             else:
@@ -3220,202 +3314,35 @@ def demo(ui, editor):
                 editor.audio_output.unlock()
         w = t
 
-    @gui2.drawing(ui.now)
-    def _marker_(ui, this, now):
-        t = (now % 5) / 5 * 800
-        ui.ctx.set_source_rgba(0,1,0,1)
-        ui.ctx.move_to(this.shape.x + t, this.shape.y)
-        ui.ctx.line_to(this.shape.x + t, this.shape.y + this.shape.height)
-        ui.ctx.stroke()
-
-    def maker(dc, key, fields):
-        def _filter_(mod):
-            return isinstance(mod, Modified) and mod.key == key
-        def _modify_(fs, mod):
-            fs[mod.name] = mod.value
-            return fs
-        fs = Memory(fields, _modify_, FilterE(_filter_, dc.modified))
-
-        buttons = [Event(), Event(), Event()]
-        motion = Event()
-        pos = Hold((0,0), motion)
-        snap = Snapshot(lambda x, p, y: (p, y.copy()) if x else None, buttons[0], pos, fs)
-        snag = Hold(None, snap)
-        @gui2.logic(buttons[2])
-        def _remove_(ui, this, button):
-            for btn in button:
-                if btn:
-                    dc.erase(key)
-        @gui2.logic(snag, motion)
-        def _move_(ui, this, snag, xys):
-            if snag:
-                for x,y in xys:
-                    (x0, y0), fs = snag
-                    onset = fs['onset']
-                    offset = fs['offset']
-                    note = fs['note']
-                    dx = x - x0
-                    dy = (y0 - y) // 3
-                    dc.modify(key, 'onset', onset + dx)
-                    dc.modify(key, 'offset', offset + dx)
-                    dc.modify(key, 'note', note + dy)
-        @gui2.logic(fs)
-        def _set_position_(ui, this, fs):
-            modified = False
-            onset = fs['onset']
-            offset = fs['offset']
-            note = fs['note']
-            this.layout = MovableShape(onset, (127 - note)*3, offset - onset, 3, gui2.DynamicLayout())
-            this.shape = gui2.Box(0,0,0,0)
-        return gui2.Frame([
-            _remove_,
-            _move_,
-            _set_position_,
-            gui2.trace,
-        ], buttons=buttons, motion=motion)
-        
-    buttons = [Event(), Event(), Event()]
-    motion = Event()
-    pos = Hold((0,0), motion)
-    @gui2.logic(pos, buttons[0])
-    def _button0_(ui, this, xy, button):
-        for btn in button:
-            if btn:
-                x, y = xy
-                x -= this.shape.x
-                y -= this.shape.y
-                dc.insert({'onset': x,
-                           'offset': x+50,
-                           'note': 127 - (y//3),
-                           'velocity': 1.0})
-    dcv = DatasetView([gui2.trace, _button0_, _marker_], dc, maker,
-            gui2.DynamicLayout(width=800, height=128*3),
-            buttons=buttons,
-            motion=motion)
-
-    list_mutator = Event()
-    def make_box(ev, mut):
-        buttons = [Event(), Event(), Event()]
-        motion = Event()
-        pos = Hold((0,0), motion)
-        snap = Snapshot(lambda x, *y: y if x else None, buttons[0], pos, ev)
-        snag = Hold(None, snap)
-        @gui2.logic(buttons[2])
-        def _remove_(ui, this, button):
-            for btn in button:
-                if btn:
-                    ui.engine.send(list_mutator, Remove(this))
-        @gui2.logic(snag, motion)
-        def _move_(ui, this, snag, xys):
-            if snag:
-                for x,y in xys:
-                    (x0, y0), (onset, offset, note) = snag
-                    dx = x - x0
-                    dy = (y0 - y) // 3
-                    ui.engine.send(mut, (onset + dx, offset + dx, note + dy))
-        @gui2.logic(ev)
-        def _set_position_(ui, this, ev):
-            onset, offset, note = ev
-            this.layout = MovableShape(onset, (127 - note)*3, offset - onset, 3, gui2.DynamicLayout())
-            this.shape = gui2.Box(0,0,0,0)
-        return gui2.Frame([
-            _remove_,
-            _move_,
-            _set_position_,
-            gui2.trace,
-        ], buttons=buttons, motion=motion)
-
-    buttons = [Event(), Event(), Event()]
-    motion = Event()
-    pos = Hold((0,0), motion)
-
-    m1 = Event()
-    m2 = Event()
-    control = ListControl([
-        make_box(Hold((0, 100, 96), m1), m1),
-        make_box(Hold((0, 120, 102), m2), m2),
-    ], list_mutator)
-
-    @gui2.logic(pos, buttons[0])
-    def _button0_(ui, this, xy, button):
-        for btn in button:
-            if btn:
-                x, y = xy
-                x -= this.shape.x
-                y -= this.shape.y
-                m = Event()
-                nb = make_box(Hold((x, x+50, 127 - (y//3)), m), m)
-                ui.engine.send(list_mutator, Insert(-1, nb))
-        
-
-    micro_editor = ListView([gui2.trace, _button0_], control, gui2.DynamicLayout(width=800, height=128*3, flexible_width=True),
-                       buttons=buttons, motion=motion)
-
-    #return gui2.column([
-    #    scrollinglabel(Hold("hello world!"), ui.now, 150),
-    #    dcv,
-    #    micro_editor,
-    #])
-
-    inside = Event()
-
-    trace_color = Compute(lambda x: (1,0,0,1) if x else (0,0,0,1), [Hold(False, inside)])
-
-    favorite_color = Compute(lambda n: (math.sin(n)*0.5+0.5,
-                                        math.sin(n+1)*0.5+0.5,
-                                        math.sin(n+2)*0.5+0.5,
-                                        1), [ui.now])
-
-    btn_e = Event()
-    btn = FilterE(lambda e: e, btn_e)
-    start = Hold(0.0, Snapshot(lambda _, t: t, btn, ui.now))
-
-    testing = TextBox("testing")
-
-    variety = [
-        (0.0, scrollinglabel(Hold("hello world"), ui.now, 50)),
-        (1.0, colorbox(Hold((0,1,0,1)), 50, 50)),
-        (2.0, colorbox(Hold((0,0,1,1)), 50, 50)),
-    ]
-    various = Hold(variety[0][1], box.schedule(ui.now, variety, loop=3))
-
-    @gui2.drawing(ui.now)
-    def _clock_(ui, this, now):
-        bb = this.shape
-        angle = (now % 60) / 60 * math.pi * 2
-        ui.ctx.set_source_rgba(1,0,0,1)
-        x = bb.x + bb.width/2
-        y = bb.y + bb.height/2
-        ui.ctx.move_to(x, y)
-        ui.ctx.line_to(x + math.sin(angle) * bb.width/2,
-                       y - math.cos(angle) * bb.width/2)
-        ui.ctx.stroke()
-
-    return gui2.column([
-        gui2.row([
-            colorbox(favorite_color, 50, 50),
-            #label(Hold("Hello")),
-            #label(Compute(lambda x,y: repr(x - y), [ui.now, start])),
-            textbox(testing),
-            gui2.Varying(various),
-            button(ui, Hold("test"), btn_e, Event(), Event()),
-            clavier_visualizer(editor.gui_clavier, ui.now),
-            gui2.Frame([ gui2.trace, _clock_ ], gui2.DynamicLayout(width=100, height=100), inside=inside),
-            virtual_keyboard(editor, ui),
-            vu_meter(*editor.gui_channels),
+    return gui3.Container([
+        gui3.Column(),
+        dcv1,
+        dcv2,
+        gui3.Container([
+            gui3.Row(),
+            colorbox(favorite_color, 15, 15),
+            label(iskulause),
+            scrollinglabel("hello world!", ui.now, 50),
         ]),
-        oscilloscope(*editor.gui_channels),
-        dcv,
-    ])
+        textbox(textctl),
+        button(ui, textctl.text),
+        gui3.Container([
+            gui3.HAlign(0.0),
+            gui3.Row(),
+            virtual_keyboard(editor, ui),
+            oscilloscope(*editor.gui_channels),
+            vu_meter(ui, *editor.gui_channels),
+            clavier_visualizer(editor.gui_clavier, ui.now),
+        ]),
+        clock(ui.now),
+    ], keyboard = gui3.KeyboardControl(ui))
 
 class Editor:
     def __init__(self):
         locator = aural.ladspa.Locator()
         engine = aural.ladspa.Engine(sample_rate=44100, sample_count=2048)
-
-        self.clavier = Event()
-
         self.bay = bay = box.Bay(Engine(), engine, locator, pulse = Event())
+        self.clavier = Source(bay.event_engine, as_stream)
         frame = Hold(0, bay.pulse)
         now = Compute(lambda frame: frame * engine.sample_step, [frame])
 
@@ -3434,7 +3361,15 @@ class Editor:
             (tih/2, {c5}),
             (tih/2, {e5}),
         ], loop=True)
-        song = Merge(song1, song2)
+        def merge_lists(x, y):
+            match (x, y):
+                case (Some(xs), Some(ys)):
+                    return Some(xs+ys)
+                case Some(xs):
+                    return Some(xs)
+                case Some(ys):
+                    return Some(ys)
+        song = Merge(song1, song2, merge_lists)
 
         # song = box.schedule(now, [
         #     (0.0,  On(52, 1.0)),
@@ -3469,7 +3404,7 @@ class Editor:
         #base_freq = box.as_frequency(69, notes)
         #out = box.monophonic(bay)(notes, make_channel)
         out = box.polyphonic(bay, now, voices=16)(notes, make_channel)
-        #out2 = box.noise_white(bay, Hold(1.0))
+        #out = box.noise_white(bay, Hold(1.0))
         #out = Compute(lambda *xs: sum(xs), [out1, out2])
 
         lout = rout = out
@@ -3494,13 +3429,9 @@ class Editor:
         mido_in = mido.backend.get_input_names()[-1]
         self.midi_input = mido.backend.open_input(mido_in)
 
-        self.gui_channele = [Event(), Event()]
-        self.gui_channels = [Hold(self.bay.engine.zeros(), e) for e in self.gui_channele]
-        self.gui_clavier = Event()
-
     def fire_midi_keyboard(self, ui, m):
-        ui.engine.send(self.gui_clavier, m)
-        self.bay.event_engine.send(self.clavier, m)
+        self.gui_clavier.send(m)
+        self.clavier.send(m)
 
     def widget(self, *args):
         widget = Widget(*args)
@@ -3511,7 +3442,8 @@ class Editor:
         self.running = True
         sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO | sdl2.SDL_INIT_AUDIO)
 
-        root = self.widget("rollernote", 1200, 700, gui2.GUI, demo, self)
+        root = self.widget("rollernote", 1200, 700, gui3.GUI, demo, self)
+
         sdl2.SDL_StartTextInput()
 
         while self.running:
