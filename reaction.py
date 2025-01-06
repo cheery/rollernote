@@ -1,4 +1,9 @@
-# "Deprecating the observer pattern" -paper
+"""
+    Functional reactive programming for python.
+
+    Implementation is from
+    "Deprecating the observer pattern" -paper
+"""
 import bisect
 import random
 from collections import namedtuple, deque
@@ -7,99 +12,127 @@ from weakref import WeakSet
 
 Some = namedtuple('Some', ['value'])
 
-class Reflow(Exception):
-    pass
+def query(primed, event):
+    try:
+        return Some(primed[event])
+    except KeyError:
+        return None
 
-# Engine is an unit holding the flow network together.
+class FlowChanged(Exception):
+    """
+    Sometimes the flow network changes such that
+    it needs a new topological sort.
+
+    In that case the Flow.step -function must raise FlowChanged
+    until the engine resolves the problem.
+    """
+
 class Engine:
-    __slots__ = ['observers', 'firing', 'event_lock']
+    __slots__ = {
+        'observers': "observers listening the flow network, bookkeeping to keep them from being garbage collected.",
+        'primed': "events primed for the next moment",
+        'event_lock': "lock that is engaged when modifying 'primed'",
+    }
     def __init__(self):
-        self.observers = set() # we maintain a list of observers 
-                               # to keep them in memory.
-        self.firing = dict()
+        self.observers = set()
+        self.primed = dict()
         self.event_lock = Lock()
 
-    # Observers are elements reading the network outwards.
-    # Whenever the value signals that it changed, the observer is called.
-
-    # observe is a decorator, eg, you use it like this:
-    # @engine.observe(flow1, flow2, ...)
-    # def observer(value1, value2, ...)
-    #     do things with cell contents.
-
-    # eventually... observer.discard() to discard the observer.
-
-    # If flow is an event, the value is a list of events in the given moment.
-    # If flow is a cell, the value is the contents of the cell.
-
     def observe(self, *sources):
+        """
+        Observers are elements reading the network outwards.
+        Whenever the value signals that it changed, the observer is called.
+
+        observe is a decorator, eg, you use it like this:
+        @engine.observe(flow1, flow2, ...)
+        def observer(value1, value2, ...)
+            do things with cell contents.
+
+        # If flow is an event, the value is None/Some(value) in the given moment.
+        # If flow is a cell, the value is the contents of the cell.
+
+        eventually... observer.discard() to discard the observer.
+        """
         def _observe_(func):
             return Observer(self, sources, func)
         return _observe_
 
-    # When the engine updates, it step through moments.
-    # Every moment is a cycle where the flow network updates itself.
-    # On such a cycle, events flow from outward of the network to inside it.
+    def send(self, event, value, evolve=lambda _, v: v):
+        """
+        Primes an event to be sent on the next moment.
 
-    # engine.send(event, value) sends an event to a moment.
-    def send(self, event, value):
+        Only one event can be sent at each moment.
+
+        To make it easier to maintain event flow with one event,
+        the user may supply an 'evolve' -function that gets
+        None/Some(previous_value) and the value user passed in.
+        """
         with self.event_lock:
-            # A program may send multiple events in one moment.
-            if event in self.firing:
-                self.firing[event].append(value)
-            else:
-                self.firing[event] = [value]
+            prior = query(self.primed, event)
+            self.primed[event] = evolve(prior, value)
 
-    # in some cases observers may feed back event into the network.
-    # Roll steps through multiple moments until network has silenced.
     def roll(self):
-        while len(self.firing) > 0:
+        """
+        In some use cases observers may feed events back into the network.
+        Roll steps through multiple moments until network has silenced.
+        """
+        while len(self.primed) > 0:
             self.step()
 
     def step(self):
-        # in each moment, the network is computed in
-        #   the order of depth from event sources.
-        # each flow is visited only once.
+        """
+        When the engine updates, it steps through moments.
+        Every moment flow network updates itself.
+        On such a moment, events flow from outward of the network to inside it.
+
+        In each moment, the network is topologically sorted with depth
+        from event sources and primed parts of the network
+        are stepped through in that order.
+
+        The events primed to fire in current moment are collected
+        and form the basis for the current moment's flow network update.
+
+        Dependents of each event source are enqueued.
+
+        Each flow ending up to a queue will get to do a step
+        where it may prime and send it's dependents to the queue.
+
+        primed -dictionary holds None/Some(value) for events
+        and 'True' for primed cells.
+        """
         queue = deque()
         visited = set()
         def enqueue(flow, retry=False):
             if flow not in visited or retry:
                 visited.add(flow)
                 bisect.insort_right(queue, flow, key=lambda r: r.depth)
-        # we collect the currently firing events and prepare
-        # the structure to collect events that will fire after this moment.
         with self.event_lock:
-            firing, self.firing = self.firing, dict()
-        # the dependents of events that are firing in this moment are enqueued
-        for event in firing:
+            primed, self.primed = self.primed, dict()
+        for event in primed:
             for d in event.dependents:
                 enqueue(d)
         while queue:
             flow = queue.popleft()
-            try:
-                if isinstance(flow, Observer):
-                    assert flow in self.observers, "mixing of flow graphs between engines"
-                    values = []
-                    for s in flow.sources:
-                        if isinstance(s, Cell):
-                            values.append(s.value)
-                        else:
-                            values.append(firing.get(s, []))
-                    flow.func(*values)
-                # each flow ending up to a queue will get to do a step
-                # where it may further enqueue flows and fire.
-                elif changed := flow.step(lambda s: firing.get(s, [])):
-                    if isinstance(flow, Event):
-                        assert isinstance(changed, list), flow
-                    firing[flow] = changed
-                    for d in flow.dependents:
-                        enqueue(d)
-            # Sometimes the graph topology changes
-            except Reflow:
-                firing[flow] = True
-                flow.redepth()
-                queue = deque(sorted(queue, key=lambda r: r.depth))
-                enqueue(flow, retry=True)
+            if isinstance(flow, Observer):
+                assert flow.engine is self, "mixing of flow graphs between engines"
+                values = []
+                for s in flow.sources:
+                    if isinstance(s, Cell):
+                        values.append(s.value)
+                    else:
+                        values.append(primed.get(s))
+                flow.func(*values)
+            else:
+                try:
+                    if changed := flow.step(lambda s: query(primed, s)):
+                        primed[flow] = changed.value
+                        for d in flow.dependents:
+                            enqueue(d)
+                except FlowChanged:
+                    primed[flow] = None
+                    flow.redepth()
+                    queue = deque(sorted(queue, key=lambda r: r.depth))
+                    enqueue(flow, retry=True)
 
 # Observers are the outwarding part of the flow network.
 # to make them process last, they get the maximum depth.
@@ -108,6 +141,9 @@ max_depth = 0xFFFFFFFFFFFFFFFF
 class Observer:
     __slots__ = ['engine', 'sources', 'func', 'depth', '__weakref__']
     def __init__(self, engine, sources, func):
+        """
+        Construct through the engine.observe -decorator.
+        """
         self.engine = engine
         self.sources = sources
         self.func = func
@@ -117,15 +153,20 @@ class Observer:
         self.engine.observers.add(self)
 
     def discard(self):
+        """
+        When you want that the observer stops observing, you need to explicitly tell so.
+
+        The observer is disconnected so that it won't prime after being discarded.
+        """
         self.engine.observers.discard(self)
-        # the observer is disconnected
-        # so that it won't fire after discarded.
         for source in self.sources:
             source.dependents.discard(self)
 
-# Flows are the nodes of the reaction network.
-# Whenever a flow gets created, it starts interacting in the network.
 class Flow:
+    """
+    Flows are the nodes of the reaction network.
+    Whenever a flow gets created, it starts interacting in the network.
+    """
     __slots__ = ['sources', 'dependents', 'depth', '__weakref__']
     def __init__(self, sources=None):
         self.sources = [] if sources is None else sources
@@ -135,74 +176,82 @@ class Flow:
         self.depth = 0
         self.redepth()
 
-    # Depth is used to determine which flow nodes need to be updated
-    # before we allow this flow node to step.
-
-    # Depth may need to be recalculated if network structure changes.
-    # Whenever that happens, it cascades through the network in order
-    # to produce new depth values.
     def stale(self):
+        """
+        Internal function used to determine whether .redepth should be invoked.
+        """
         depth = 0 if len(self.sources) == 0 else 1 + max(s.depth for s in self.sources)
         return self.depth != depth
 
     def redepth(self):
+        """
+        Depth is used to determine which flow nodes need to be updated
+        before we allow this flow node to step.
+
+        Depth may need to be recalculated if network structure changes.
+        Whenever that happens, it cascades through the network in order
+        to produce new depth values.
+        """
         self.depth = 0 if len(self.sources) == 0 else 1 + max(s.depth for s in self.sources)
         for d in self.dependents:
             if isinstance(d, Flow):
                 d.redepth()
 
     def step(self, get):
-        return False
+        """
+        Function to be implemented by events and cells.
 
-# Events are flows that may fire occassionally.
-# Whenever they fire, they transmit a value.
+        'get' is there to get a value of the event in the current moment.
+        eg. None/Some(value)
+        
+        step is supposed to return a None/Some(value).
+
+        The truth value of the output will tell
+        whether dependents of the cell should be primed as well.
+        """
+        return None
+
 class Event(Flow):
+    """
+    Events are flows that may occur occassionally, but only once in each moment.
+    Whenever event is primed, it transmits a value.
+
+    Eg, you might have an event that describes a pulse or a "heartbeat".
+    --1--2--3--4--5--6--7-->
+    """
     __slots__ = []
 
-# Eg, you might have an event that describes a pulse or a "heartbeat".
-# --1--2--3--4--5--6--7-->
-
-# Sources are events that come from outside the network.
 class Source(Event):
+    """
+    Sources are events that come from outside of the network.
+    """
     __slots__ = ['engine']
     def __init__(self, engine):
         self.engine = engine
         super().__init__()
 
-    def fire(self, value):
-        self.engine.send(self, value)
+    def send(self, value, evolve=lambda _, v: v):
+        """
+        Calls Engine.send with this event.
+        """
+        self.engine.send(self, value, evolve)
 
-# Never is an event that never fires.
-# eg. It is...
-# ----------------------->
 never = Event()
-
-# Merging of two events combine the occurences into one.
-# eg. input events:
-# --*-----*---*---------->
-# -----*----------------->
-# result:
-# --*--*--*---*---------->
-
-# Now there's a question of what should happen whenever we merge events
-# that occur simultaneously?
-# Our answer is to interleave them randomly.
-# This is somewhat unsatisfactory answer but well.. it's ok for now.
-def merge_nondet(xs, ys):
-    merged = []
-    i, j = 0, 0
-    while i < len(xs) and j < len(ys):
-        if random.choice([False,True]):
-            merged.append(xs[i])
-            i += 1
-        else:
-            merged.append(ys[j])
-            j += 1
-    return merged + xs[i:] + ys[j:]
+"""
+    Never is an event that never fires.
+    eg. It is...
+    ----------------------->
+"""
 
 class Merge(Event):
+    """
+    Merging of two events combine the occurences into one.
+    The results depend on how we combine them.
+
+    func gets pair of None/Some(x)
+    """
     __slots__ = ['func']
-    def __init__(self, x, y, func=merge_nondet):
+    def __init__(self, x, y, func):
         super().__init__([x, y])
         self.func = func
 
@@ -210,8 +259,10 @@ class Merge(Event):
         x, y = self.sources
         return self.func(get(x), get(y))
 
-# Events may snapshot values from multiple cells.
 class Snapshot(Event):
+    """
+    Events may snapshot values from multiple cells.
+    """
     __slots__ = ['func']
     def __init__(self, func, event, *sources):
         super().__init__([event] + list(sources))
@@ -221,20 +272,24 @@ class Snapshot(Event):
         event = self.sources[0]
         if occ := get(event):
             snap = [s.value for s in self.sources[1:]]
-            return [self.func(v, *snap) for v in occ]
+            return Some(self.func(occ.value, *snap))
 
-# @snapshot(event, cell1, cell2, cell3...)
-# def _flow_name_(value0, value1, value2, value3...):
-#     return ...
 def snapshot(event, *cells):
+    """
+    @snapshot(event, cell1, cell2, cell3...)
+    def _flow_name_(value0, value1, value2, value3...):
+        return ...
+    """
     def _decorator_(func):
         return Snapshot(func,  event, *cells)
     return _decorator_
 
-# Collect is a combined filter+map for events.
-# The function returns Some(v) if the occurence
-# of the event is preserved, None otherwise.
 class Collect(Event):
+    """
+    Collect is a combined filter+map for events.
+    The function returns Some(v) if the occurence
+    of the event is preserved, None otherwise.
+    """
     __slots__ = ['func']
     def __init__(self, func, event):
         super().__init__([event])
@@ -242,28 +297,23 @@ class Collect(Event):
 
     def step(self, get):
         event = self.sources[0]
-        occ = []
-        for v in get(event):
-            match self.func(v):
-                case Some(a):
-                    occ.append(a)
-                case _:
-                    pass
-        return occ
+        return self.func(get(event).value)
 
-# @collect(event)
-# def _flow_name_(value):
-#     if ...:
-#         return Some(value)
-#     else:
-#         return None
 def collect(event):
+    """
+    @collect(event)
+    def _flow_name_(value):
+        if ...:
+            return Some(value)
+        else:
+            return None
+    """
     def _decorator_(func):
         return Collect(func,  event)
     return _decorator_
     
-# MapE changes the content of the event somehow.
 class MapE(Event):
+    """MapE changes the content of the event."""
     __slots__ = ['func']
     def __init__(self, func, event):
         super().__init__([event])
@@ -271,18 +321,20 @@ class MapE(Event):
 
     def step(self, get):
         event = self.sources[0]
-        return [self.func(v) for v in get(event)]
+        return Some(self.func(get(event).value))
 
-# @mapE(event)
-# def _flow_name_(value):
-#     return new_value
 def mapE(event):
+    """
+    @mapE(event)
+    def _flow_name_(value):
+        return new_value
+    """
     def _decorator_(func):
         return MapE(func,  event)
     return _decorator_
 
-# Filter includes or drops an event according to it's content.
 class FilterE(Event):
+    """ Filter includes or drops an event according to it's content."""
     __slots__ = ['func']
     def __init__(self, func, event):
         super().__init__([event])
@@ -290,62 +342,43 @@ class FilterE(Event):
 
     def step(self, get):
         event = self.sources[0]
-        return [v for v in get(event) if self.func(v)]
+        occ = get(event)
+        if self.func(occ.value):
+            return occ
 
-# @filterE(event)
-# def _flow_name_(value):
-#     return True or False
 def filterE(event):
+    """
+    @filterE(event)
+    def _flow_name_(value):
+        return True or False
+    """
     def _decorator_(func):
         return FilterE(func,  event)
     return _decorator_
 
-# Expand expands a single event into multiple events.
-class Expand(Event):
-    __slots__ = ['func']
-    def __init__(self, func, event):
-        super().__init__([event])
-        self.func = func
-
-    def step(self, get):
-        event = self.sources[0]
-        occ = []
-        for v in get(event):
-            occ.extend(self.func(v))
-        return occ
-
-# @expandE(event)
-# def _flow_name_(value):
-#     return [values...]
-def expandE(event):
-    def _decorator_(func):
-        return ExpandE(func,  event)
-    return _decorator_
-
-# Cells are flow nodes that represent values changing over time.
 class Cell(Flow):
+    """Cells are flow nodes that represent values changing over time."""
     __slots__ = ['value']
     def __init__(self, initial, sources):
         super().__init__(sources)
         self.value = initial
 
-    def step(self, get):
-        return True
-
-# Hold is the simplest cell. Whenever an event occurs,
-# it changes to the content of the occurence of the event.
 class Hold(Cell):
+    """
+    Hold is the simplest cell. Whenever an event occurs,
+    it changes to the content of the occurence of the event.
+    """
     __slots__ = []
     def __init__(self, initial, event=never):
         assert isinstance(event, Event)
         super().__init__(initial, [event])
 
     def step(self, get):
-        self.value = get(self.sources[0])[-1]
-        return True
+        self.value = get(self.sources[0]).value
+        return Some(None)
 
-# Memory adds a function to the cell.
 class Memory(Cell):
+    """Memory adds a function to the cell."""
     __slots__ = ['func']
     def __init__(self, initial, func, event):
         assert isinstance(event, Event)
@@ -353,41 +386,44 @@ class Memory(Cell):
         self.func = func
 
     def step(self, get):
-        for value in get(self.sources[0]):
-            self.value = self.func(self.value, value)
-        return True
+        self.value = self.func(self.value, get(self.sources[0]).value)
+        return Some(None)
 
-# @memory(initial, event)
-# def _flow_name_(prev_value, occurence):
-#     return new_value
 def memory(initial, event):
+    """
+    @memory(initial, event)
+    def _flow_name_(prev_value, occurence):
+        return new_value
+    """
     def _decorator_(func):
         return Memory(initial, func, event)
     return _decorator_
 
-# Accum is like the memory cell,
-# but functions the same with a cell that has its contents updated.
 class Accum(Cell):
+    """
+    Adds a function to the cell, but uses it to compute values from other cells.
+    """
     __slots__ = ['func']
-    def __init__(self, initial, func, source):
-        assert isinstance(source, Cell)
-        super().__init__(initial, [source])
+    def __init__(self, initial, func, sources):
+        super().__init__(initial, sources)
         self.func = func
 
     def step(self, get):
-        self.value = self.func(self.value, self.sources[0].value)
-        return True
+        self.value = self.func(self.value, *(s.value for s in self.sources))
+        return Some(None)
 
-# @accum(initial, cell)
-# def _flow_name_(prev_value, occurence):
-#     return new_value
-def accum(initial, cell):
+def accum(initial, *cells):
+    """
+    @accum(initial, cell1, cell2, ...)
+    def _flow_name_(prev_value, value1, value2, ...):
+        return new_value
+    """
     def _decorator_(func):
-        return Accum(initial, func, cell)
+        return Accum(initial, func, cells)
     return _decorator_
 
-# Compute gets its value from other cells.
 class Compute(Cell):
+    """Compute gets its value from other cells."""
     __slots__ = ['func']
     def __init__(self, func, sources):
         initial = func(*(s.value for s in sources))
@@ -396,20 +432,24 @@ class Compute(Cell):
 
     def step(self, get):
         self.value = self.func(*(s.value for s in self.sources))
-        return True
+        return Some(None)
 
-# @compute(cell1, cell2, ...)
-# def _flow_name_(value1, value2, ...)
-#     return new_value
 def compute(*cells):
+    """
+    @compute(cell1, cell2, ...)
+    def _flow_name_(value1, value2, ...)
+        return new_value
+    """
     def _decorator_(func):
         return Compute(func, cells)
     return _decorator_
 
-# Changes is an event that observes a cell.
-# whenever the value changes in that cell, it fires
-# with (previous_value, current_value)
 class Changes(Event):
+    """
+    Changes is an event that observes a cell.
+    whenever the value changes in that cell, it fires
+    with (previous_value, current_value)
+    """
     def __init__(self, source):
         self.prev_value = source.value
         super().__init__([source])
@@ -418,29 +458,10 @@ class Changes(Event):
         prev = self.prev_value
         self.prev_value = current = self.sources[0].value
         if current != prev:
-            return [(prev, current)]
+            return Some((prev, current))
 
-# These two remaining implementations are a bit questionable.
-# Should we observe which value when the cell contents change?
-
-# # Switch takes a cell containing events and transmits messages of that event.
-# class Switch(Event):
-#     __slots__ = []
-#     def __init__(self, cell):
-#         super().__init__([cell, cell.value])
-# 
-#     def step(self, get):
-#         event, current = self.sources
-#         if upcoming := get(event):
-#             current.dependents.discard(self)
-#             upcoming.dependents.add(self)
-#             self.sources[1] = upcoming # BROKEN
-#             self.redepth()
-#             raise Reflow()
-#         return get(current)
-
-# Join merges nested cells into one.
 class Join(Cell):
+    """Join merges nested cells into one."""
     __slots__ = []
     def __init__(self, supercell):
         super().__init__(supercell.value.value, [supercell, supercell.value])
@@ -452,6 +473,6 @@ class Join(Cell):
             supercell.value.dependents.add(self)
             self.sources[1] = current = supercell.value
             if self.stale():
-                raise Reflow()
+                raise FlowChanged()
         self.value = current.value
         return get(current) or get(self)
