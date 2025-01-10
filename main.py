@@ -313,7 +313,7 @@ def app(editor):
                     @openplugin.listen(gui.e_button_down)
                     def _openplugin_down_(x, y, button):
                         if button == 1 and plugin.widget is None:
-                            editor.widget(label, 120, 70, lv2.UIPayload, plugin)
+                            editor.widget(label, 120, 70, None, lv2.UIPayload, plugin)
                         elif button == 3:
                             @components.open_context_menu(comp, x, y)
                             def _context_menu_():
@@ -3111,7 +3111,7 @@ class Editor:
         self.running = True
         sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO | sdl2.SDL_INIT_AUDIO)
 
-        root = self.widget("rollernote", 1200, 700, gui.GUI, app, self)
+        root = self.widget("rollernote", 1200, 700, None, gui.GUI, app, self)
         sdl2.SDL_StartTextInput()
 
         while self.running:

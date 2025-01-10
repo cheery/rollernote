@@ -1,10 +1,10 @@
 import sdl2.ext
 
 class Widget:
-    def __init__(self, title, width, height, mk_payload, *payload_args):
+    def __init__(self, title, width, height, flags, mk_payload, *payload_args):
         self.width = width
         self.height = height
-        self.window = sdl2.ext.Window(title, (width, height))
+        self.window = sdl2.ext.Window(title, (width, height), flags=flags)
         self.uid = sdl2.SDL_GetWindowID(self.window.window)
         self.exposed = True
         self.payload = mk_payload(self, *payload_args)
@@ -45,7 +45,11 @@ def process_widgets(widgets, root):
             widget.payload.key_up(event.key.keysym.sym, event.key.keysym.mod)
         elif event.type == sdl2.SDL_WINDOWEVENT:
             widget = widgets.get(event.window.windowID)
-            if event.window.event == sdl2.video.SDL_WINDOWEVENT_CLOSE:
+            if event.window.event == sdl2.video.SDL_WINDOWEVENT_RESIZED:
+                widget.width = event.window.data1
+                widget.height = event.window.data2
+                widget.payload.resized()
+            elif event.window.event == sdl2.video.SDL_WINDOWEVENT_CLOSE:
                 if widget.payload.closing():
                     if widget is root:
                         for widget in list(widgets.values()):
@@ -65,7 +69,7 @@ def process_widgets(widgets, root):
             widget.payload.draw()
         widget.window.refresh()
 
-    sdl2.SDL_Delay(60)
+    sdl2.SDL_Delay(10)
 
     return running
 

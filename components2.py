@@ -4,62 +4,197 @@ from aural.box import On, Off
 from immutables import Map
 import sdl2
 import math
+import numpy as np
+import moderngl
 
-def clock(t):
+def line_draw_setup(ui):
+   program = ui.mem(gui3.plain_line_program)
+   data = np.full(4, 0.0, dtype=np.float32)
+   buffer = ui.ctx.buffer(data)
+   vao = ui.ctx.vertex_array(program, buffer, 'point')
+   return program, vao, buffer, data
+
+def clock(t, width=50, height=50):
+
     @gui3.drawing(t)
     def clock_hand(ui, this, t):
         radius = min(this.width.value(), this.height.value())/2
         x = this.hcenter.value()
         y = this.vcenter.value()
-        ui.ctx.set_source_rgba(0,0,0,1)
-        ui.ctx.arc(x, y, radius, 0, 2*math.pi)
-        ui.ctx.stroke()
         angle = (t % 60) / 60 * math.pi * 2
-        ui.ctx.set_source_rgba(1,0,0,1)
-        ui.ctx.move_to(x, y)
-        ui.ctx.line_to(x + math.sin(angle) * radius,
-                       y - math.cos(angle) * radius)
-        ui.ctx.stroke()
+
+        program, vao, buffer, data = ui.mem(line_draw_setup)
+        program['size'] = ui.widget.width, ui.widget.height
+        program['color'] = 1,0,0,1
+        data[0] = x
+        data[1] = y
+        data[2] = x + math.sin(angle) * radius
+        data[3] = y - math.cos(angle) * radius
+        buffer.write(data)
+        vao.render(mode=ui.ctx.LINES)
 
     return gui3.Frame([
         gui3.trace((0,0,0,1)),
+        gui3.circle_fill((0.9, 0.9, 0.9,1.0)),
+        gui3.circle_stroke((0,0,0,1)),
         clock_hand,
-        gui3.Width(50),
-        gui3.Height(50),
-    ])
-
-def colorbox(color, width=5, height=5):
-    @gui3.drawing(color)
-    def colorfill(ui, this, color):
-        ui.ctx.set_source_rgba(*color)
-        ui.ctx.rectangle(*this.computed_box)
-        ui.ctx.stroke()
-        ui.ctx.rectangle(*this.computed_box)
-        ui.ctx.fill()
-    return gui3.Frame([
-        colorfill,
         gui3.Width(width),
         gui3.Height(height),
     ])
 
+def colorbox(color, width=5, height=5):
+    return gui3.Frame([
+        gui3.fill(color),
+        gui3.Width(width),
+        gui3.Height(height),
+    ])
+
+from PIL import Image, ImageDraw, ImageFont
+from visual import atlas
+
+class FontEngine:
+    def __init__(self, ui, size):
+        ui.mem(gui3.common_interface)
+        self.ui = ui
+        self.font = ImageFont.truetype('OpenSans-Regular.ttf', size=size)
+        self.image = Image.new("L", (1024, 1024), color=0)
+        self.draw = ImageDraw.Draw(self.image)
+        self.atlas = atlas.AtlasAllocator(1024, 1024)
+        self.mapping = dict()
+        self.upload = False
+        self.texture = ui.ctx.texture(self.image.size, 1)
+        self.sampler = ui.ctx.sampler(texture=self.texture)
+        self.sampler.filter = ui.ctx.NEAREST, ui.ctx.NEAREST
+
+        self.ascent, self.descent = self.font.getmetrics()
+        self.program = ui.ctx.program(
+            vertex_shader="""
+                #version 330
+                in vec2 xy;
+                in vec4 xywh;
+                out vec4 _xywh;
+                void main() {
+                    gl_Position = vec4(xy, 0.0, 1.0);
+                    _xywh = xywh;
+                }
+            """,
+            geometry_shader="""
+                #version 330 core
+                #include "common_ui"
+                layout (points) in;
+                layout (triangle_strip, max_vertices=4) out;
+                in vec4 _xywh[];
+                out vec2 uv;
+                uniform vec2 uv_size;
+                void main() {
+                    vec2 position = gl_in[0].gl_Position.xy;
+                    vec2 u0 = _xywh[0].xy / uv_size;
+                    vec2 wh = _xywh[0].zw;
+                    vec2 u1 = u0 + wh / uv_size;
+
+                    gl_Position = vec4(pixel_to_screen(position + vec2(0, wh.y)), 0, 1);
+                    uv = vec2(u0.x, u1.y);
+                    EmitVertex();
+                    gl_Position = vec4(pixel_to_screen(position + wh), 0, 1); 
+                    uv = u1;
+                    EmitVertex();
+                    gl_Position = vec4(pixel_to_screen(position), 0, 1);
+                    uv = u0;
+                    EmitVertex();
+                    gl_Position = vec4(pixel_to_screen(position + vec2(wh.x, 0)), 0, 1);
+                    uv = vec2(u1.x, u0.y);
+                    EmitVertex();
+                    EndPrimitive();
+                }
+            """,
+            fragment_shader="""
+                #version 330
+                uniform sampler2D sample;
+                uniform vec4 color;
+                in vec2 uv;
+                out vec4 rgba;
+                void main() {
+                    rgba = color * vec4(1,1,1, texture(sample, uv).x);
+                }
+            """)
+        self.vdata = np.full(6*4096, 0.0, dtype=np.float32)
+        self.vcount = 0
+        self.vbo = ui.ctx.buffer(self.vdata)
+        self.vao = ui.ctx.vertex_array(self.program, self.vbo, 'xy', 'xywh')
+
+    def inmap(self, ch):
+        if ch not in self.mapping:
+            (width, baseline), (offset_x, offset_y) = self.font.font.getsize(ch)
+            mask = self.font.getmask(ch)
+            bbox = mask.getbbox()
+            if bbox is None:
+                rect = None
+                offset_y = 0
+            else:
+                mask = Image.frombytes(mask.mode, mask.size, bytes(mask))
+                mask = mask.transpose(Image.FLIP_TOP_BOTTOM)
+                ow, oh = mask.size
+                ox, oy = self.atlas.alloc(ow, oh)
+                self.draw.bitmap((ox, oy), mask, fill=255)
+                self.upload = True
+                rect = ox, oy, ow, oh
+                offset_y = self.ascent - oh - offset_y
+            self.mapping[ch] = (offset_x, offset_y), rect, width
+        return self.mapping[ch]
+
+    def measure(self, string):
+        x = 0
+        for ch in string:
+            (offset_x, offset_y), rect, width = self.inmap(ch)
+            x += width
+        return x
+
+    def prepare(self, color):
+        self.program['size'] = self.ui.widget.width, self.ui.widget.height
+        self.program['uv_size'] = 1024, 1024
+        self.program['color'] = color
+        self.program['sample'] = 0
+        self.sampler.use(0)
+
+    def text(self, string, x, y):
+        for ch in string:
+            (offset_x, offset_y), rect, width = self.inmap(ch)
+            if rect is not None:
+                ix = self.vcount*6
+                self.vdata[ix+0] = x + offset_x
+                self.vdata[ix+1] = y + offset_y
+                self.vdata[ix+2:ix+6] = rect
+                self.vcount += 1
+                if self.vcount >= 4096:
+                    self.finish()
+            x += width
+
+    def finish(self):
+        if self.upload:
+            self.texture.write(self.image.tobytes())
+            self.upload = False
+        self.vbo.write(self.vdata)
+        self.vao.render(vertices=self.vcount, mode=self.ui.ctx.POINTS)
+        self.vcount = 0
+
 def label(text, height=20, color=(0,0,0,1)):
     @gui3.drawing(text, height, color)
     def textfill(ui, this, text, height, color):
+        font = ui.mem(FontEngine, int(height))
         x,y,w,h = this.computed_box
-        ui.ctx.set_source_rgba(*color)
-        ui.ctx.set_font_size(height)
-        xt = ui.ctx.text_extents(text)
-        ui.ctx.move_to(x + 5, y + h / 2 - xt.y_bearing / 2)
-        ui.ctx.show_text(text)
+        font.prepare(color)
+        font.text(text, x+5, y + font.descent)
+        font.finish()
     def f0(ui, this, solver, text, height):
         solver.addEditVariable(this.width, 'strong')
+        solver.addEditVariable(this.height, 'strong')
     def f1(ui, this, solver, text, height):
-        ui.ctx.set_font_size(height)
-        xt = ui.ctx.text_extents(text)
-        solver.suggestValue(this.width, xt.width + 10)
+        font = ui.mem(FontEngine, int(height))
+        width = font.measure(text)
+        solver.suggestValue(this.width, width + 10)
+        solver.suggestValue(this.height, font.ascent + font.descent)
     return gui3.Frame([
         textfill,
-        gui3.Height(height),
         gui3.CustomLayout(f0, f1, text, height),
     ])
 
@@ -73,21 +208,29 @@ def triangle_wave(time):
 def scrollinglabel(text, time, width, height=20):
     @gui3.drawing(text, time)
     def textfill(ui, this, text, time):
+        font = ui.mem(FontEngine, int(height))
         x,y,w,h = this.computed_box
-        ui.ctx.rectangle(x,y,w,h)
-        ui.ctx.clip()
-        ui.ctx.set_source_rgba(0,0,0,1)
-        ui.ctx.set_font_size(height)
-        xt = ui.ctx.text_extents(text)
+        text_width = font.measure(text)
         u = triangle_wave(time) * 0.5 + 0.5
-        scroll_x = - max(0, xt.width - width + 10) * u
-        ui.ctx.move_to(x + 5 + scroll_x, y + h / 2 - xt.y_bearing / 2)
-        ui.ctx.show_text(text)
+        scroll_x = - max(0, text_width - w + 10) * u
+        ui.ctx.scissor = x,y,w,h
+        font.prepare((0,0,0,1))
+        font.text(text, x+5+scroll_x, y + font.descent)
+        font.finish()
+        ui.ctx.scissor = None
+    def f0(ui, this, solver, text, height):
+        solver.addEditVariable(this.height, 'strong')
+    def f1(ui, this, solver, text, height):
+        font = ui.mem(FontEngine, int(height))
+        width = font.measure(text)
+        solver.suggestValue(this.height, font.ascent + font.descent)
     return gui3.Frame([
         textfill,
         gui3.Width(width),
-        gui3.Height(height),
+        gui3.CustomLayout(f0, f1, text, height),
     ])
+
+# ----------------------------------------------
 
 def initbuf(text):
     return len(text), len(text), text
@@ -102,11 +245,11 @@ def delete_selection(buffer):
     else:
         return pos, tail, text
 
-def position_to_cursor(ui, this, x, text):
-    ui.ctx.set_font_size(20)
+def position_to_cursor(ui, this, x, text, height):
+    font = ui.mem(FontEngine, int(height))
     x_offset = this.left.value() + 5
     for i, char in enumerate(text):
-        char_width = ui.ctx.text_extents(char)[4]
+        char_width = font.measure(char)
         if x_offset + char_width / 2 >= x:
             return i
         x_offset += char_width
@@ -132,13 +275,13 @@ def textbox(control, width=200, height=20):
     def mouse_click(ui, this, down, xy):
         if down:
             _, _, text = control.buffer
-            pos = position_to_cursor(ui, this, xy[0], text)
+            pos = position_to_cursor(ui, this, xy[0], text, height)
             control.buffer = pos, pos, text
     @gui3.logic(dragging, position)
     def mouse_drag(ui, this, pressed, xy):
         if pressed:
             _, tail, text = control.buffer
-            pos = position_to_cursor(ui, this, xy[0], text)
+            pos = position_to_cursor(ui, this, xy[0], text, height)
             control.buffer = pos, tail, text
     @gui3.logic(keyboard.stream)
     def keyboard_stream(ui, this, stream):
@@ -191,40 +334,47 @@ def textbox(control, width=200, height=20):
     @gui3.drawing(Hold(False, keyboard.focus))
     def textfill(ui, this, focus):
         pos, tail, text = control.buffer
+        font = ui.mem(FontEngine, int(height))
         def text_position(pos):
-            return 5 + ui.ctx.text_extents(text[:pos])[4]
+            return 5 + font.measure(text[:pos])
         x,y,w,h = this.computed_box
-        ui.ctx.set_source_rgba(1, 1, 1, 1)
-        ui.ctx.rectangle(x,y,w,h)
-        ui.ctx.fill()
-        ui.ctx.set_source_rgba(0, 0, 0, 1)
-        ui.ctx.rectangle(x,y,w,h)
-        ui.ctx.stroke()
-        ui.ctx.set_font_size(h)
-        xt = ui.ctx.text_extents(text)
+        ui.ctx.scissor = x,y,w,h
         if focus and pos != tail:
             start = min(pos, tail)
             end = max(pos, tail)
-            ui.ctx.set_source_rgba(0.6, 0.8, 1, 0.5)  # Light blue highlight
-            ui.ctx.rectangle(
+            vao, program = ui.mem(gui3.rectangle_filler)
+            program['size'] = ui.widget.width, ui.widget.height
+            program['rect'] = (
                 x + text_position(start), y,
                 text_position(end) - text_position(start), h)
-            ui.ctx.fill()
-        ui.ctx.set_source_rgba(0,0,0,1)
-        ui.ctx.move_to(x + 5, y + h / 2 - xt.y_bearing / 2)
-        ui.ctx.show_text(text)
+            program['color'] = 0.6, 0.8, 1.0, 0.5
+            vao.render(vertices=4, mode=ui.ctx.TRIANGLE_STRIP)
+        font.prepare((0,0,0,1))
+        font.text(text, x+5, y + font.descent)
+        font.finish()
         if focus and pos == tail:
             cursor_x = text_position(pos)
-            ui.ctx.move_to(x + cursor_x, y + h / 2 - xt.y_bearing / 2)
-            ui.ctx.line_to(x + cursor_x, y + h / 2 + xt.y_bearing / 2)
-            ui.ctx.stroke()
+            vao, program = ui.mem(gui3.rectangle_filler)
+            program['size'] = ui.widget.width, ui.widget.height
+            program['rect'] = (x + cursor_x, y + font.descent * 0.5, 1, h - font.descent)
+            program['color'] = 0,0,0,1
+            vao.render(vertices=4, mode=ui.ctx.TRIANGLE_STRIP)
+        ui.ctx.scissor = None
+    def f0(ui, this, solver, text, height):
+        solver.addEditVariable(this.height, 'strong')
+    def f1(ui, this, solver, text, height):
+        font = ui.mem(FontEngine, int(height))
+        width = font.measure(text)
+        solver.suggestValue(this.height, font.ascent + font.descent)
     return gui3.Frame([
+        gui3.fill((1,1,1,1)),
+        gui3.trace((0,0,0,1)),
         mouse_click,
         mouse_drag,
         keyboard_stream,
         textfill,
         gui3.Width(width),
-        gui3.Height(height),
+        gui3.CustomLayout(f0, f1, control.text, height),
     ], keyboard=keyboard, mouse=mouse)
 
 def button(ui, text, height=20, mouse=None, disabled=False):
@@ -244,39 +394,51 @@ def button(ui, text, height=20, mouse=None, disabled=False):
     @gui3.drawing(pressed, disabled, color)
     def buttonfill(ui, this, pressed, disabled, color):
         x,y,w,h = this.computed_box
-        ui.ctx.set_font_size(h)
         if pressed and not disabled:
-            ui.ctx.set_source_rgba(0, 0, 0, 1)
-            ui.ctx.rectangle(x,y,w,h)
-            ui.ctx.fill()
+            vao, program = ui.mem(gui3.rectangle_filler)
+            program['size'] = ui.widget.width, ui.widget.height
+            program['rect'] = x,y,w,h
+            program['color'] = 0,0,0,1
+            vao.render(vertices=4, mode=ui.ctx.TRIANGLE_STRIP)
         else:
-            ui.ctx.set_source_rgba(1, 1, 1, 1)
-            ui.ctx.rectangle(x,y,w,h)
-            ui.ctx.fill()
-        ui.ctx.set_source_rgba(*color)
-        ui.ctx.rectangle(x,y,w,h)
-        ui.ctx.stroke()
+            vao, program = ui.mem(gui3.rectangle_filler)
+            program['size'] = ui.widget.width, ui.widget.height
+            program['rect'] = x,y,w,h
+            program['color'] = 1,1,1,1
+            vao.render(vertices=4, mode=ui.ctx.TRIANGLE_STRIP)
+        vao, program = ui.mem(gui3.rectangle_stroker)
+        program['size'] = ui.widget.width, ui.widget.height
+        program['rect'] = x,y,w,h
+        program['color'] = color
+        vao.render(vertices=8, mode=ui.ctx.LINES)
     return gui3.Frame([
         buttonfill,
     ] + label(text, height, color).contents, mouse=mouse)
+
+def oscilloscope_drawer(ui, sample_count):
+    program = ui.mem(gui3.plain_line_program)
+    data = np.full(sample_count*2, 0.0, dtype=np.float32)
+    buffer = ui.ctx.buffer(data)
+    vao = ui.ctx.vertex_array(program, buffer, 'point')
+    return program, vao, buffer, data
 
 def oscilloscope(out0, out1, width=500, height=150):
     @gui3.drawing(out0, out1)
     def oscillos(ui, this, left, right):
         x,y,w,h = this.computed_box
         r  = h / 2
-        ui.ctx.set_source_rgba(1,0,0,0.5)
-        ui.ctx.move_to(x, y + r - r*left[0])
-        for i in range(1, len(left)):
-            t = i / len(left)
-            ui.ctx.line_to(x + t*w, y + r - r*left[i])
-        ui.ctx.stroke()
-        ui.ctx.set_source_rgba(0,1,0,0.5)
-        ui.ctx.move_to(x, y + r - r*right[0])
-        for i in range(1, len(right)):
-            t = i / len(right)
-            ui.ctx.line_to(x + t*w, y + r - r*right[i])
-        ui.ctx.stroke()
+        program, vao, buffer, data = ui.mem(oscilloscope_drawer, len(left))
+        program['size'] = ui.widget.width, ui.widget.height
+        program['color'] = 1,0,0,0.5
+        xs = np.linspace(0, 1, len(left)) * w + x
+        ys = left * r + y + r
+        buffer.write(np.dstack([xs, ys]).flatten().astype(np.float32))
+        vao.render(mode=ui.ctx.LINE_STRIP)
+        program['color'] = 0,1,0,0.5
+        xs = np.linspace(0, 1, len(right)) * w + x
+        ys = right * r + y + r
+        buffer.write(np.dstack([xs, ys]).flatten().astype(np.float32))
+        vao.render(mode=ui.ctx.LINE_STRIP)
     return gui3.Frame([
         oscillos,
         gui3.Width(width),
@@ -314,25 +476,26 @@ def vu_meter(ui, out0, out1, width=20, height=90):
     @gui3.drawing(volume0, volume1, clipping0, clipping1)
     def _draw_(ui, this, vol0, vol1, clip0, clip1):
         x,y,w,h = this.computed_box
-        ui.ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0)
-        ui.ctx.rectangle(x,y,w,h)
-        ui.ctx.fill()
-        ui.ctx.rectangle(x,y,w,h)
-        ui.ctx.stroke()
-        ui.ctx.set_source_rgba(0.0, 1.0, 0.0, 1.0)
+        vao, program = ui.mem(gui3.rectangle_filler)
+        program['size'] = ui.widget.width, ui.widget.height
+        program['color'] = 0,1,0,1
         h0 = to_scaler(vol0) * (h - 10)
-        ui.ctx.rectangle(x+1, y+h - h0, w // 2 - 2, h0)
-        ui.ctx.fill()
+        program['rect'] = x+1, y, w // 2 - 2, h0
+        vao.render(vertices=4, mode=ui.ctx.TRIANGLE_STRIP)
         h1 = to_scaler(vol1) * (h - 10)
-        ui.ctx.rectangle(x+w//2+1, y+h - h1, 8, h1)
-        ui.ctx.fill()
-        ui.ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0)
+        program['rect'] = x+w//2+1, y, 8, h1
+        vao.render(vertices=4, mode=ui.ctx.TRIANGLE_STRIP)
+        program['color'] = 1,0,0,1
         if clip0:
-            ui.ctx.rectangle(x, y, w//2, 10)
+            program['rect'] = x, y + h - 10, w//2, 10
+            vao.render(vertices=4, mode=ui.ctx.TRIANGLE_STRIP)
         if clip1:
-            ui.ctx.rectangle(x+w//2, y, w//2, 10)
-        ui.ctx.fill()
-    return gui3.Frame([_draw_, gui3.Width(width), gui3.Height(height)], mouse=mouse)
+            program['rect'] = x+w//2, y + h - 10, w//2, 10
+            vao.render(vertices=4, mode=ui.ctx.TRIANGLE_STRIP)
+    return gui3.Frame([
+        gui3.trace((0,0,0,1)),
+        gui3.fill((0,0,0,1)),
+        _draw_, gui3.Width(width), gui3.Height(height)], mouse=mouse)
 
 def virtual_keyboard(editor, ui):
     virtual_midi = [
@@ -399,21 +562,31 @@ def clavier_visualizer(clavier, now):
     def track_display(ui, this, holdr, t15, now):
         x,y,w,h = this.computed_box
         begin = now - 15
-        ui.ctx.set_source_rgba(1,0,0,1.0)
         for s,e,n in t15:
             a = max(s - begin, 0)
             b = max(e - begin, 0)
-            ui.ctx.move_to(x+a/15*w, y + 127 - n)
-            ui.ctx.line_to(x+b/15*w, y + 127 - n)
-        ui.ctx.stroke()
+            program, vao, buffer, data = ui.mem(line_draw_setup)
+            program['size'] = ui.widget.width, ui.widget.height
+            program['color'] = 1,0,0,1
+            data[0] = x + a/15*w
+            data[1] = y + n
+            data[2] = x + b/15*w
+            data[3] = y + n
+            buffer.write(data)
+            vao.render(mode=ui.ctx.LINES)
 
         hold,_ = holdr
         for note, s in hold.items():
             a = max(s - begin, 0)
-            ui.ctx.set_source_rgba(0,0,1,0.5)
-            ui.ctx.move_to(x+a/15*w,   y + 127 - note)
-            ui.ctx.line_to(x+w, y + 127 - note)
-            ui.ctx.stroke()
+            program, vao, buffer, data = ui.mem(line_draw_setup)
+            program['size'] = ui.widget.width, ui.widget.height
+            program['color'] = 0,0,1,0.5
+            data[0] = x + a/15*w
+            data[1] = y + note
+            data[2] = x + w
+            data[3] = y + note
+            buffer.write(data)
+            vao.render(mode=ui.ctx.LINES)
 
     return gui3.Frame([
         gui3.trace((0,0,0,1)),

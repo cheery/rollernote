@@ -1,9 +1,8 @@
 from kiwisolver import Variable, Solver
 from reaction import *
 from collections import namedtuple
-from . import cairo_renderer
-import cairo
 import sdl2
+import moderngl
 
 class ButtonControl:
     def __init__(self, ui):
@@ -40,21 +39,21 @@ Down = namedtuple('Down', ['sym', 'repeat', 'modifiers'])
 Up   = namedtuple('Up', ['sym', 'modifiers'])
 Text = namedtuple('Text', ['text'])
 
-def cover(left, top, width, height, x, y):
+def cover(left, bottom, width, height, x, y):
     return True
 
-def circle(left, top, width, height, x, y):
+def circle(left, bottom, width, height, x, y):
     radius = min(width, height)/2
     dx = left + width/2 - x
-    dy = top + height/2 - y
+    dy = bottom + height/2 - y
     return dx*dx + dy*dy <= radius*radius
 
-def box(left, top, width, height, x, y):
+def box(left, bottom, width, height, x, y):
     ix = left <= x < left + width
-    iy = top <= y < top + height
+    iy = bottom <= y < bottom + height
     return ix and iy
 
-def hidden(left, top, width, height, x, y):
+def hidden(left, bottom, width, height, x, y):
     return False
 
 class Detail:
@@ -69,7 +68,7 @@ class Frame(Detail):
         self.parent = None
         self.contents = contents
         self.left = Variable()
-        self.top  = Variable()
+        self.bottom  = Variable()
         self.width  = Variable()
         self.height = Variable()
         self.shape = shape
@@ -83,30 +82,30 @@ class Frame(Detail):
 
     @property
     def vcenter(self):
-        return self.top + self.height/2
+        return self.bottom + self.height/2
 
     @property
     def right(self):
         return self.left + self.width
 
     @property
-    def bottom(self):
-        return self.top + self.height
+    def top(self):
+        return self.bottom + self.height
 
     @property
     def computed_box(self):
         left = self.left.value()
-        top  = self.top.value()
+        bottom  = self.bottom.value()
         width = self.width.value()
         height = self.height.value()
-        return left, top, width, height
+        return left, bottom, width, height
 
     def hittest(self, x, y):
         left = self.left.value()
-        top  = self.top.value()
+        bottom  = self.bottom.value()
         width = self.width.value()
         height = self.height.value()
-        return self.shape(left, top, width, height, x, y)
+        return self.shape(left, bottom, width, height, x, y)
 
     def constrain(self, ui, solver):
         for item in self.contents:
@@ -119,14 +118,10 @@ class Frame(Detail):
 
     def draw(self, ui):
         for content in self.contents:
-            ui.ctx.save()
-            try:
-                if isinstance(content, Draw):
-                    content.func(ui, self, *map(sample, content.sources))
-                elif isinstance(content, Frame):
-                    content.draw(ui)
-            finally:
-                ui.ctx.restore()
+            if isinstance(content, Draw):
+                content.func(ui, self, *map(sample, content.sources))
+            elif isinstance(content, Frame):
+                content.draw(ui)
 
     def attach(self, ui, parent):
         self.parent = parent
@@ -202,7 +197,7 @@ class VAlign(Layout):
 
     def constrain(self, ui, this, solver):
         height = this.parent.height
-        solver.addConstraint((this.top == (height - this.height) * self.ratio) | 'strong')
+        solver.addConstraint((this.bottom == (height - this.height) * self.ratio) | 'strong')
 
 class Width(Layout):
     def __init__(self, value):
@@ -243,8 +238,8 @@ class Row(Layout):
         bar = this.left
         for frame in this.subframes:
             solver.addConstraint(bar == frame.left)
-            solver.addConstraint(this.top <= frame.top)
-            solver.addConstraint(frame.bottom <= this.bottom)
+            solver.addConstraint(this.bottom <= frame.bottom)
+            solver.addConstraint(frame.top <= this.top)
             bar = frame.right
         solver.addConstraint((bar == this.right) | 'medium')
 
@@ -256,12 +251,188 @@ class Draw(Detail):
     def attach(self, ui, frame):
         frame.observers.add(ui.engine.observe(*self.sources)(ui._refresh_))
 
+def common_interface(ui):
+    ui.ctx.includes['common_ui'] = """
+        #define PI 3.1415926535897932384626433832795
+        uniform vec2 size;
+        vec2 pixel_to_screen(vec2 pixel) {
+            return pixel / size * 2.0 - 1.0;
+        }
+    """
+
+def plain_line_program(ui):
+    ui.mem(common_interface)
+    program = ui.ctx.program(
+        vertex_shader="""
+            #version 330
+            #include "common_ui"
+            in vec2 point;
+            void main() {
+                gl_Position = vec4(pixel_to_screen(point), 0.0, 1.0);
+            }
+        """,
+        fragment_shader="""
+            #version 330
+            uniform vec4 color;
+            out vec4 rgba;
+            void main() {
+                rgba = color;
+            }
+        """
+    )
+    return program
+
+def circle_filler(ui):
+    ui.mem(common_interface)
+    program = ui.ctx.program(
+        vertex_shader="""
+            #version 330
+            #include "common_ui"
+            uniform vec4 rect;
+            void main() {
+                if (gl_VertexID == 0) {
+                    gl_Position = vec4(pixel_to_screen(rect.zw*0.5 + rect.xy), 0.0, 1.0);
+                } else {
+                    float s = (gl_VertexID - 1) / 100.0;
+                    vec2 p = vec2(cos(s*PI), sin(s*PI)) / 2 + 0.5;
+                    vec2 r = p * rect.zw + rect.xy;
+                    gl_Position = vec4(pixel_to_screen(r), 0.0, 1.0);
+                }
+            }
+        """,
+        fragment_shader="""
+            #version 330
+            uniform vec4 color;
+            out vec4 rgba;
+            void main() {
+                rgba = color;
+            }
+        """
+    )
+    vao = ui.ctx.vertex_array(program, [])
+    return vao, program
+
+def _circle_filler_(ui, this, color):
+    vao, program = ui.mem(circle_filler)
+    program['size'] = ui.widget.width, ui.widget.height
+    program['rect'] = this.computed_box
+    program['color'] = color
+    vao.render(vertices=202, mode=ui.ctx.TRIANGLE_FAN)
+
+def circle_fill(color):
+    return Draw(_circle_filler_, [color])
+
+def circle_stroker(ui):
+    ui.mem(common_interface)
+    program = ui.ctx.program(
+        vertex_shader="""
+            #version 330
+            #include "common_ui"
+            uniform vec4 rect;
+            void main() {
+                int k = (gl_VertexID+1)/2;
+                float s = k / 100.0;
+                vec2 p = vec2(cos(s*PI), sin(s*PI)) / 2 + 0.5;
+                vec2 r = p * rect.zw + rect.xy;
+                gl_Position = vec4(pixel_to_screen(r), 0.0, 1.0);
+            }
+        """,
+        fragment_shader="""
+            #version 330
+            uniform vec4 color;
+            out vec4 rgba;
+            void main() {
+                rgba = color;
+            }
+        """
+    )
+    vao = ui.ctx.vertex_array(program, [])
+    return vao, program
+
+def _circle_stroke_(ui, this, color):
+    vao, program = ui.mem(circle_stroker)
+    program['size'] = ui.widget.width, ui.widget.height
+    program['rect'] = this.computed_box
+    program['color'] = color
+    vao.render(vertices=200*2, mode=ui.ctx.LINES)
+
+def circle_stroke(color):
+    return Draw(_circle_stroke_, [color])
+
+def rectangle_filler(ui):
+    ui.mem(common_interface)
+    program = ui.ctx.program(
+        vertex_shader="""
+            #version 330
+            #include "common_ui"
+            uniform vec4 rect;
+            vec2 square[4] = vec2[](
+                vec2(1,0), vec2(0,0), vec2(1,1), vec2(0,1)
+            );
+            void main() {
+                vec2 r = square[gl_VertexID] * rect.zw + rect.xy;
+                gl_Position = vec4(pixel_to_screen(r), 0.0, 1.0);
+            }
+        """,
+        fragment_shader="""
+            #version 330
+            uniform vec4 color;
+            out vec4 rgba;
+            void main() {
+                rgba = color;
+            }
+        """
+    )
+    vao = ui.ctx.vertex_array(program, [])
+    return vao, program
+
+def rectangle_stroker(ui):
+    ui.mem(common_interface)
+    program = ui.ctx.program(
+        vertex_shader="""
+            #version 330
+            #include "common_ui"
+            uniform vec4 rect;
+            vec2 square[8] = vec2[](
+                vec2(0,0), vec2(1,0), vec2(1,0), vec2(1,1),
+                vec2(1,1), vec2(0,1), vec2(0,1), vec2(0,0)
+            );
+            void main() {
+                vec2 r = square[gl_VertexID] * rect.zw + rect.xy;
+                gl_Position = vec4(pixel_to_screen(r), 0.0, 1.0);
+            }
+        """,
+        fragment_shader="""
+            #version 330
+            uniform vec4 color;
+            out vec4 rgba;
+            void main() {
+                rgba = color;
+            }
+        """
+    )
+    vao = ui.ctx.vertex_array(program, [])
+    return vao, program
+
 def _trace_draw_(ui, this, color):
-    ui.ctx.set_source_rgba(*color)
-    ui.ctx.rectangle(*this.computed_box)
-    ui.ctx.stroke()
+    vao, program = ui.mem(rectangle_stroker)
+    program['size'] = ui.widget.width, ui.widget.height
+    program['rect'] = this.computed_box
+    program['color'] = color
+    vao.render(vertices=8, mode=ui.ctx.LINES)
+    
 def trace(color):
     return Draw(_trace_draw_, [color])
+
+def _fill_draw_(ui, this, color):
+    vao, program = ui.mem(rectangle_filler)
+    program['size'] = ui.widget.width, ui.widget.height
+    program['rect'] = this.computed_box
+    program['color'] = color
+    vao.render(vertices=4, mode=ui.ctx.TRIANGLE_STRIP)
+
+def fill(color):
+    return Draw(_fill_draw_, [color])
  
 def drawing(*sources):
     def _decorator_(func):
@@ -286,8 +457,9 @@ def logic(*sources):
 class GUI:
     def __init__(self, widget, scene, *args, **kwargs):
         self.widget = widget
-        self.renderer = cairo_renderer.Renderer(widget)
-        self.ctx = cairo.Context(self.renderer.surface)
+        self.renderer = sdl2.SDL_GL_CreateContext(widget.window.window)
+        self.ctx = moderngl.create_context()
+        self.memo = dict()
         self.engine = Engine()
         self.mouse_position = Event()
         self.pulse = Event()
@@ -305,36 +477,43 @@ class GUI:
         self.button_presses = dict()
         self.under_motion = None
 
+    def mem(self, *args):
+        if args not in self.memo:
+            self.memo[args] = args[0](self, *args[1:])
+        return self.memo[args]
+
     def reconstrain(self):
         self.solver.reset()
         self.root.constrain(self, self.solver)
         self.solver.addEditVariable(self.root.left, 'strong')
-        self.solver.addEditVariable(self.root.top, 'strong')
+        self.solver.addEditVariable(self.root.bottom, 'strong')
         self.solver.addEditVariable(self.root.width, 'weak')
         self.solver.addEditVariable(self.root.height, 'weak')
         self.solver.suggestValue(self.root.left, 0)
-        self.solver.suggestValue(self.root.top, 0)
+        self.solver.suggestValue(self.root.bottom, 0)
         self._refresh_()
 
     def _refresh_(self, *_):
+        self.resized()
+
+    def resized(self):
         self.widget.exposed = True
         self.solver.suggestValue(self.root.width, self.widget.width)
         self.solver.suggestValue(self.root.height, self.widget.height)
         self.solver.updateVariables()
 
     def draw(self):
-        ctx = self.ctx
-        ctx.set_source_rgba(1.0, 1.0, 1.0, 1.0)
-        ctx.rectangle(0, 0, self.widget.width, self.widget.height)
-        ctx.fill()
+        self.ctx.viewport = 0,0,self.widget.width,self.widget.height
+        self.ctx.clear(1,1,1,1)
         self.root.draw(self)
-        self.renderer.flip()
+        sdl2.SDL_GL_SwapWindow(self.widget.window.window)
 
     def update(self):
         self.engine.send(self.pulse, sdl2.SDL_GetTicks64() / 1000.0)
         self.engine.roll()
 
     def mouse_motion(self, x, y):
+        y = self.widget.height - y
         self.mouse.motion.send((x,y))
         this = self.root.hit(x, y)
         handled_by = None
@@ -359,6 +538,7 @@ class GUI:
             handled_by.mouse.motion.send((x,y))
 
     def mouse_button_down(self, x, y, button):
+        y = self.widget.height - y
         self.mouse.motion.send((x,y))
         ctl = self.mouse.by_button_id(button)
         if ctl:
@@ -388,6 +568,7 @@ class GUI:
             focus_by.keyboard.focus.send(True)
  
     def mouse_button_up(self, x, y, button):
+        y = self.widget.height - y
         self.mouse.motion.send((x,y))
         ctl = self.mouse.by_button_id(button)
         if ctl:
@@ -425,4 +606,4 @@ class GUI:
         return True
 
     def close(self):
-        pass
+        sdl2.SDL_GL_DeleteContext(self.renderer)

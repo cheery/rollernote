@@ -3148,10 +3148,22 @@ class DatasetView(gui3.Detail):
                     ui.reconstrain()
 
 def demo(ui, editor):
-    ui.ctx.select_font_face('FreeSerif')
     editor.gui_channele = [Source(ui.engine), Source(ui.engine)]
     editor.gui_channels = [Hold(editor.bay.engine.zeros(), e) for e in editor.gui_channele]
     editor.gui_clavier = Source(ui.engine, as_stream)
+
+    ui.ctx.enable(ui.ctx.BLEND)
+    ui.ctx.blend_equation = ui.ctx.FUNC_ADD
+    ui.ctx.blend_func = ui.ctx.SRC_ALPHA, ui.ctx.ONE_MINUS_SRC_ALPHA
+
+    @compute(ui.now)
+    def iskulause(t):
+        return ["huvittava", "toistava", "teksti"][int(t % 3)]
+
+    favorite_color = compute(ui.now)(
+       lambda n: (math.sin(n)*0.5+0.5,
+                  math.sin(n+1)*0.5+0.5,
+                  math.sin(n+2)*0.5+0.5, 1))
 
     mouse = gui3.MouseControl(ui)
     @mapE(mouse.inside)
@@ -3161,15 +3173,6 @@ def demo(ui, editor):
         else:
             return (0,0,0,1)
     color = Hold((0,0,0,1), color_inside)
-
-    favorite_color = compute(ui.now)(
-       lambda n: (math.sin(n)*0.5+0.5,
-                  math.sin(n+1)*0.5+0.5,
-                  math.sin(n+2)*0.5+0.5, 1))
-
-    @compute(ui.now)
-    def iskulause(t):
-        return ["huvittava", "toistava", "teksti"][int(t % 3)]
 
     textctl = TextControl(ui, "Hello world!")
 
@@ -3220,7 +3223,7 @@ def demo(ui, editor):
                 y -= y0
                 control.modify(key, 'onset', x/800)
                 control.modify(key, 'offset', x/800+0.1)
-                note = 127 - (y // 3)
+                note = y // 3
                 control.modify(key, 'note', max(0, min(127, note)))
             if right:
                 dc.erase(key)
@@ -3235,13 +3238,13 @@ def demo(ui, editor):
             solver.addEditVariable(y1, 'strong')
             solver.addConstraint(this.left == x0 + this.parent.left)
             solver.addConstraint(this.right == x1 + this.parent.left)
-            solver.addConstraint(this.top == y0 + this.parent.top)
-            solver.addConstraint(this.bottom == y1 + this.parent.top)
+            solver.addConstraint(this.top == y0 + this.parent.bottom)
+            solver.addConstraint(this.bottom == y1 + this.parent.bottom)
         def f1(ui, this, solver, fields):
             solver.suggestValue(x0, 800 * float(fields['onset']))
             solver.suggestValue(x1, 800 * float(fields['offset']))
-            solver.suggestValue(y0, 3*(127 - int(fields['note'])))
-            solver.suggestValue(y1, 3*(128 - int(fields['note'])))
+            solver.suggestValue(y0, 3*(1 + int(fields['note'])))
+            solver.suggestValue(y1, 3*(0 + int(fields['note'])))
         return gui3.Container([
             on_drag,
             gui3.CustomLayout(f0, f1, fields),
@@ -3256,25 +3259,38 @@ def demo(ui, editor):
         if left:
             x, y = xy
             x -= this.left.value()
-            y -= this.top.value()
+            y -= this.bottom.value()
             dc.insert({'onset': x/800,
                        'offset': x/800+0.1,
-                       'note': 127 - (y//3),
+                       'note': (y//3),
                        'velocity': 1.0})
+
+    def sweep_draw_setup(ui):
+        program = ui.mem(gui3.plain_line_program)
+        data = np.full(4, 0.0, dtype=np.float32)
+        buffer = ui.ctx.buffer(data)
+        vao = ui.ctx.vertex_array(program, buffer, 'point')
+        return program, vao, buffer, data
 
     @gui3.drawing(ui.now)
     def visualz(ui, this, now):
         x,y,w,h = this.computed_box
         t = (now % 5) / 5 * w
-        ui.ctx.set_source_rgba(1,0,0,1)
-        ui.ctx.move_to(x + t, y)
-        ui.ctx.line_to(x + t, y+h)
-        ui.ctx.stroke()
+        program, vao, buffer, data = ui.mem(sweep_draw_setup)
+        program['size'] = ui.widget.width, ui.widget.height
+        program['color'] = 1,0,0,1
+        data[0] = x + t
+        data[1] = y
+        data[2] = x + t
+        data[3] = y + h
+        buffer.write(data)
+        vao.render(mode=ui.ctx.LINES)
         
     dcv2 = gui3.Container([
         dc_button,
         visualz,
         gui3.trace((0,0,0,1)),
+        gui3.HAlign(0.0),
         gui3.Width(800),
         gui3.Height(128*3),
         DatasetView(dc, _builder2_),
@@ -3318,12 +3334,6 @@ def demo(ui, editor):
         gui3.Column(),
         dcv1,
         dcv2,
-        gui3.Container([
-            gui3.Row(),
-            colorbox(favorite_color, 15, 15),
-            label(iskulause),
-            scrollinglabel("hello world!", ui.now, 50),
-        ]),
         textbox(textctl),
         button(ui, textctl.text),
         gui3.Container([
@@ -3334,7 +3344,6 @@ def demo(ui, editor):
             vu_meter(ui, *editor.gui_channels),
             clavier_visualizer(editor.gui_clavier, ui.now),
         ]),
-        clock(ui.now),
     ], keyboard = gui3.KeyboardControl(ui))
 
 class Editor:
@@ -3440,9 +3449,10 @@ class Editor:
 
     def ui(self):
         self.running = True
-        sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO | sdl2.SDL_INIT_AUDIO)
+        sdl2.ext.init(video=True, audio=True)
 
-        root = self.widget("rollernote", 1200, 700, gui3.GUI, demo, self)
+        flags = sdl2.SDL_WINDOW_RESIZABLE | sdl2.SDL_WINDOW_OPENGL
+        root = self.widget("rollernote", 1200, 700, flags, gui3.GUI, demo, self)
 
         sdl2.SDL_StartTextInput()
 
