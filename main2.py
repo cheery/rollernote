@@ -10,7 +10,7 @@ import cairo
 from aural import lv2
 import aural as audio
 import commands
-from visual import gui, gui2, gui3
+from visual import gui, gui2, gui3, gui4
 import math
 from music import resolution
 import bisect
@@ -3044,51 +3044,41 @@ from aural.box import On, Off
 from aural.miditunes import *
 from components2 import *
 
-class Insert:
-    def __init__(self, index, value):
-        self.index = index
-        self.value = value
-
-    def do(self, xs):
-        xs.insert(self.index, self.value)
-        return xs
-
-class Remove:
-    def __init__(self, value):
-        self.value = value
-
-    def do(self, xs):
-        xs.remove(self.value)
-        return xs
+#ListInserted = namedtuple('ListInserted', ['index', 'value'])
+#ListRemoved  = namedtuple('ListRemoved', ['value'])
 
 class ListControl:
-    def __init__(self, initial, mutator):
-        self.mutator = mutator
-        self.list = Memory(initial, lambda xs,c: c.do(xs), mutator)
+    def __init__(self, ui, contents):
+        self.modified = Source(ui.engine, as_stream)
+        self.contents = contents
 
-class ListView(gui2.Frame):
-    def __init__(self, static, control, *args, **kwargs):
-        self.static  = static
+class ListView(gui3.Detail):
+    def __init__(self, control, func):
         self.control = control
-        super().__init__([], *args, **kwargs)
+        self.func    = func
+        self.table   = dict()
 
-    def attach(self, ui, parent):
-        @gui2.logic(self.control.mutator, self.control.list)
-        def _logic_(ui, this, cmds, contents):
-            for cmd in cmds:
-                if isinstance(cmd, Insert):
-                    self.contents = self.static + contents[:] + [_logic_]
-                    cmd.value.attach(ui, this)
-                elif isinstance(cmd, Remove):
-                    self.contents = self.static + contents[:] + [_logic_]
-                    cmd.value.detach()
-                else:
-                    raise Exception("unknown command!!!")
-        self.contents = self.static + self.control.list.value[:] + [_logic_]
-        super().attach(ui, parent)
-
-    def detach(self, ui):
-        super().detach(ui)
+    def attach(self, ui, this):
+        for value in self.control.contents:
+            frame = self.func(self.control, value)
+            this.contents.append(frame)
+            self.table[value] = frame
+        #@ui.engine.observe(self.control.modified)
+        #def _logic_(cmds):
+        #    if not cmds:
+        #        return
+        #    for cmd in cmds.value:
+        #        if isinstance(cmd, Inserted):
+        #            frame = self.func(self.control, cmd.key, dict(cmd.fields))
+        #            this.contents.append(frame)
+        #            self.table[cmd.key] = frame
+        #            frame.attach(ui, this)
+        #            ui.reconstrain()
+        #        if isinstance(cmd, Erased):
+        #            frame = self.table.pop(cmd.key)
+        #            this.contents.remove(frame)
+        #            frame.detach()
+        #            ui.reconstrain()
 
 import pandas as pd
 
@@ -3151,10 +3141,6 @@ def demo(ui, editor):
     editor.gui_channele = [Source(ui.engine), Source(ui.engine)]
     editor.gui_channels = [Hold(editor.bay.engine.zeros(), e) for e in editor.gui_channele]
     editor.gui_clavier = Source(ui.engine, as_stream)
-
-    ui.ctx.enable(ui.ctx.BLEND)
-    ui.ctx.blend_equation = ui.ctx.FUNC_ADD
-    ui.ctx.blend_func = ui.ctx.SRC_ALPHA, ui.ctx.ONE_MINUS_SRC_ALPHA
 
     @compute(ui.now)
     def iskulause(t):
@@ -3290,7 +3276,6 @@ def demo(ui, editor):
         dc_button,
         visualz,
         gui3.trace((0,0,0,1)),
-        gui3.HAlign(0.0),
         gui3.Width(800),
         gui3.Height(128*3),
         DatasetView(dc, _builder2_),
@@ -3330,21 +3315,81 @@ def demo(ui, editor):
                 editor.audio_output.unlock()
         w = t
 
+    import os
+
+    files = ListControl(ui, list(os.scandir("data/")))
+    def filefunc(files, entry):
+        if entry.is_dir():
+            color = (0.2, 0.2, 0.5, 1.0)
+            name = entry.name + "/"
+        else:
+            color = (0,0,0,1)
+            name = entry.name
+        return label(name, color=color, height=16)
+
     return gui3.Container([
-        gui3.Column(),
-        dcv1,
-        dcv2,
-        textbox(textctl),
-        button(ui, textctl.text),
+        gui3.Row(),
         gui3.Container([
-            gui3.HAlign(0.0),
-            gui3.Row(),
-            virtual_keyboard(editor, ui),
-            oscilloscope(*editor.gui_channels),
-            vu_meter(ui, *editor.gui_channels),
-            clavier_visualizer(editor.gui_clavier, ui.now),
+            gui3.Column(),
+            ListView(files, filefunc)
+            #gui3.view(cell)(func)
+            #gui3.varying(cell)(func)
         ]),
+        # dcv1,
+        dcv2,
+        # textbox(textctl),
+        # button(ui, textctl.text),
+        # gui3.Container([
+        #     gui3.HAlign(0.0),
+        #     gui3.Row(),
+        #     virtual_keyboard(editor, ui),
+        #     oscilloscope(*editor.gui_channels),
+        #     vu_meter(ui, *editor.gui_channels),
+        #     clavier_visualizer(editor.gui_clavier, ui.now),
+        # ]),
     ], keyboard = gui3.KeyboardControl(ui))
+
+@gui4.composable
+def demo(editor):
+    @gui4.drawing
+    def _enable_blending_(ui, _, this):
+        ui.ctx.enable(ui.ctx.BLEND)
+        ui.ctx.blend_equation = ui.ctx.FUNC_ADD
+        ui.ctx.blend_func = ui.ctx.SRC_ALPHA, ui.ctx.ONE_MINUS_SRC_ALPHA
+    gui4.column()
+    demo_row1(editor)
+    demo_row2(editor)
+
+@gui4.composable
+def demo_row1(editor):
+    gui4.trace((1,0,0,1))
+    gui4.row(10)
+    colorbox[0]((0,1,0,1))
+    colorbox[1]((0,1,1,1))
+    colorbox[2]((1,0,1,1))
+    clock(editor.time)
+    label("Hello!")
+    scrollinglabel("Hello world", editor.time, 50)
+    testing = button[1]("Testing")
+    testing2 = button[2]("Testing2")
+    text = gui4.state[1](value="hello")
+    textbox[1](text)
+    virtual_keyboard(editor)
+    oscilloscope(editor.out0, editor.out1)
+    vu_meter(editor.out0, editor.out1)
+
+    @gui4.logic(testing, testing2)
+    def _custom_logic_(ui, ident, layout, testing, testing2):
+        if testing:
+            print("hello")
+        if testing2:
+            print("world")
+
+@gui4.composable
+def demo_row2(editor):
+    gui4.trace((1,0,0,1))
+    gui4.row(10)
+    clavier_visualizer(editor)
 
 class Editor:
     def __init__(self):
@@ -3430,6 +3475,8 @@ class Editor:
             left[:] = ldata
             right[:] = rdata
         self.audio_output = aural.device.SDLDevice(bay, left, right)
+        self.out0 = engine.zeros()
+        self.out1 = engine.zeros()
 
         self.running = False
         self.time = 0.0
@@ -3439,7 +3486,7 @@ class Editor:
         self.midi_input = mido.backend.open_input(mido_in)
 
     def fire_midi_keyboard(self, ui, m):
-        self.gui_clavier.send(m)
+        ui.clavier.append(m)
         self.clavier.send(m)
 
     def widget(self, *args):
@@ -3452,7 +3499,7 @@ class Editor:
         sdl2.ext.init(video=True, audio=True)
 
         flags = sdl2.SDL_WINDOW_RESIZABLE | sdl2.SDL_WINDOW_OPENGL
-        root = self.widget("rollernote", 1200, 700, flags, gui3.GUI, demo, self)
+        root = self.widget("rollernote", 1200, 700, flags, gui4.GUI, demo, self)
 
         sdl2.SDL_StartTextInput()
 
@@ -3468,8 +3515,8 @@ class Editor:
                 if msg.type == 'note_off':
                     self.fire_midi_keyboard(root.payload, Off(msg.note))
 
-            root.payload.engine.send(self.gui_channele[0], self.audio_output.channels[0][:])
-            root.payload.engine.send(self.gui_channele[1], self.audio_output.channels[1][:])
+            self.out0 = self.audio_output.channels[0][:]
+            self.out1 = self.audio_output.channels[1][:]
             self.audio_output.unlock()
 
         self.audio_output.close()
