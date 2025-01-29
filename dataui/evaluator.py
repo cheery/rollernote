@@ -211,7 +211,10 @@ def query(name, *params):
         def _rerun_(pivot):
             return cb[1](pivot) or name == pivot
         def _impl_(psubs, pivot, work, store, new, era, cn):
-            seq = work if name == pivot else store.data[name]
+            try:
+                seq = work if name == pivot else store.data[name]
+            except KeyError:
+                seq = set()
             head = evaluate(Term(name, params), psubs)
             for t in seq:
                 subs = unify(head, Term(name, t), psubs)
@@ -268,20 +271,18 @@ def mutate(inserts, deletions):
             ins = evaluate(ins, subs)
             assert is_ground(ins)
             name, t = ins
-            if t not in store.data[name]:
-                if name not in new:
-                    new[name] = set([t])
-                else:
-                    new[name].add(t)
+            if name not in new:
+                new[name] = set([t])
+            else:
+                new[name].add(t)
         for de in deletions:
             de = evaluate(de, subs)
             assert is_ground(de)
             name, t = de
-            if t in store.data[name]:
-                if name not in era:
-                    era[name] = set([t])
-                else:
-                    era[name].add(t)
+            if name not in era:
+                era[name] = set([t])
+            else:
+                era[name].add(t)
             
     def _graph_():
         return '', []
@@ -309,7 +310,9 @@ def rule(head, *chain):
         head = fn(head)
     return head
 
+n = 0
 def run(store, rules, once=False):
+    global n
     empty = Map()
     new = dict()
     era = dict()
@@ -319,22 +322,22 @@ def run(store, rules, once=False):
     for rule in rules:
         rule[2](empty, None, None, store, new, era, cn)
     while new and not once:
+        n += 1
         fresh, new = new, dict()
-        for name in fresh:
-            store.data[name].update(fresh[name])
         for name in era:
             store.data[name].difference_update(era[name])
+        for name in fresh:
+            store.data[name].update(fresh[name])
         era.clear()
         for name in fresh:
             for rule in rules:
                 if rule[1](name):
                     rule[2](empty, name, fresh[name], store, new, era, cn)
     if once:
+        for name in era:
+            store.data[name].difference_update(era[name])
         for name in new:
             store.data[name].update(new[name])
-        for name in era:
-            store.data[name].update_difference(era[name])
-        era.clear()
     return cn
 
 def prepare_solver(t, mapping, fresh):

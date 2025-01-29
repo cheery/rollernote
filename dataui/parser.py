@@ -1,10 +1,10 @@
 import ply.lex as lex
 import ply.yacc as yacc
-import evaluator
+from . import evaluator
 import operator
 
 tokens = (
-    'NAME', 'INT', 'STRING',
+    'NAME', 'VAR', 'INT', 'STRING',
     'LPAREN', 'RPAREN', 'COMMA', 'DOT',
     'LBRACKET', 'RBRACKET',
     'LBRACE', 'RBRACE',
@@ -55,6 +55,8 @@ tokens += tuple(set(reserved.values()))
 def t_NAME(t):
     r'[a-zA-Z_][a-zA-Z0-9_]*'
     t.type = reserved.get(t.value, 'NAME')  # Check for reserved words
+    if t.value.istitle():
+        t.type = 'VAR'
     return t
 
 def t_INT(t):
@@ -137,11 +139,7 @@ def p_terms_1(p):
 
 def p_term_0(p):
     '''term : NAME'''
-    name = p[1]
-    if name.istitle():
-        p[0] = evaluator.Variable(name)
-    else:
-        p[0] = evaluator.Term(name, ())
+    p[0] = evaluator.Term(p[1], ())
 
 def p_term_1(p):
     '''term : LPAREN expr RPAREN'''
@@ -233,6 +231,10 @@ def p_literal_1(p):
     '''literal : STRING'''
     p[0] = int(p[1])
 
+def p_literal_2(p):
+    '''literal : VAR'''
+    p[0] = evaluator.Variable(p[1])
+
 def p_error(p):
     if p is None:
         print(f"Syntax error at EOF")
@@ -244,6 +246,8 @@ parser = yacc.yacc(debug=True)
 
 def parse(string):
     result = parser.parse(string)
+    if result is None:
+        return None
 
     renamings = {
         'repr': repr,
@@ -312,7 +316,7 @@ def parse(string):
                 else:
                     s = evaluator.check(p)
                 block.append(s)
-            rules.append(evaluator.rule(*block))
+            mutators.append(evaluator.rule(*block))
         else:
             assert False, row
     return rules, mutators, solvers

@@ -10,7 +10,7 @@ import cairo
 from aural import lv2
 import aural as audio
 import commands
-from visual import gui, gui2, gui3, gui4
+from visual import gui, gui2, gui3, gui4, gui5
 import math
 from music import resolution
 import bisect
@@ -3042,7 +3042,7 @@ from reaction import *
 from aural import box
 from aural.box import On, Off
 from aural.miditunes import *
-from components2 import *
+from components3 import *
 
 #ListInserted = namedtuple('ListInserted', ['index', 'value'])
 #ListRemoved  = namedtuple('ListRemoved', ['value'])
@@ -3093,21 +3093,6 @@ class DatasetControl:
     def __init__(self, ui, dataset):
         self.modified = Source(ui.engine, as_stream)
         self.dataset = dataset
-        self.next_key = dataset.index.max()+1 if len(dataset) > 0 else 0
-
-    def insert(self, fields):
-        key, self.next_key = self.next_key, self.next_key+1
-        self.dataset.loc[key] = fields
-        self.modified.send(Inserted(key, fields))
-        return key
-
-    def erase(self, key):
-        self.dataset = self.dataset.drop(key)
-        self.modified.send(Erased(key))
-
-    def modify(self, key, name, value):
-        self.dataset.loc[key, name] = value
-        self.modified.send(Modified(key, name, value))
 
 class DatasetView(gui3.Detail):
     def __init__(self, control, func):
@@ -3138,49 +3123,7 @@ class DatasetView(gui3.Detail):
                     ui.reconstrain()
 
 def demo(ui, editor):
-    editor.gui_channele = [Source(ui.engine), Source(ui.engine)]
-    editor.gui_channels = [Hold(editor.bay.engine.zeros(), e) for e in editor.gui_channele]
-    editor.gui_clavier = Source(ui.engine, as_stream)
-
-    @compute(ui.now)
-    def iskulause(t):
-        return ["huvittava", "toistava", "teksti"][int(t % 3)]
-
-    favorite_color = compute(ui.now)(
-       lambda n: (math.sin(n)*0.5+0.5,
-                  math.sin(n+1)*0.5+0.5,
-                  math.sin(n+2)*0.5+0.5, 1))
-
-    mouse = gui3.MouseControl(ui)
-    @mapE(mouse.inside)
-    def color_inside(inside):
-        if inside:
-            return (1,0,0,1)
-        else:
-            return (0,0,0,1)
-    color = Hold((0,0,0,1), color_inside)
-
-    textctl = TextControl(ui, "Hello world!")
-
-    dc = DatasetControl(ui, pd.DataFrame(
-        data = { 'onset': pd.Series([0.1, 0.3], dtype='float32'),
-                 'offset': pd.Series([0.3, 0.6], dtype='float32'),
-                 'note': pd.Series([69, 80], dtype='uint16'),
-                 'velocity': pd.Series([1.0, 1.0], dtype='float32') },
-        index = pd.Series([0,1], dtype='uint32')))
-
-    def _builder_(control, key, fields):
-        return gui3.Container([
-            gui3.Column(),
-            gui3.trace((1,0,0,1)),
-            label(repr(float(fields['onset']))),
-            label(repr(float(fields['offset']))),
-            label(repr(int(fields['note']))),
-        ])
-    dcv1 = gui3.Container([
-        gui3.Row(),
-        DatasetView(dc, _builder_),
-    ])
+    dc = DatasetControl(ui, )
 
     def _builder2_(control, key, fields):
         @collect(control.modified)
@@ -3317,7 +3260,6 @@ def demo(ui, editor):
 
     import os
 
-    files = ListControl(ui, list(os.scandir("data/")))
     def filefunc(files, entry):
         if entry.is_dir():
             color = (0.2, 0.2, 0.5, 1.0)
@@ -3328,14 +3270,6 @@ def demo(ui, editor):
         return label(name, color=color, height=16)
 
     return gui3.Container([
-        gui3.Row(),
-        gui3.Container([
-            gui3.Column(),
-            ListView(files, filefunc)
-            #gui3.view(cell)(func)
-            #gui3.varying(cell)(func)
-        ]),
-        # dcv1,
         dcv2,
         # textbox(textctl),
         # button(ui, textctl.text),
@@ -3349,16 +3283,64 @@ def demo(ui, editor):
         # ]),
     ], keyboard = gui3.KeyboardControl(ui))
 
-@gui4.composable
 def demo(editor):
-    @gui4.drawing
-    def _enable_blending_(ui, _, this):
-        ui.ctx.enable(ui.ctx.BLEND)
-        ui.ctx.blend_equation = ui.ctx.FUNC_ADD
-        ui.ctx.blend_func = ui.ctx.SRC_ALPHA, ui.ctx.ONE_MINUS_SRC_ALPHA
-    gui4.column()
-    demo_row1(editor)
-    demo_row2(editor)
+    ui = gui5.context.get()
+    ui.ctx.enable(ui.ctx.BLEND)
+    ui.ctx.blend_equation = ui.ctx.FUNC_ADD
+    ui.ctx.blend_func = ui.ctx.SRC_ALPHA, ui.ctx.ONE_MINUS_SRC_ALPHA
+
+    #clock(editor.time, (0,0, 150, 150))
+    #gui5.fill((0,1,0,1), (150, 150, 50, 50))
+    #gui5.fill((0,1,1,1), (200, 150, 50, 50))
+    #gui5.fill((1,0,1,1), (150, 200, 50, 50))
+
+    for index in editor.thing.index:
+        fs = editor.thing.loc[index]
+        onset  = fs['onset']
+        offset = fs['offset']
+        note   = fs['note']
+        x0 = onset * 800
+        x1 = offset * 800
+        y0 = note * 8
+        rect = (x0, y0, x1-x0, 8)
+        gui5.fill((1,0,0,1), rect)
+        ident = (50, index)
+        if gui5.box(ui.mouse, rect):
+            ui.hotitem = ident
+            if ui.activeitem is None and ui.buttons == 1:
+                ui.activeitem = ident
+                ui.activestate = ui.mouse, onset, offset, note
+        if ui.activeitem == ident:
+            (x,y), onset, offset, note = ui.activestate
+            editor.thing.loc[index, 'onset'] = (ui.mouse[0] - x) / 800 + onset
+            editor.thing.loc[index, 'offset'] = (ui.mouse[0] - x) / 800 + offset
+            nnote = (ui.mouse[1] - y) // 8 + note
+            nnote = max(0, min(127, nnote))
+            editor.thing.loc[index, 'note'] = nnote
+
+    rect = (0,0,800,128*8)
+    gui5.trace((0,0,0,1), rect)
+
+    if gui5.box(ui.mouse, rect):
+        ui.hotitem = 50
+        if ui.activeitem is None and ui.buttons == 1:
+            ui.activeitem = 50
+            key = editor.thing.index.max()+1
+            editor.thing.loc[key] = {
+                'onset': (ui.mouse[0] - 0) / 800,
+                'offset': (ui.mouse[0] - 0) / 800 + 0.1,
+                'note': (ui.mouse[1] - 0) // 8,
+                'velocity': 1.0
+            }
+
+
+@gui4.composable
+def demo_bar(index, editor):
+    gui4.column(0)
+    gui4.trace((1,0,0,1))
+    note = int(editor.thing.loc[index]['note'])
+    label(repr(note))
+
 
 @gui4.composable
 def demo_row1(editor):
@@ -3368,15 +3350,13 @@ def demo_row1(editor):
     colorbox[1]((0,1,1,1))
     colorbox[2]((1,0,1,1))
     clock(editor.time)
-    label("Hello!")
     scrollinglabel("Hello world", editor.time, 50)
     testing = button[1]("Testing")
     testing2 = button[2]("Testing2")
-    text = gui4.state[1](value="hello")
-    textbox[1](text)
     virtual_keyboard(editor)
     oscilloscope(editor.out0, editor.out1)
     vu_meter(editor.out0, editor.out1)
+    clavier_visualizer(editor)
 
     @gui4.logic(testing, testing2)
     def _custom_logic_(ui, ident, layout, testing, testing2):
@@ -3389,10 +3369,90 @@ def demo_row1(editor):
 def demo_row2(editor):
     gui4.trace((1,0,0,1))
     gui4.row(10)
-    clavier_visualizer(editor)
+    demo_directory(editor)
+    text = gui4.state[1](value="hello")
+    textbox[1](text)
+    demo_thing(editor)
+
+@gui4.composable
+def demo_directory(editor):
+    gui4.column(5)
+    for entry in editor.directory_contents:
+        if entry.is_dir():
+            color = (0.2, 0.2, 0.5, 1.0)
+            name = entry.name + "/"
+        else:
+            color = (0,0,0,1)
+            name = entry.name
+        label[name](name, color=color, height=16)
+
+@gui4.composable
+def demo_thing(editor):
+    gui4.trace((0,0,0,1))
+    @gui4.layout
+    def _size_(cn, this):
+        cn(cn[this].width == 800)
+        cn(cn[this].height == 128*3)
+    for index in editor.thing.index:
+        demo_bar[index](index, editor)
+    @gui4.static
+    def layout_contents(layouter, this):
+        x,y,w,h = layouter[this].rect
+        for item in this.subframes:
+            index = item.key[1]
+            fs = editor.thing.loc[index]
+            onset = fs['onset']
+            offset = fs['offset']
+            note = fs['note']
+            layouter[item] = gui4.RigidLayout(int(x + onset*w), int(y + note*3),
+                                             int((offset - onset)*w), 3)
+            layouter.constrain(item)
+    @gui4.logic()
+    def button_press(ui, ident, layout):
+        if ui.inside:
+            ui.hotitem = ident
+            if ui.activeitem is None and ui.buttons > 0:
+                ui.activeitem = ident
+                key = editor.thing.index.max()+1
+                editor.thing.loc[key] = {
+                  'onset': (ui.mouse[0] - layout.left) / layout.width,
+                  'offset': (ui.mouse[0] - layout.left) / layout.width + 0.1,
+                  'note': (ui.mouse[1] - layout.bottom) // 3,
+                  'velocity': 1.0
+                }
+
+@gui4.composable
+def demo_bar(index, editor):
+    gui4.column(0)
+    gui4.trace((1,0,0,1))
+    note = int(editor.thing.loc[index]['note'])
+    label(repr(note))
+
+#        self.next_key = dataset.index.max()+1 if len(dataset) > 0 else 0
+#
+#    def insert(self, fields):
+#        key, self.next_key = self.next_key, self.next_key+1
+#        self.dataset.loc[key] = fields
+#        self.modified.send(Inserted(key, fields))
+#        return key
+#
+#    def erase(self, key):
+#        self.dataset = self.dataset.drop(key)
+#        self.modified.send(Erased(key))
+#
+#    def modify(self, key, name, value):
+#        self.dataset.loc[key, name] = value
 
 class Editor:
     def __init__(self):
+        self.directory_contents = list(os.scandir("data/"))
+        self.thing = pd.DataFrame(
+            data = { 'onset': pd.Series([0.1, 0.3], dtype='float32'),
+                     'offset': pd.Series([0.3, 0.6], dtype='float32'),
+                     'note': pd.Series([69, 80], dtype='uint16'),
+                     'velocity': pd.Series([1.0, 1.0], dtype='float32') },
+            index = pd.Series([0,1], dtype='uint32'))
+
         locator = aural.ladspa.Locator()
         engine = aural.ladspa.Engine(sample_rate=44100, sample_count=2048)
         self.bay = bay = box.Bay(Engine(), engine, locator, pulse = Event())
@@ -3485,6 +3545,10 @@ class Editor:
         mido_in = mido.backend.get_input_names()[-1]
         self.midi_input = mido.backend.open_input(mido_in)
 
+        self.dataset = dict(
+            count = set([(0,)])
+        )
+
     def fire_midi_keyboard(self, ui, m):
         ui.clavier.append(m)
         self.clavier.send(m)
@@ -3499,7 +3563,7 @@ class Editor:
         sdl2.ext.init(video=True, audio=True)
 
         flags = sdl2.SDL_WINDOW_RESIZABLE | sdl2.SDL_WINDOW_OPENGL
-        root = self.widget("rollernote", 1200, 700, flags, gui4.GUI, demo, self)
+        root = self.widget("rollernote", 1200, 700, flags, gui5.GUI, "counter.ui", self.dataset)
 
         sdl2.SDL_StartTextInput()
 

@@ -1,11 +1,11 @@
 from PIL import Image, ImageDraw, ImageFont
 from . import atlas
-from . import gui4
+from . import gui5
 import numpy as np
 
 class FontEngine:
     def __init__(self, ui, size):
-        ui.mem(gui4.common_interface)
+        ui.mem(gui5.common_interface)
         self.ui = ui
         self.font = ImageFont.truetype('OpenSans-Regular.ttf', size=size)
         self.image = Image.new("L", (1024, 1024), color=0)
@@ -101,10 +101,11 @@ class FontEngine:
         return x
 
     def prepare(self, color):
+        self.program['scroll'] = self.ui.scroll_x, self.ui.scroll_y
         self.program['size'] = self.ui.widget.width, self.ui.widget.height
         self.program['uv_size'] = 1024, 1024
         self.program['color'] = color
-        self.program['sample'] = 0
+        #self.program['sample'] = 0
         self.sampler.use(0)
 
     def text(self, string, x, y):
