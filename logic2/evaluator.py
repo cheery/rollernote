@@ -317,16 +317,6 @@ def assertion(answer, attr, opt):
         pass
     assert answer.pen is None
     answer.pen = (attr, opt)
-    #try:
-    #    opts = []
-    #    for p in answer.pen.query(attr):
-    #        if p := merge(p, opt):
-    #            opts.append(p)
-    #    if len(opts) == 0:
-    #        raise Halt
-    #    answer.pen = answer.pen.insert(attr, opts)
-    #except KeyError:
-    #    answer.pen = answer.pen.insert(attr, [opt])
 
 @dataclass
 class Assertion:
