@@ -35,6 +35,7 @@ class Track:
         return Track(**kwargs)
 
 import json
+from notes import Pitch
 
 def load(input_filename):
     with open(input_filename) as fd:
@@ -42,7 +43,7 @@ def load(input_filename):
     uids = Uids(data['last_uid'])
     notes = avl.empty
     for uid, (onset, offset, pitch) in data['notes']:
-        notes = notes.insert(uid, (onset, offset, pitch))
+        notes = notes.insert(uid, (onset, offset, Pitch(*pitch)))
     def unserialize(trees):
         for tree in trees:
             w = tree["weight"]
@@ -62,8 +63,11 @@ def save(output_filename, track, uids):
         elif isinstance(tree, Branch):
             children = [serialize(n) for n in tree.children]
             return {"weight": tree.weight, "children": children}
+    notes = []
+    for uid, (onset, offset, pitch) in track.notes:
+        notes.append((uid, (onset, offset, pitch.to_pair())))
     data = {
-        "notes" : list(track.notes),
+        "notes" : notes,
         "rhythm": [serialize(tree) for tree in track.trees],
         "head" : track.head.select(track.trees).strip(),
         "tail" : track.tail.select(track.trees).strip(),
@@ -380,8 +384,8 @@ class RhythmTreeWidget(Widget):
             
             # --- Draw the Notes ---
             # Assume a pitch mapping from MIDI 60 (bottom) to 72 (top) within the staff area.
-            min_pitch = 60
-            max_pitch = 68
+            min_pitch = 28
+            max_pitch = 36
             note_height = 10
             for uid, (start_id, end_id, pitch) in track.notes:
                 # Ensure both start and end nodes exist in our stored positions.
@@ -393,7 +397,7 @@ class RhythmTreeWidget(Widget):
                 note_x = start_pos[0] + 4
                 note_width = (end_pos[0] + end_pos[2]) - start_pos[0] - 8
                 # Map the MIDI pitch linearly within the staff area.
-                pitch_ratio = (pitch - min_pitch) / (max_pitch - min_pitch)
+                pitch_ratio = (pitch.position - min_pitch) / (max_pitch - min_pitch)
                 note_y = staff_area_bottom + pitch_ratio * staff_area_height - note_height / 2
                 Color(1, 0.5, 0, 0.75)  # Use an orange color for the note.
                 Line(rectangle=(note_x, note_y, note_width, note_height), width=1)
@@ -603,31 +607,31 @@ class RhythmTreeWidget(Widget):
         #        keyboard.release()
             case 'a', 'insert':
                 mod = 'shift' in modifiers or 'capslock' in modifiers
-                self.insert_note(60, mod)
+                self.insert_note(Pitch(28), mod)
                 self.update_canvas()
             case 's', 'insert':
                 mod = 'shift' in modifiers or 'capslock' in modifiers
-                self.insert_note(62, mod)
+                self.insert_note(Pitch(29), mod)
                 self.update_canvas()
             case 'd', 'insert':
                 mod = 'shift' in modifiers or 'capslock' in modifiers
-                self.insert_note(64, mod)
+                self.insert_note(Pitch(30), mod)
                 self.update_canvas()
             case 'f', 'insert':
                 mod = 'shift' in modifiers or 'capslock' in modifiers
-                self.insert_note(65, mod)
+                self.insert_note(Pitch(31), mod)
                 self.update_canvas()
             case 'g', 'insert':
                 mod = 'shift' in modifiers or 'capslock' in modifiers
-                self.insert_note(67, mod)
+                self.insert_note(Pitch(32), mod)
                 self.update_canvas()
             case 'h', 'insert':
                 mod = 'shift' in modifiers or 'capslock' in modifiers
-                self.insert_note(69, mod)
+                self.insert_note(Pitch(33), mod)
                 self.update_canvas()
             case 'j', 'insert':
                 mod = 'shift' in modifiers or 'capslock' in modifiers
-                self.insert_note(71, mod)
+                self.insert_note(Pitch(34), mod)
                 self.update_canvas()
             case _:
                 print(' - text is %r' % text)
