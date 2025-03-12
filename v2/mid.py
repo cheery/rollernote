@@ -7,11 +7,19 @@ from rhythm import (
 from music import resolution
 
 def save(output_filename, trees, notes, tempo, ticks_per_beat=480):
+    mid = midifile(trees, notes, tempo, ticks_per_beat)
+    mid.save(output_filename)
+    print(f"MIDI file saved as '{output_filename}'.")
+
+def midifile(trees, notes, tempo, ticks_per_beat=480, program=0):
+    print(f"MIDI program {program}")
     node_times = {}  # uid -> (start_beat, duration_in_beats)
     compute_times(trees, node_times)
     
     events = []  # List of events as tuples: (tick, type, pitch, velocity)
     for uid, (on,off,pitch) in notes:
+         if on not in node_times or off not in node_times:
+             continue
          onset = node_times[on][0]
          offset = node_times[off][0] + node_times[off][1]
          start = int(onset * ticks_per_beat)
@@ -28,6 +36,7 @@ def save(output_filename, trees, notes, tempo, ticks_per_beat=480):
     
     tempo = mido.bpm2tempo(tempo)
     track.append(MetaMessage('set_tempo', tempo=tempo, time=0))
+    track.append(Message('program_change', program=program, time=0, channel=0))
     
     # Add MIDI events to the track with appropriate delta times.
     last_tick = 0
@@ -37,8 +46,7 @@ def save(output_filename, trees, notes, tempo, ticks_per_beat=480):
         msg = Message(event_type, note=pitch, velocity=velocity, time=delta)
         track.append(msg)
 
-    mid.save(output_filename)
-    print(f"MIDI file saved as '{output_filename}'.")
+    return mid
 
 def compute_times(trees, node_times):
     x = 0

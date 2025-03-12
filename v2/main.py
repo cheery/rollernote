@@ -8,10 +8,12 @@ from kivy.graphics import Color, Rectangle, Line
 from kivy.core.text import Label as CoreLabel
 from music import resolution
 import subprocess
+import io
+import random
 
 from rhythm import (
     Zipper, Finger, Node, Branch, Leaf, finger_of, fold_of,
-    branch, leaf, Uids, normalize, normalize_to, locate
+    branch, leaf, Uids, normalize, normalize_to, normalize_tof, locate
 )
 import mid
 import avl
@@ -224,6 +226,22 @@ def capture(trees, head, tail):
     trees, head, tail = erode(trees, head, tail)
     trees, head, tail = group(trees, head, tail)
     _, _, _, focus = zipup(trees, head, tail)
+    return focus
+
+def weighed_capture(trees, head, tail):
+    total_weight = sum(node.weight for node in trees)
+    trees, head, tail = erode(trees, head, tail)
+    trees, head, tail = group(trees, head, tail)
+    trees = normalize_tof(trees, total_weight)
+    zipper, _, _, focus = zipup(trees, head, tail)
+    if zipper is None:
+        total = sum(node.weight for node in focus)
+        return Branch(total, focus)
+    w = zipper.weight
+    while zipper.pred:
+        w *= zipper.pred.weight / zipper.total_weight
+        zipper = zipper.pred
+    focus = focus.op(lambda _: w)
     return focus
 
 def paste(trees, head, tail, buffer, uids):
@@ -591,7 +609,7 @@ class RhythmTreeWidget(Widget):
                     offset = mapping[offset]
                     notes = notes.insert(next(self.uids), (onset, offset, pitch))
 
-                track = Track(notes = notes, trees = trees, head = head, tail = tail)
+                track = track.copy(notes = notes, trees = trees, head = head, tail = tail)
                 if invert:
                     track = track.copy(head = track.tail, tail = track.head)
                 self.do(track)
@@ -667,8 +685,10 @@ class RhythmTreeWidget(Widget):
                 self.update_canvas()
             case 's', 'visual':
                 save("output.track.json", track, self.uids)
-                mid.save("output.mid", track.trees, track.notes, tempo=80)
-                subprocess.Popen(["timidity", "output.mid"])
+                #mid.save("output.mid", track.trees, track.notes, tempo=80)
+                #subprocess.Popen(["timidity", "output.mid"])
+            case 'tab', _:
+                self.preview(track)
             case 'escape', _:
                 self.mode = 'visual'
                 self.update_canvas()
@@ -768,6 +788,16 @@ class RhythmTreeWidget(Widget):
                 print(' - modifiers are %r' % modifiers)
         return True
 
+    def preview(self, track):
+        if self.mode == 'visual':
+            mi = mid.midifile(track.trees, track.notes, tempo=80, program=random.randint(0, 127))
+        else:
+            tree = weighed_capture(track.trees, track.head, track.tail)
+            mi = mid.midifile([tree], track.notes, tempo=80, program=random.randint(0, 127))
+        self.player = subprocess.Popen(["timidity", "-"], stdin=subprocess.PIPE)
+        mi.save(file=self.player.stdin)
+        self.player.stdin.flush()
+
     def insert_note(self, pitch, multi):
         track = self.track
         uids = []
@@ -796,6 +826,7 @@ class RhythmTreeWidget(Widget):
         elif insertion:
             notes = notes.insert(next(self.uids), (onset, offset, pitch))
         track = track.copy(notes = notes)
+        self.preview(track)
         self.do(track)
 
     def safe_erode(self, track):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from math import gcd
 
 class Node:
@@ -39,6 +39,13 @@ class Zipper:
         if self.pred:
             return self.pred.fold(this)
         return this
+
+    @property
+    def total_weight(self):
+        w = self.weight
+        w += sum(n.weight for n in self.left)
+        w += sum(n.weight for n in self.right)
+        return w
 
 def finger_of(zipper):
     if zipper:
@@ -163,7 +170,7 @@ def leaf(weight, uid):
 
 @dataclass(frozen=True)
 class Branch(Node):
-    weight : int
+    weight : Union[int, float]
     children : tuple[Node]
 
     @property
@@ -198,7 +205,7 @@ class Branch(Node):
 
 @dataclass(frozen=True)
 class Leaf(Node):
-    weight : int
+    weight : Union[int, float]
     uid : int
 
     @property
@@ -246,6 +253,12 @@ def normalize(nodes):
         return [node.op(lambda w: w // divider) for node in nodes]
     else:
         return nodes
+
+def normalize_tof(nodes, amount):
+    divider = gcd(*(node.weight for node in nodes))
+    total = sum(node.weight for node in nodes)
+    m = amount / (total / divider)
+    return tuple(node.op(lambda w: w * m / divider) for node in nodes)
 
 def normalize_to(nodes, amount):
     divider = gcd(*(node.weight for node in nodes))
