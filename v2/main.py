@@ -356,33 +356,34 @@ class RhythmTreeWidget(Widget):
 
     def update_canvas(self, *args):
         self.canvas.clear()
-        self.node_positions = {}  # Reset stored positions
-        
+
         track = self.track
+        grid_width = max(self.width, 60*sum(node.weight for node in track.trees))
+        self.node_positions = self.layout_nodes(track.trees, 0, grid_width, {})
+        
         with self.canvas:
             # --- Draw the Rhythm Tree Grid --
-            grid_width = max(self.width, 60*sum(node.weight for node in track.trees))
             xi = self.get_pos(track.trees, 0, grid_width, track.head.unroll())
             cursor_scroll = xi - self.width / 2
             self.scroll_x = max(self.scroll_x, cursor_scroll - self.width / 2 + 100)
             self.scroll_x = min(self.scroll_x, cursor_scroll + self.width / 2 - 100)
-            offset_x = max(0, min(self.scroll_x, grid_width - self.width))
+            scroll_x = max(0, min(self.scroll_x, grid_width - self.width))
             row_height = 25
             max_depth = max(node.depth for node in track.trees)
             tree_area_height = (max_depth + 1) * row_height
             start_y = self.height - row_height  # start at top of widget
-            self.draw_nodes(track.trees, -offset_x, start_y, grid_width, row_height, depth=0)
+            self.draw_nodes(track.trees, -scroll_x, start_y, grid_width, row_height, depth=0)
 
             # --- Draw the selection ---
             p = self.node_positions[track.head.select(track.trees).uid]
             q = self.node_positions[track.tail.select(track.trees).uid]
             x0 = min(p[0], q[0])
-            x1 = max(p[0] + p[2], q[0] + q[2])
+            x1 = max(p[0] + p[1], q[0] + q[1])
             if self.mode == 'visual':
                 Color(0,1,1,0.5)
             else:
                 Color(1,0.5,1,0.5)
-            Rectangle(pos=(x0, 0), size=(x1-x0, self.height - tree_area_height))
+            Rectangle(pos=(x0 - scroll_x, 0), size=(x1-x0, self.height - tree_area_height))
             
             min_pitch = 30
             max_pitch = 38
@@ -420,7 +421,7 @@ class RhythmTreeWidget(Widget):
                 pitch_ratio = (6 + position - min_pitch) / (max_pitch - min_pitch)
                 y1 = staff_area_bottom + pitch_ratio * staff_area_height + note_height / 2
 
-                Rectangle(pos=(x0, y0 + y_shift), size=(x1-x0, y1-y0))
+                Rectangle(pos=(x0 - scroll_x, y0 + y_shift), size=(x1-x0, y1-y0))
 
             for uid, (start_id, end_id, pitch) in track.notes:
                 # Ensure both start and end nodes exist in our stored positions.
@@ -430,7 +431,7 @@ class RhythmTreeWidget(Widget):
                 end_pos = self.node_positions[end_id]
                 # The note starts at the left of the start node and ends at the right of the end node.
                 note_x = start_pos[0] + 4
-                note_width = (end_pos[0] + end_pos[2]) - start_pos[0] - 8
+                note_width = (end_pos[0] + end_pos[1]) - start_pos[0] - 8
                 # Map the MIDI pitch linearly within the staff area.
                 pitch_ratio = (pitch.position - min_pitch) / (max_pitch - min_pitch)
                 note_y = staff_area_bottom + pitch_ratio * staff_area_height - note_height / 2
@@ -444,8 +445,8 @@ class RhythmTreeWidget(Widget):
                 if pitch.accidental == track.key[pitch.position % 7] - resolution.base_key[pitch.position % 7]:
                     Color(1, 1, 1, 0.75)
 
-                Line(rectangle=(note_x, note_y + y_shift, note_width, note_height), width=1)
-                Rectangle(pos=(note_x, note_y + y_shift), size=(note_width, note_height))
+                Line(rectangle=(note_x - scroll_x, note_y + y_shift, note_width, note_height), width=1)
+                Rectangle(pos=(note_x - scroll_x, note_y + y_shift), size=(note_width, note_height))
 
     def get_pos(self, nodes, x, width, ixs):
         if len(ixs) == 0:
@@ -455,6 +456,19 @@ class RhythmTreeWidget(Widget):
             ix = ixs.pop()
             x += sum(node.weight for node in nodes[:ix]) * width / total_weight
             return self.get_pos(nodes[ix], x, nodes[ix].weight * width / total_weight, ixs)
+
+    def layout_nodes(self, nodes, x, width, node_positions):
+        total_weight = sum(node.weight for node in nodes)
+        current_x = x
+        for node in nodes:
+            node_width = width * (node.weight / total_weight)
+            if isinstance(node, Branch):
+                 self.layout_nodes(node.children, current_x, node_width, node_positions)
+            else:
+                 node_positions[node.uid] = (current_x, node_width)
+
+            current_x += node_width
+        return node_positions
     
     def draw_nodes(self, nodes, x, y, width, height, depth):
         total_weight = sum(node.weight for node in nodes)
@@ -485,8 +499,6 @@ class RhythmTreeWidget(Widget):
 
         if isinstance(node, Branch):
              self.draw_nodes(node.children, x, y - height, width, height, depth+1)
-        else:
-             self.node_positions[node.uid] = (x, y, width, height, depth)
         
 #        else:
 #            Color(1, 1, 1)
