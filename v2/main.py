@@ -6,6 +6,7 @@ from kivy.core.window import Window
 from kivy.uix.widget import Widget
 from kivy.graphics import Color, Rectangle, Line
 from kivy.core.text import Label as CoreLabel
+from music import resolution
 import subprocess
 
 from rhythm import (
@@ -22,6 +23,7 @@ class Track:
     trees : list[Node]
     head : Finger
     tail : Finger
+    key  : list[int]
 
     def copy(self, **kwargs):
         if 'notes' not in kwargs:
@@ -32,6 +34,8 @@ class Track:
             kwargs['head'] = self.head
         if 'tail' not in kwargs:
             kwargs['tail'] = self.tail
+        if 'key' not in kwargs:
+            kwargs['key'] = self.key
         return Track(**kwargs)
 
 import json
@@ -54,7 +58,8 @@ def load(input_filename):
     rhythm = tuple(unserialize(data["rhythm"]))
     head = locate(rhythm, data["head"])
     tail = locate(rhythm, data["tail"])
-    return Track(notes, rhythm, head, tail), uids
+    key = data["key"]
+    return Track(notes, rhythm, head, tail, key), uids
 
 def save(output_filename, track, uids):
     def serialize(tree):
@@ -71,6 +76,7 @@ def save(output_filename, track, uids):
         "rhythm": [serialize(tree) for tree in track.trees],
         "head" : track.head.select(track.trees).strip(),
         "tail" : track.tail.select(track.trees).strip(),
+        "key"  : track.key,
         "last_uid" : uids.index,
     }
     with open(output_filename, 'w') as fd:
@@ -308,6 +314,7 @@ class RhythmTreeWidget(Widget):
                 ),
                 head = Finger(None, 0, 4),
                 tail = Finger(None, 0, 4),
+                key = canon_key(1),
             )
         self.track_current = self.track
         self.track_undo = []
@@ -317,6 +324,7 @@ class RhythmTreeWidget(Widget):
         self.buffer_notes = []
 
         self.mode = 'visual'
+        self.octave_shift = 0
         self._keyboard = Window.request_keyboard(
             self._keyboard_closed, self, 'text')
         self._keyboard.bind(on_key_down=self._on_keyboard_down)
@@ -368,25 +376,44 @@ class RhythmTreeWidget(Widget):
                 Color(1,0.5,1,0.5)
             Rectangle(pos=(x0, 0), size=(x1-x0, self.height - tree_area_height))
             
+            min_pitch = 30
+            max_pitch = 38
+            note_height = 10
             # --- Draw the Staff Area ---
             # Define a margin between the tree grid and staff area.
             staff_margin = 20
             staff_area_height = 120
             staff_area_top = self.height - tree_area_height - staff_margin
             staff_area_bottom = staff_area_top - staff_area_height
-            
+
+            staff_area_push = min(-self.octave_shift, 0)
+            for uid, (start_id, end_id, pitch) in track.notes:
+                staff_area_push = min(-(pitch.position - 38) // 7, staff_area_push)
+
+            step = 7 / (max_pitch - min_pitch) * staff_area_height
+            y_shift = step * staff_area_push
+
             # Draw 5 evenly spaced horizontal staff lines.
             num_lines = 5
             for i in range(num_lines):
-                y_line = staff_area_bottom + i * (staff_area_height / (num_lines - 1))
+                y_line = y_shift + staff_area_bottom + i * (staff_area_height / (num_lines - 1))
                 Color(1, 1, 1)
                 Line(points=[0, y_line, self.width, y_line], width=2)
-            
+
             # --- Draw the Notes ---
-            # Assume a pitch mapping from MIDI 60 (bottom) to 72 (top) within the staff area.
-            min_pitch = 28
-            max_pitch = 36
-            note_height = 10
+
+            if self.mode == 'insert':
+                Color(1,1,1, 0.5)
+                position = 28 + self.octave_shift*7
+
+                pitch_ratio = (position - min_pitch) / (max_pitch - min_pitch)
+                y0 = staff_area_bottom + pitch_ratio * staff_area_height - note_height / 2
+
+                pitch_ratio = (6 + position - min_pitch) / (max_pitch - min_pitch)
+                y1 = staff_area_bottom + pitch_ratio * staff_area_height + note_height / 2
+
+                Rectangle(pos=(x0, y0 + y_shift), size=(x1-x0, y1-y0))
+
             for uid, (start_id, end_id, pitch) in track.notes:
                 # Ensure both start and end nodes exist in our stored positions.
                 if start_id not in self.node_positions or end_id not in self.node_positions:
@@ -399,9 +426,18 @@ class RhythmTreeWidget(Widget):
                 # Map the MIDI pitch linearly within the staff area.
                 pitch_ratio = (pitch.position - min_pitch) / (max_pitch - min_pitch)
                 note_y = staff_area_bottom + pitch_ratio * staff_area_height - note_height / 2
-                Color(1, 0.5, 0, 0.75)  # Use an orange color for the note.
-                Line(rectangle=(note_x, note_y, note_width, note_height), width=1)
-                Rectangle(pos=(note_x, note_y), size=(note_width, note_height))
+                match pitch.accidental:
+                    case  2: Color(1, 0.0, 1, 0.75)
+                    case  1: Color(1, 0.5, 1, 0.75)
+                    case  0: Color(1, 0.5, 0, 0.75)  # Use an orange color for the note.
+                    case -1: Color(0, 0.5, 1, 0.75)
+                    case -2: Color(0, 0.0, 1, 0.75)
+
+                if pitch.accidental == track.key[pitch.position % 7] - resolution.base_key[pitch.position % 7]:
+                    Color(1, 1, 1, 0.75)
+
+                Line(rectangle=(note_x, note_y + y_shift, note_width, note_height), width=1)
+                Rectangle(pos=(note_x, note_y + y_shift), size=(note_width, note_height))
     
     def draw_nodes(self, nodes, x, y, width, height, depth):
         total_weight = sum(node.weight for node in nodes)
@@ -450,6 +486,12 @@ class RhythmTreeWidget(Widget):
                 self.undo()
             case 'x', 'visual':
                 self.redo()
+            case 'up', 'insert':
+                self.octave_shift += 1
+                self.update_canvas()
+            case 'down', 'insert':
+                self.octave_shift -= 1
+                self.update_canvas()
             case 'left', _:
                 if finger := track.head.prev_uid(track.trees):
                     if 'shift' in modifiers:
@@ -471,7 +513,7 @@ class RhythmTreeWidget(Widget):
                         track = track.copy(head = track.tail, tail = track.head)
                     self.do(track)
             case 'g', 'visual':
-                invert = not self.head <= self.tail
+                invert = not track.head <= track.tail
                 if track := self.safe_erode(track):
                     trees, head, tail = group(track.trees, track.head, track.tail)
                     track = track.copy(trees = trees, head = head, tail = tail)
@@ -554,7 +596,7 @@ class RhythmTreeWidget(Widget):
                     for uid, (onset, offset, pitch) in notes:
                         if (onset in rems) or (onset in rems):
                             notes = notes.delete(uid)
-                    track = Track(notes = notes, trees = trees, head = head, tail = tail)
+                    track = track.copy(notes = notes, trees = trees, head = head, tail = tail)
                     if invert:
                         track = track.copy(head = track.tail, tail = track.head)
                     self.do(track)
@@ -571,7 +613,7 @@ class RhythmTreeWidget(Widget):
                             if offset in rems:
                                 offset = intr
                             notes = notes.insert(uid, (onset, offset, pitch))
-                    track = Track(notes = notes, trees = trees, head = head, tail = tail)
+                    track = track.copy(notes = notes, trees = trees, head = head, tail = tail)
                     self.do(track)
             case '2', 'visual':
                 self.do_split([1,1])
@@ -633,6 +675,65 @@ class RhythmTreeWidget(Widget):
                 mod = 'shift' in modifiers or 'capslock' in modifiers
                 self.insert_note(Pitch(34), mod)
                 self.update_canvas()
+
+            case 'q', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(28, 1), mod)
+                self.update_canvas()
+            case 'w', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(29, 1), mod)
+                self.update_canvas()
+            case 'e', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(30, 1), mod)
+                self.update_canvas()
+            case 'r', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(31, 1), mod)
+                self.update_canvas()
+            case 't', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(32, 1), mod)
+                self.update_canvas()
+            case 'y', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(33, 1), mod)
+                self.update_canvas()
+            case 'u', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(34, 1), mod)
+                self.update_canvas()
+
+            case 'z', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(28, -1), mod)
+                self.update_canvas()
+            case 'x', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(29, -1), mod)
+                self.update_canvas()
+            case 'c', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(30, -1), mod)
+                self.update_canvas()
+            case 'v', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(31, -1), mod)
+                self.update_canvas()
+            case 'b', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(32, -1), mod)
+                self.update_canvas()
+            case 'n', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(33, -1), mod)
+                self.update_canvas()
+            case 'm', 'insert':
+                mod = 'shift' in modifiers or 'capslock' in modifiers
+                self.insert_note(Pitch(34, -1), mod)
+                self.update_canvas()
+
             case _:
                 print(' - text is %r' % text)
                 print(' - modifiers are %r' % modifiers)
@@ -648,6 +749,8 @@ class RhythmTreeWidget(Widget):
         start, end = track.head.order(track.tail)
         onset = start.select(track.trees).strip()
         offset = end.select(track.trees).strip()
+
+        pitch = Pitch(pitch.position + self.octave_shift*7, pitch.accidental)
 
         insertion = True
         start0, end0 = uid_index[onset], uid_index[offset]
