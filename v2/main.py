@@ -328,6 +328,8 @@ class RhythmTreeWidget(Widget):
         self._keyboard = Window.request_keyboard(
             self._keyboard_closed, self, 'text')
         self._keyboard.bind(on_key_down=self._on_keyboard_down)
+
+        self.scroll_x = 0
         
         # Refresh drawing when the widget is resized or repositioned.
         self.bind(size=self.update_canvas, pos=self.update_canvas)
@@ -358,12 +360,18 @@ class RhythmTreeWidget(Widget):
         
         track = self.track
         with self.canvas:
-            # --- Draw the Rhythm Tree Grid ---
+            # --- Draw the Rhythm Tree Grid --
+            grid_width = max(self.width, 60*sum(node.weight for node in track.trees))
+            xi = self.get_pos(track.trees, 0, grid_width, track.head.unroll())
+            cursor_scroll = xi - self.width / 2
+            self.scroll_x = max(self.scroll_x, cursor_scroll - self.width / 2 + 100)
+            self.scroll_x = min(self.scroll_x, cursor_scroll + self.width / 2 - 100)
+            offset_x = max(0, min(self.scroll_x, grid_width - self.width))
             row_height = 25
             max_depth = max(node.depth for node in track.trees)
             tree_area_height = (max_depth + 1) * row_height
             start_y = self.height - row_height  # start at top of widget
-            self.draw_nodes(track.trees, 0, start_y, self.width, row_height, depth=0)
+            self.draw_nodes(track.trees, -offset_x, start_y, grid_width, row_height, depth=0)
 
             # --- Draw the selection ---
             p = self.node_positions[track.head.select(track.trees).uid]
@@ -438,6 +446,15 @@ class RhythmTreeWidget(Widget):
 
                 Line(rectangle=(note_x, note_y + y_shift, note_width, note_height), width=1)
                 Rectangle(pos=(note_x, note_y + y_shift), size=(note_width, note_height))
+
+    def get_pos(self, nodes, x, width, ixs):
+        if len(ixs) == 0:
+            return x + width / 2
+        else:
+            total_weight = sum(node.weight for node in nodes)
+            ix = ixs.pop()
+            x += sum(node.weight for node in nodes[:ix]) * width / total_weight
+            return self.get_pos(nodes[ix], x, nodes[ix].weight * width / total_weight, ixs)
     
     def draw_nodes(self, nodes, x, y, width, height, depth):
         total_weight = sum(node.weight for node in nodes)
