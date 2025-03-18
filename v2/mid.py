@@ -1,10 +1,10 @@
 import mido
 from mido import Message, MidiFile, MidiTrack, MetaMessage
-from rhythm import (
+from .rhythm import (
     Zipper, Finger, Branch, Leaf, finger_of, fold_of,
     branch, leaf, Uids
 )
-from music import resolution
+from .music import resolution
 
 def save(output_filename, trees, notes, tempo, ticks_per_beat=480):
     mid = midifile(trees, notes, tempo, ticks_per_beat)
@@ -25,7 +25,7 @@ def midifile(trees, notes, tempo, ticks_per_beat=480, program=0):
          start = int(onset * ticks_per_beat)
          end   = int(offset * ticks_per_beat)
          pitch = resolution.resolve_pitch(pitch)
-         events.append((start, 'note_on',  pitch, 64))
+         events.append((start, 'note_on',  pitch, 127))
          events.append((end,   'note_off', pitch, 64))
     events.sort(key=lambda x: x[0])
     

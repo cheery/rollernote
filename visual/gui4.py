@@ -4,7 +4,6 @@ from collections import namedtuple
 from contextvars import ContextVar
 import sdl2
 import moderngl
-import typing
 
 context = ContextVar('context')
 
@@ -299,6 +298,11 @@ class LayoutEngine:
     def constrain(self, frame):
         if frame.static:
             self.defer.append(frame)
+            for content in frame.contents:
+                if isinstance(content, Spacer):
+                    self[content] = Variable()
+                if isinstance(content, LayoutDesc):
+                    content.func(self, frame)
         else:
             for content in frame.contents:
                 if isinstance(content, Spacer):
@@ -411,51 +415,6 @@ class Element:
         if self.frame.logic_func:
             transient_state[self.frame] = self.frame.logic_func(ui, ident, self.layout, transient_state)
 
-    #@property
-    #def subelements(self):
-    #    return [item for item in self.contents if isinstance(item, Element)]
-
-    #def hittest(self, x, y):
-    #    return self.shape(x,y, *self.layout.rect)
-
-    #def hit(self, x, y):
-    #    if self.hittest(x, y):
-    #        selection = self
-    #        for content in self.subelements:
-    #            selection = content.hit(x, y) or selection
-    #        return selection
-
-#class ButtonControl:
-#    def __init__(self, ui):
-#        self.up = Source(ui.engine)
-#        self.down = Source(ui.engine)
-#        self.pressed = Source(ui.engine)
-#
-#class MouseControl:
-#    def __init__(self, ui):
-#        self.inside = Source(ui.engine)
-#        self.enter  = Source(ui.engine)
-#        self.leave  = Source(ui.engine)
-#        self.left   = ButtonControl(ui)
-#        self.middle = ButtonControl(ui)
-#        self.right  = ButtonControl(ui)
-#        self.motion = Source(ui.engine)
-#
-#    def by_button_id(self, button):
-#        if button == 1:
-#            return self.left
-#        elif button == 2:
-#            return self.middle
-#        elif button == 3:
-#            return self.right
-#
-#class KeyboardControl:
-#    def __init__(self, ui):
-#        self.focus = Source(ui.engine)
-#        self.enter = Source(ui.engine)
-#        self.leave = Source(ui.engine)
-#        self.stream = Source(ui.engine, as_stream)
-
 #class HAlign(Layout):
 #    def constrain(self, ui, this, solver):
 #        width = this.parent.width
@@ -470,19 +429,23 @@ def column(spacing = None):
     @layout
     def constrain(cn, this):
         _spacing = Variable() if spacing is None else spacing
+        if isinstance(_spacing, Variable):
+            cn(_spacing >= 0)
         bar0 = bar1 = cn[this].top
         for frame in this.subframes:
             cn(bar1 == cn[frame].top)
             cn(cn[this].left <= cn[frame].left)
             cn(cn[frame].right <= cn[this].right)
             bar0 = cn[frame].bottom
-            bar1 = bar0 + _spacing
+            bar1 = bar0 - _spacing
         cn((bar0 == cn[this].bottom) | 'medium')
 
 def row(spacing = None):
     @layout
     def constrain(cn, this):
         _spacing = Variable() if spacing is None else spacing
+        if isinstance(_spacing, Variable):
+            cn(_spacing >= 0)
         bar0 = bar1 = cn[this].left
         for frame in this.subframes:
             cn(bar1 == cn[frame].left)
@@ -504,6 +467,7 @@ class GUI:
         self.memo = dict()
         self.engine = Engine()
 
+        self.screen_mouse = (0,0)
         self.mouse = (0, 0)
         self.buttons = 0
         self.hotitem = None
@@ -516,6 +480,9 @@ class GUI:
         self.inside = True
 
         self.clavier = []
+
+        self.scroll_x = 0
+        self.scroll_y = 0
         
         assert isinstance(scene, composable)
         self.scene = scene
@@ -527,22 +494,6 @@ class GUI:
             self.element = build(self, self.root, self.widget)
         finally:
             context.reset(token)
-
-        #self.mouse_position = Event()
-        #self.pulse = Event()
-        #self.now = Hold(sdl2.SDL_GetTicks64() / 1000.0, self.pulse)
-
-        #self.solver = Solver()
-        #self.root = scene(self, *args, **kwargs)
-        #self.root.attach(self, None)
-        #self.reconstrain()
-
-        #self.mouse = MouseControl(self)
-        #self.keyboard = KeyboardControl(self)
-
-        #self.keyboard_focus = None
-        #self.button_presses = dict()
-        #self.under_motion = None
 
     def mem(self, *args):
         if args not in self.memo:
@@ -572,8 +523,19 @@ class GUI:
             self.activestate = None
         elif self.activeitem is None:
             self.activeitem = (None,)
+            self.activestate = self.mouse
+        if self.activeitem == (None,):
+            x, y = self.activestate
+            px,py = self.screen_mouse
+            self.scroll_x = x - px
+            self.scroll_y = y - py
         self.keyboard.clear()
         self.clavier.clear()
+
+        w = self.element.layout.width - self.widget.width
+        h = self.element.layout.height - self.widget.height
+        self.scroll_x = max(0, min(w, self.scroll_x))
+        self.scroll_y = max(0, min(h, self.scroll_y))
 
     def update(self):
         self.prepare()
@@ -592,16 +554,19 @@ class GUI:
 
     def mouse_motion(self, x, y):
         y = self.widget.height - y
-        self.mouse = x, y
+        self.screen_mouse = x, y
+        self.mouse = x + self.scroll_x, y + self.scroll_y
 
     def mouse_button_down(self, x, y, button):
         y = self.widget.height - y
-        self.mouse = x, y
+        self.screen_mouse = x, y
+        self.mouse = x + self.scroll_x, y + self.scroll_y
         self.buttons |= (1 << (button-1))
  
     def mouse_button_up(self, x, y, button):
         y = self.widget.height - y
-        self.mouse = x, y
+        self.screen_mouse = x, y
+        self.mouse = x + self.scroll_x, y + self.scroll_y
         self.buttons &= ~(1 << (button-1))
  
     def text_input(self, text):
@@ -625,9 +590,10 @@ class GUI:
 def common_interface(ui):
     ui.ctx.includes['common_ui'] = """
         #define PI 3.1415926535897932384626433832795
+        uniform vec2 scroll;
         uniform vec2 size;
         vec2 pixel_to_screen(vec2 pixel) {
-            return pixel / size * 2.0 - 1.0;
+            return (pixel - scroll) / size * 2.0 - 1.0;
         }
     """
 
@@ -687,6 +653,7 @@ def circle_fill(color):
     @drawing
     def _circle_filler_(ui, _, this):
         vao, program = ui.mem(circle_filler)
+        program['scroll'] = ui.scroll_x, ui.scroll_y
         program['size'] = ui.widget.width, ui.widget.height
         program['rect'] = this.layout.rect
         program['color'] = color
@@ -723,6 +690,7 @@ def circle_stroke(color):
     @drawing
     def _circle_stroke_(ui, _, this):
         vao, program = ui.mem(circle_stroker)
+        program['scroll'] = ui.scroll_x, ui.scroll_y
         program['size'] = ui.widget.width, ui.widget.height
         program['rect'] = this.layout.rect
         program['color'] = color
@@ -787,6 +755,7 @@ def trace(color):
     @drawing
     def _trace_draw_(ui, _, this):
         vao, program = ui.mem(rectangle_stroker)
+        program['scroll'] = ui.scroll_x, ui.scroll_y
         program['size'] = ui.widget.width, ui.widget.height
         program['rect'] = this.layout.rect
         program['color'] = color
@@ -796,6 +765,7 @@ def fill(color):
     @drawing
     def _fill_draw_(ui, _, this):
         vao, program = ui.mem(rectangle_filler)
+        program['scroll'] = ui.scroll_x, ui.scroll_y
         program['size'] = ui.widget.width, ui.widget.height
         program['rect'] = this.layout.rect
         program['color'] = color

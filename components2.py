@@ -1,5 +1,5 @@
 from reaction import *
-from visual import gui3, gui4
+from visual import gui4
 from visual.font import FontEngine
 from aural.box import On, Off
 from immutables import Map
@@ -9,7 +9,7 @@ import numpy as np
 import moderngl
 
 def line_draw_setup(ui):
-   program = ui.mem(gui3.plain_line_program)
+   program = ui.mem(gui4.plain_line_program)
    data = np.full(4, 0.0, dtype=np.float32)
    buffer = ui.ctx.buffer(data)
    vao = ui.ctx.vertex_array(program, buffer, 'point')
@@ -28,6 +28,7 @@ def clock(t, width=50, height=50):
         angle = (t % 60) / 60 * math.pi * 2
 
         program, vao, buffer, data = ui.mem(line_draw_setup)
+        program['scroll'] = ui.scroll_x, ui.scroll_y
         program['size'] = ui.widget.width, ui.widget.height
         program['color'] = 1,0,0,1
         data[0] = x
@@ -81,7 +82,7 @@ def scrollinglabel(text, time, width, height=20, edge_pad=5):
         text_width = font.measure(text)
         u = triangle_wave(time) * 0.5 + 0.5
         scroll_x = - max(0, text_width - w + edge_pad*2) * u
-        ui.ctx.scissor = x,y,w,h
+        ui.ctx.scissor = x - ui.scroll_x,y - ui.scroll_y,w,h
         font.prepare((0,0,0,1))
         font.text(text, x+edge_pad+scroll_x, y + font.descent)
         font.finish()
@@ -129,11 +130,12 @@ def textbox(model, width=200, height=20):
         def text_position(pos):
             return 5 + font.measure(text[:pos])
         x,y,w,h = this.layout.rect
-        ui.ctx.scissor = x,y,w,h
+        ui.ctx.scissor = x - ui.scroll_x,y - ui.scroll_y,w,h
         if ui.focus == ident and pos != tail:
             start = min(pos, tail)
             end = max(pos, tail)
-            vao, program = ui.mem(gui3.rectangle_filler)
+            vao, program = ui.mem(gui4.rectangle_filler)
+            program['scroll'] = ui.scroll_x, ui.scroll_y
             program['size'] = ui.widget.width, ui.widget.height
             program['rect'] = (
                 x + text_position(start), y,
@@ -145,7 +147,8 @@ def textbox(model, width=200, height=20):
         font.finish()
         if ui.focus == ident and pos == tail:
             cursor_x = text_position(pos)
-            vao, program = ui.mem(gui3.rectangle_filler)
+            vao, program = ui.mem(gui4.rectangle_filler)
+            program['scroll'] = ui.scroll_x, ui.scroll_y
             program['size'] = ui.widget.width, ui.widget.height
             program['rect'] = (x + cursor_x, y + font.descent * 0.5, 1, h - font.descent)
             program['color'] = 0,0,0,1
@@ -233,13 +236,15 @@ def button(text, height=20, disabled=False):
         pressed = (ui.activeitem == ident)
 
         if pressed and not disabled:
-            vao, program = ui.mem(gui3.rectangle_filler)
+            vao, program = ui.mem(gui4.rectangle_filler)
+            program['scroll'] = ui.scroll_x, ui.scroll_y
             program['size'] = ui.widget.width, ui.widget.height
             program['rect'] = x,y,w,h
             program['color'] = 0,0,0,1
             vao.render(vertices=4, mode=ui.ctx.TRIANGLE_STRIP)
         else:
-            vao, program = ui.mem(gui3.rectangle_filler)
+            vao, program = ui.mem(gui4.rectangle_filler)
+            program['scroll'] = ui.scroll_x, ui.scroll_y
             program['size'] = ui.widget.width, ui.widget.height
             program['rect'] = x,y,w,h
             program['color'] = 1,1,1,1
@@ -251,7 +256,8 @@ def button(text, height=20, disabled=False):
         else:
             color = 0.5,0.5,0.5,1
 
-        vao, program = ui.mem(gui3.rectangle_stroker)
+        vao, program = ui.mem(gui4.rectangle_stroker)
+        program['scroll'] = ui.scroll_x, ui.scroll_y
         program['size'] = ui.widget.width, ui.widget.height
         program['rect'] = x,y,w,h
         program['color'] = color
@@ -269,7 +275,7 @@ def button(text, height=20, disabled=False):
         cn(cn[this].height == font.ascent + font.descent)
 
 def oscilloscope_drawer(ui, sample_count):
-    program = ui.mem(gui3.plain_line_program)
+    program = ui.mem(gui4.plain_line_program)
     data = np.full(sample_count*2, 0.0, dtype=np.float32)
     buffer = ui.ctx.buffer(data)
     vao = ui.ctx.vertex_array(program, buffer, 'point')
@@ -282,6 +288,7 @@ def oscilloscope(out0, out1, width=500, height=150):
         x,y,w,h = this.layout.rect
         r  = h / 2
         program, vao, buffer, data = ui.mem(oscilloscope_drawer, len(out0))
+        program['scroll'] = ui.scroll_x, ui.scroll_y
         program['size'] = ui.widget.width, ui.widget.height
         program['color'] = 1,0,0,0.5
         xs = np.linspace(0, 1, len(out0)) * w + x
@@ -334,7 +341,8 @@ def vu_meter(out0, out1, width=20, height=90):
     @gui4.drawing
     def _draw_(ui, _, that):
         x,y,w,h = that.layout.rect
-        vao, program = ui.mem(gui3.rectangle_filler)
+        vao, program = ui.mem(gui4.rectangle_filler)
+        program['scroll'] = ui.scroll_x, ui.scroll_y
         program['size'] = ui.widget.width, ui.widget.height
         program['color'] = 0,1,0,1
         h0 = to_scaler(this.vol0) * (h - 10)
@@ -432,6 +440,7 @@ def clavier_visualizer(editor):
             a = max(s - begin, 0)
             b = max(e - begin, 0)
             program, vao, buffer, data = ui.mem(line_draw_setup)
+            program['scroll'] = ui.scroll_x, ui.scroll_y
             program['size'] = ui.widget.width, ui.widget.height
             program['color'] = 1,0,0,1
             data[0] = x + a/15*w
@@ -445,6 +454,7 @@ def clavier_visualizer(editor):
         for note, s in hold.items():
             a = max(s - begin, 0)
             program, vao, buffer, data = ui.mem(line_draw_setup)
+            program['scroll'] = ui.scroll_x, ui.scroll_y
             program['size'] = ui.widget.width, ui.widget.height
             program['color'] = 0,0,1,0.5
             data[0] = x + a/15*w

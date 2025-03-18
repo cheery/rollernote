@@ -1,24 +1,23 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
-from kivy.app import App
-from kivy.core.window import Window
-from kivy.uix.widget import Widget
-from kivy.graphics import Color, Rectangle, Line
-from kivy.core.text import Label as CoreLabel
-from music import resolution
-from music.notes import Pitch
+from .music import resolution
+from .music.notes import Pitch
 import subprocess
 import io
 import random
 
-from rhythm import (
+from .rhythm import (
     Zipper, Finger, Node, Branch, Leaf, finger_of, fold_of,
     branch, leaf, Uids, normalize, normalize_to, normalize_tof, locate
 )
-import mid
-import avl
+from . import mid
+from . import avl
 import os
+
+from visual.font import FontEngine
+from visual.gui6 import Node
+from visual import gui6
 
 @dataclass
 class Track:
@@ -310,10 +309,12 @@ def split(trees, finger, divs, uids):
     right = rightmost_finger(focus, base)
     return fold_of(zipper, focus), left, right, old, [n.uid for n in focus]
 
-class RhythmTreeWidget(Widget):
-    def __init__(self, **kwargs):
-        super(RhythmTreeWidget, self).__init__(**kwargs)
-        # Dictionary to store node positions for later lookup (x, y, width, height, depth)
+
+
+class Widget(Node):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
         self.node_positions = {}
 
         # Rhythm tree
@@ -343,128 +344,124 @@ class RhythmTreeWidget(Widget):
 
         self.mode = 'visual'
         self.octave_shift = 0
-        self._keyboard = Window.request_keyboard(
-            self._keyboard_closed, self, 'text')
-        self._keyboard.bind(on_key_down=self._on_keyboard_down)
 
-        self.scroll_x = 0
-        
-        # Refresh drawing when the widget is resized or repositioned.
-        self.bind(size=self.update_canvas, pos=self.update_canvas)
-        self.update_canvas()
+        self.scroll = [0,0]
 
     def do(self, track):
         self.track_undo.append(self.track)
         self.track_redo = []
         self.track = track
         self.track_current = track
-        self.update_canvas()
 
     def redo(self):
         if len(self.track_redo):
             self.track_undo.append(self.track_current)
             self.track = self.track_current = self.track_redo.pop()
-            self.update_canvas()
 
     def undo(self):
         if len(self.track_undo):
             self.track_redo.append(self.track_current)
             self.track = self.track_current = self.track_undo.pop()
-            self.update_canvas()
 
-    def update_canvas(self, *args):
-        self.canvas.clear()
+    def pre_draw(self, ui, x, y):
+        left, bottom, cwidth, cheight = self.rect.offset(x,y)
 
         track = self.track
-        grid_width = max(self.width, 60*sum(node.weight for node in track.trees))
+        grid_width = max(cwidth, 60*sum(node.weight for node in track.trees))
         self.node_positions = self.layout_nodes(track.trees, 0, grid_width, {})
         
-        with self.canvas:
-            # --- Draw the Rhythm Tree Grid --
-            xi = self.get_pos(track.trees, 0, grid_width, track.head.unroll())
-            cursor_scroll = xi - self.width / 2
-            self.scroll_x = max(self.scroll_x, cursor_scroll - self.width / 2 + 100)
-            self.scroll_x = min(self.scroll_x, cursor_scroll + self.width / 2 - 100)
-            scroll_x = max(0, min(self.scroll_x, grid_width - self.width))
-            row_height = 25
-            max_depth = max(node.depth for node in track.trees)
-            tree_area_height = (max_depth + 1) * row_height
-            start_y = self.height - row_height  # start at top of widget
-            self.draw_nodes(track.trees, -scroll_x, start_y, grid_width, row_height, depth=0)
+        # --- Draw the Rhythm Tree Grid --
+        xi = self.get_pos(track.trees, 0, grid_width, track.head.unroll())
+        cursor_scroll = xi - cwidth / 2
+        self.scroll[0] = max(self.scroll[0], cursor_scroll - cwidth / 2 + 100)
+        self.scroll[0] = min(self.scroll[0], cursor_scroll + cwidth / 2 - 100)
+        scroll_x = max(0, min(self.scroll[0], grid_width - cwidth))
+        row_height = 25
+        max_depth = max(node.depth for node in track.trees)
+        tree_area_height = (max_depth + 1) * row_height
+        start_y = cheight - row_height  # start at top of widget
+        self.draw_nodes(ui, track.trees, -scroll_x, start_y, grid_width, row_height, depth=0)
 
-            # --- Draw the selection ---
-            p = self.node_positions[track.head.select(track.trees).uid]
-            q = self.node_positions[track.tail.select(track.trees).uid]
-            x0 = min(p[0], q[0])
-            x1 = max(p[0] + p[1], q[0] + q[1])
-            if self.mode == 'visual':
-                Color(0,1,1,0.5)
-            else:
-                Color(1,0.5,1,0.5)
-            Rectangle(pos=(x0 - scroll_x, 0), size=(x1-x0, self.height - tree_area_height))
-            
-            min_pitch = 30
-            max_pitch = 38
-            note_height = 10
-            # --- Draw the Staff Area ---
-            # Define a margin between the tree grid and staff area.
-            staff_margin = 20
-            staff_area_height = 120
-            staff_area_top = self.height - tree_area_height - staff_margin
-            staff_area_bottom = staff_area_top - staff_area_height
+        # --- Draw the selection ---
+        p = self.node_positions[track.head.select(track.trees).uid]
+        q = self.node_positions[track.tail.select(track.trees).uid]
+        x0 = min(p[0], q[0])
+        x1 = max(p[0] + p[1], q[0] + q[1])
+        if self.mode == 'visual':
+            color = 0,1,1,0.5
+        else:
+            color = 1,0.5,1,0.5
+        gui6.fill(ui, color,
+            (x0 - scroll_x, 0, x1-x0, cheight - tree_area_height))
 
-            staff_area_push = min(-self.octave_shift, 0)
-            for uid, (start_id, end_id, pitch) in track.notes:
-                staff_area_push = min(-(pitch.position - 38) // 7, staff_area_push)
+        min_pitch = 30
+        max_pitch = 38
+        note_height = 10
+        # --- Draw the Staff Area ---
+        # Define a margin between the tree grid and staff area.
+        staff_margin = 20
+        staff_area_height = 120
+        staff_area_top = cheight - tree_area_height - staff_margin
+        staff_area_bottom = staff_area_top - staff_area_height
 
-            step = 7 / (max_pitch - min_pitch) * staff_area_height
-            y_shift = step * staff_area_push
+        staff_area_push = min(-self.octave_shift, 0)
+        for uid, (start_id, end_id, pitch) in track.notes:
+            staff_area_push = min(-(pitch.position - 38) // 7, staff_area_push)
 
-            # Draw 5 evenly spaced horizontal staff lines.
-            num_lines = 5
-            for i in range(num_lines):
-                y_line = y_shift + staff_area_bottom + i * (staff_area_height / (num_lines - 1))
-                Color(1, 1, 1)
-                Line(points=[0, y_line, self.width, y_line], width=2)
+        step = 7 / (max_pitch - min_pitch) * staff_area_height
+        y_shift = step * staff_area_push
 
-            # --- Draw the Notes ---
+        # Draw 5 evenly spaced horizontal staff lines.
+        num_lines = 5
+        for i in range(num_lines):
+            y_line = y_shift + staff_area_bottom + i * (staff_area_height / (num_lines - 1))
+            gui6.trace(ui,
+                (1,1,1,1),
+                (0, y_line, cwidth, 0))
 
-            if self.mode == 'insert':
-                Color(1,1,1, 0.5)
-                position = 28 + self.octave_shift*7
+        # --- Draw the Notes ---
 
-                pitch_ratio = (position - min_pitch) / (max_pitch - min_pitch)
-                y0 = staff_area_bottom + pitch_ratio * staff_area_height - note_height / 2
+        if self.mode == 'insert':
+            color = 1,1,1,0.5
+            position = 28 + self.octave_shift*7
 
-                pitch_ratio = (6 + position - min_pitch) / (max_pitch - min_pitch)
-                y1 = staff_area_bottom + pitch_ratio * staff_area_height + note_height / 2
+            pitch_ratio = (position - min_pitch) / (max_pitch - min_pitch)
+            y0 = staff_area_bottom + pitch_ratio * staff_area_height - note_height / 2
 
-                Rectangle(pos=(x0 - scroll_x, y0 + y_shift), size=(x1-x0, y1-y0))
+            pitch_ratio = (6 + position - min_pitch) / (max_pitch - min_pitch)
+            y1 = staff_area_bottom + pitch_ratio * staff_area_height + note_height / 2
 
-            for uid, (start_id, end_id, pitch) in track.notes:
-                # Ensure both start and end nodes exist in our stored positions.
-                if start_id not in self.node_positions or end_id not in self.node_positions:
-                    continue
-                start_pos = self.node_positions[start_id]
-                end_pos = self.node_positions[end_id]
-                # The note starts at the left of the start node and ends at the right of the end node.
-                note_x = start_pos[0] + 4
-                note_width = (end_pos[0] + end_pos[1]) - start_pos[0] - 8
-                # Map the MIDI pitch linearly within the staff area.
-                pitch_ratio = (pitch.position - min_pitch) / (max_pitch - min_pitch)
-                note_y = staff_area_bottom + pitch_ratio * staff_area_height - note_height / 2
-                match pitch.accidental:
-                    case  2: Color(1, 0.0, 1, 0.75)
-                    case  1: Color(1, 0.5, 1, 0.75)
-                    case  0: Color(1, 0.5, 0, 0.75)  # Use an orange color for the note.
-                    case -1: Color(0, 0.5, 1, 0.75)
-                    case -2: Color(0, 0.0, 1, 0.75)
+            gui6.fill(ui, color,
+              (x0-scroll_x, y0+y_shift, x1-x0, y1-y0))
 
-                if pitch.accidental == track.key[pitch.position % 7] - resolution.base_key[pitch.position % 7]:
-                    Color(1, 1, 1, 0.75)
+        for uid, (start_id, end_id, pitch) in track.notes:
+            # Ensure both start and end nodes exist in our stored positions.
+            if start_id not in self.node_positions or end_id not in self.node_positions:
+                continue
+            start_pos = self.node_positions[start_id]
+            end_pos = self.node_positions[end_id]
+            # The note starts at the left of the start node and ends at the right of the end node.
+            note_x = start_pos[0] + 4
+            note_width = (end_pos[0] + end_pos[1]) - start_pos[0] - 8
+            # Map the MIDI pitch linearly within the staff area.
+            pitch_ratio = (pitch.position - min_pitch) / (max_pitch - min_pitch)
+            note_y = staff_area_bottom + pitch_ratio * staff_area_height - note_height / 2
+            match pitch.accidental:
+                case  2: color = (1, 0.0, 1, 0.75)
+                case  1: color = (1, 0.5, 1, 0.75)
+                case  0: color = (1, 0.5, 0, 0.75)  # Use an orange color for the note.
+                case -1: color = (0, 0.5, 1, 0.75)
+                case -2: color = (0, 0.0, 1, 0.75)
 
-                Line(rectangle=(note_x - scroll_x, note_y + y_shift, note_width, note_height), width=1)
-                Rectangle(pos=(note_x - scroll_x, note_y + y_shift), size=(note_width, note_height))
+            if pitch.accidental == track.key[pitch.position % 7] - resolution.base_key[pitch.position % 7]:
+                color = (1, 1, 1, 0.75)
+
+            gui6.trace(ui, color,(note_x - scroll_x, note_y + y_shift, note_width, note_height))
+            gui6.fill(ui, color,(note_x - scroll_x, note_y + y_shift, note_width, note_height))
+
+        for key in ui.keyboard:
+            if isinstance(key, gui6.Down):
+                self.process_keydown(*key)
 
     def get_pos(self, nodes, x, width, ixs):
         if len(ixs) == 0:
@@ -488,78 +485,77 @@ class RhythmTreeWidget(Widget):
             current_x += node_width
         return node_positions
     
-    def draw_nodes(self, nodes, x, y, width, height, depth):
+    def draw_nodes(self, ui, nodes, x, y, width, height, depth):
         total_weight = sum(node.weight for node in nodes)
         current_x = x
         for node in nodes:
             node_width = width * (node.weight / total_weight)
-            self.draw_node(node, current_x, y, node_width, height, depth)
+            self.draw_node(ui, node, current_x, y, node_width, height, depth)
             current_x += node_width
 
-    def draw_node(self, node, x, y, width, height, depth):
+    def draw_node(self, ui, node, x, y, width, height, depth):
         """Draws a node rectangle with text and recursively draws its children."""
         
         # Draw the node rectangle.
-        Color(0.2 + 0.2 * depth, 0.5, 0.8, 1)
-        Rectangle(pos=(x, y), size=(width, height))
-        Color(0, 0, 0)
-        Line(rectangle=(x, y, width, height), width=1)
+        gui6.fill(ui,
+            (0.2 + 0.2 * depth, 0.5, 0.8, 1),
+            (x,y,width,height))
+        gui6.trace(ui,
+            (0,0,0,1),
+            (x,y,width,height))
 
         # Render the node's label (tag and weight) centered in the rectangle.
+        rect = gui6.Rect(x,y,width,height)
         text = f"{node.weight}"
-        label = CoreLabel(text=text, font_size=14)
-        label.refresh()
-        texture = label.texture
-        tx = x + (width - texture.width) / 2
-        ty = y + (height - texture.height) / 2
-        Color(0, 0, 0, 1)
-        Rectangle(texture=texture, pos=(tx, ty), size=texture.size)
-
+        font = ui.mem(FontEngine, int(16))
+        text_width = font.measure(text)
+        font.prepare((0,0,0,1))
+        font.text(text,
+            rect.hcenter - text_width / 2,
+            rect.bottom + font.descent)
+        font.finish()
+ 
         if isinstance(node, Branch):
-             self.draw_nodes(node.children, x, y - height, width, height, depth+1)
-        
-#        else:
-#            Color(1, 1, 1)
-#            Line(points=[x+width, y, x+width, 0], width=2)
+             self.draw_nodes(ui, node.children, x, y - height, width, height, depth+1)
 
-    def _keyboard_closed(self):
-        self._keyboard.unbind(on_key_down=self._on_keyboard_down)
-        self._keyboard = None
-
-    def _on_keyboard_down(self, keyboard, keycode, text, modifiers):
+    def process_keydown(self, sym, repeat, modifiers):
         track = self.track
-        match (keycode[1], self.mode):
-            case 'z', 'visual':
+        match (sym, self.mode):
+            # Z
+            case 122, 'visual':
                 self.undo()
-            case 'x', 'visual':
+            # X
+            case 120, 'visual':
                 self.redo()
-            case 'up', 'insert':
+            # up
+            case 1073741906, 'insert':
                 self.octave_shift += 1
-                self.update_canvas()
-            case 'down', 'insert':
+            # down
+            case 1073741905, 'insert':
                 self.octave_shift -= 1
-                self.update_canvas()
-            case 'left', _:
+            # left
+            case 1073741904, _:
                 if finger := track.head.prev_uid(track.trees):
-                    if 'shift' in modifiers:
+                    if 0 != 2 & modifiers:
                         self.track = self.track.copy(head = finger)
                     else:
                         self.track = self.track.copy(head = finger, tail = finger)
-                    self.update_canvas()
-            case 'right', _:
+            # right
+            case 1073741903, _:
                 if finger := track.head.next_uid(track.trees):
-                    if 'shift' in modifiers:
+                    if 0 != 2 & modifiers:
                         self.track = self.track.copy(head = finger)
                     else:
                         self.track = self.track.copy(head = finger, tail = finger)
-                    self.update_canvas()
-            case 'e', 'visual':
+            # e
+            case 101, 'visual':
                 invert = not track.head <= track.tail
                 if track := self.safe_erode(track):
                     if invert:
                         track = track.copy(head = track.tail, tail = track.head)
                     self.do(track)
-            case 'g', 'visual':
+            # g
+            case 103, 'visual':
                 invert = not track.head <= track.tail
                 if track := self.safe_erode(track):
                     trees, head, tail = group(track.trees, track.head, track.tail)
@@ -567,11 +563,13 @@ class RhythmTreeWidget(Widget):
                     if invert:
                         track = track.copy(head = track.tail, tail = track.head)
                     self.do(track)
-            case '+', 'visual':
+            # +
+            case 43, 'visual':
                 trees = resize(track.trees, track.head, track.tail, 1)
                 track = track.copy(trees = trees)
                 self.do(track)
-            case '-', 'visual':
+            # -
+            case 45, 'visual':
                 trees = resize(track.trees, track.head, track.tail, -1)
                 track = track.copy(trees = trees)
                 self.do(track)
@@ -582,7 +580,6 @@ class RhythmTreeWidget(Widget):
             #        self.trees, self.head, self.tail = reorder(self.trees, self.head, self.tail, -1)
             #        if invert:
             #            self.head, self.tail = self.tail, self.head
-            #        self.update_canvas()
             #case 'w':
             #    invert = not self.head <= self.tail
             #    if self.safe_erode():
@@ -590,15 +587,16 @@ class RhythmTreeWidget(Widget):
             #        self.trees, self.head, self.tail = reorder(self.trees, self.head, self.tail, +1)
             #        if invert:
             #            self.head, self.tail = self.tail, self.head
-            #        self.update_canvas()
-            case 'y', 'visual':
+            # y
+            case 121, 'visual':
                 self.buffer = capture(track.trees, track.head, track.tail)
                 uids = self.buffer.traverse([])
                 self.buffer_notes = []
                 for uid, (onset, offset, pitch) in track.notes:
                     if (onset in uids) and (onset in uids):
                         self.buffer_notes.append((uid, (onset, offset, pitch)))
-            case 'p', 'visual':
+            # p
+            case 112, 'visual':
                 invert = not track.head <= track.tail
                 notes = track.notes
                 trees, head, tail, rems, intrs = paste(track.trees, track.head, track.tail, self.buffer, self.uids)
@@ -613,13 +611,15 @@ class RhythmTreeWidget(Widget):
                 if invert:
                     track = track.copy(head = track.tail, tail = track.head)
                 self.do(track)
-            case 'c', 'visual':
+            # c
+            case 99, 'visual':
                 invert = not track.head <= track.tail
                 if track := self.safe_cut(track):
                     if invert:
                         track = track.copy(head = track.tail, tail = track.head)
                     self.do(track)
-            case 'i', 'visual':
+            # i
+            case 105, 'visual':
                 invert = not track.head <= track.tail
                 if track := self.safe_cut(track):
                     trees, head = insert_before(track.trees, track.head, track.tail, 1, next(self.uids))
@@ -627,7 +627,8 @@ class RhythmTreeWidget(Widget):
                     if invert:
                         track = track.copy(head = track.tail, tail = track.head)
                     self.do(track)
-            case 'o', 'visual':
+            # o
+            case 111, 'visual':
                 invert = not track.head <= track.tail
                 if track := self.safe_cut(track):
                     trees, head = insert_after(track.trees, track.head, track.tail, 1, next(self.uids))
@@ -635,7 +636,8 @@ class RhythmTreeWidget(Widget):
                     if invert:
                         track = track.copy(head = track.tail, tail = track.head)
                     self.do(track)
-            case 'backspace', 'visual':
+            # backspace
+            case 8, 'visual':
                 invert = not track.head <= track.tail
                 if track := self.safe_cut(track):
                     trees, head, tail, rems = erase(track.trees, track.head, track.tail)
@@ -647,7 +649,8 @@ class RhythmTreeWidget(Widget):
                     if invert:
                         track = track.copy(head = track.tail, tail = track.head)
                     self.do(track)
-            case '1', 'visual':
+            # 1
+            case 49, 'visual':
                 if track := self.safe_erode(track):
                     trees, head, tail = group(track.trees, track.head, track.tail)
                     trees, head, rems, intr = join(trees, head, tail, self.uids)
@@ -662,138 +665,140 @@ class RhythmTreeWidget(Widget):
                             notes = notes.insert(uid, (onset, offset, pitch))
                     track = track.copy(notes = notes, trees = trees, head = head, tail = tail)
                     self.do(track)
-            case '2', 'visual':
+            # 2
+            case 50, 'visual':
                 self.do_split([1,1])
-                self.update_canvas()
-            case '3', 'visual':
+            # 3
+            case 51, 'visual':
                 self.do_split([1,1,1])
-                self.update_canvas()
-            case '4', 'visual':
+            # 4
+            case 52, 'visual':
                 self.do_split([3,1])
-                self.update_canvas()
-            case '5', 'visual':
+            # 5
+            case 53, 'visual':
                 self.do_split([1,3])
-                self.update_canvas()
-            case '6', 'visual':
+            # 6
+            case 54, 'visual':
                 self.do_split([1,1,1,1])
-                self.update_canvas()
-            case '7', 'visual':
+            # 7
+            case 55, 'visual':
                 self.do_split([3,2])
-                self.update_canvas()
-            case '8', 'visual':
+            # 8
+            case 56, 'visual':
                 self.do_split([2,3])
-                self.update_canvas()
-            case 's', 'visual':
+            # s
+            case 115, 'visual':
                 save("output.track.json", track, self.uids)
                 #mid.save("output.mid", track.trees, track.notes, tempo=80)
                 #subprocess.Popen(["timidity", "output.mid"])
-            case 'tab', _:
+            # tab
+            case 9, _:
                 self.preview(track)
-            case 'escape', _:
+            # escape
+            case 27, _:
                 self.mode = 'visual'
-                self.update_canvas()
-            case 'spacebar', 'visual':
+            # spacebar
+            case 32, 'visual':
                 self.mode = 'insert'
-                self.update_canvas()
         #        keyboard.release()
-            case 'a', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # a
+            case 97, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(28), mod)
-                self.update_canvas()
-            case 's', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # s
+            case 115, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(29), mod)
-                self.update_canvas()
-            case 'd', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # d
+            case 100, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(30), mod)
-                self.update_canvas()
-            case 'f', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # f
+            case 102, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(31), mod)
-                self.update_canvas()
-            case 'g', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # g
+            case 103, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(32), mod)
-                self.update_canvas()
-            case 'h', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # h
+            case 104, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(33), mod)
-                self.update_canvas()
-            case 'j', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # j
+            case 106, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(34), mod)
-                self.update_canvas()
 
-            case 'q', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # q
+            case 113, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(28, 1), mod)
-                self.update_canvas()
-            case 'w', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # w
+            case 119, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(29, 1), mod)
-                self.update_canvas()
-            case 'e', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # e
+            case 101, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(30, 1), mod)
-                self.update_canvas()
-            case 'r', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # r
+            case 114, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(31, 1), mod)
-                self.update_canvas()
-            case 't', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # t
+            case 116, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(32, 1), mod)
-                self.update_canvas()
-            case 'y', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # y
+            case 121, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(33, 1), mod)
-                self.update_canvas()
-            case 'u', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # u
+            case 117, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(34, 1), mod)
-                self.update_canvas()
 
-            case 'z', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # z
+            case 122, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(28, -1), mod)
-                self.update_canvas()
-            case 'x', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # x
+            case 120, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(29, -1), mod)
-                self.update_canvas()
-            case 'c', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # c
+            case 99, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(30, -1), mod)
-                self.update_canvas()
-            case 'v', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # v
+            case 118, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(31, -1), mod)
-                self.update_canvas()
-            case 'b', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # b
+            case 98, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(32, -1), mod)
-                self.update_canvas()
-            case 'n', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # n
+            case 110, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(33, -1), mod)
-                self.update_canvas()
-            case 'm', 'insert':
-                mod = 'shift' in modifiers or 'capslock' in modifiers
+            # m
+            case 109, 'insert':
+                mod = 0 != 8194 & modifiers # shift or capslock
                 self.insert_note(Pitch(34, -1), mod)
-                self.update_canvas()
 
             case _:
-                print(' - text is %r' % text)
+                print(' - sym is %r' % sym)
                 print(' - modifiers are %r' % modifiers)
         return True
 
     def preview(self, track):
         if self.mode == 'visual':
-            mi = mid.midifile(track.trees, track.notes, tempo=80, program=random.randint(0, 127))
+            mi = mid.midifile(track.trees, track.notes, tempo=80, program=0)#random.randint(0, 127))
         else:
             tree = weighed_capture(track.trees, track.head, track.tail)
-            mi = mid.midifile([tree], track.notes, tempo=80, program=random.randint(0, 127))
+            mi = mid.midifile([tree], track.notes, tempo=80, program=0)#random.randint(0, 127))
         self.player = subprocess.Popen(["timidity", "-"], stdin=subprocess.PIPE)
         mi.save(file=self.player.stdin)
         self.player.stdin.flush()
@@ -875,11 +880,3 @@ class RhythmTreeWidget(Widget):
             if invert:
                 track = track.copy(head = track.tail, tail = track.head)
             self.do(track)
-
-class RhythmTreeApp(App):
-    def build(self):
-        return RhythmTreeWidget()
-
-if __name__ == "__main__":
-    RhythmTreeApp().run()
-

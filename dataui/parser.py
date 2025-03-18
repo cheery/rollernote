@@ -4,17 +4,18 @@ from . import evaluator
 import operator
 
 tokens = (
-    'NAME', 'VAR', 'INT', 'STRING',
+    'NAME', 'VAR', 'INT', 'FLOAT', 'STRING',
     'LPAREN', 'RPAREN', 'COMMA', 'DOT',
     'LBRACKET', 'RBRACKET',
     'LBRACE', 'RBRACE',
     'IMPLIED_BY',
-    'STAR', 'SLASH', 'MODULO', 'PSLASH',
+    'STAR', 'SLASH', 'MODULO', 'PSLASH', 'POW',
     'QUESTION',
     'PLUS',
     'MINUS',
     'NE', 'EQ', 'LE', 'GE', 'LT', 'GT',
     'AT',
+    'COLON',
 )
 
 # Regular expressions for simple tokens
@@ -32,6 +33,7 @@ t_STAR = r'\*'
 t_SLASH = r'/'
 t_PSLASH = r':/:'
 t_MODULO = r'%'
+t_POW = r'\^'
 t_QUESTION = r'\?'
 #t_EQUALS = r'='
 t_PLUS = r'\+'
@@ -42,21 +44,30 @@ t_LE = r'<='
 t_GE = r'>='
 t_LT = r'<'
 t_GT = r'>'
-# t_TILDE = r'~'
 t_AT = r'@'
+#t_TILDE = r'~'
+t_COLON = r':'
 # t_FUNC_ARROW = r'=>'
 # t_ARROW = r'->'
 
 # Reserved keywords
 reserved = {
+    'by': 'BY',
+    'as': 'AS',
+    'set': 'SET',
 }
 tokens += tuple(set(reserved.values()))
 
 def t_NAME(t):
     r'[a-zA-Z_][a-zA-Z0-9_]*'
     t.type = reserved.get(t.value, 'NAME')  # Check for reserved words
-    if t.value.istitle():
+    if t.value[:1].isupper():
         t.type = 'VAR'
+    return t
+
+def t_FLOAT(t):
+    r'[0-9]+\.([0-9]+)([eE][-+]?[0-9]+)?|[eE][-+]?[0-9]+'
+    t.value = float(t.value)
     return t
 
 def t_INT(t):
@@ -86,7 +97,8 @@ def t_error(t):
 precedence = (
      ('left', 'LE', 'GE', 'LT', 'GT', 'EQ', 'NE'),
      ('left', 'PLUS', 'MINUS'),
-     ('left', 'STAR', 'SLASH', 'MODULO')
+     ('left', 'STAR', 'SLASH', 'MODULO'),
+     ('right', 'POW')
 )
 
 def p_program(p):
@@ -106,7 +118,7 @@ def p_declaration_0(p):
     p[0] = 'rule', p[1], []
 
 def p_declaration_1(p):
-    '''declaration : expr IMPLIED_BY exprs_comma DOT'''
+    '''declaration : expr IMPLIED_BY body DOT'''
     p[0] = 'rule', p[1], p[3]
 
 def p_declaration_2_0(p):
@@ -114,7 +126,7 @@ def p_declaration_2_0(p):
     p[0] = 'delta', p[1], p[3], []
 
 def p_declaration_2(p):
-    '''declaration : exprs PSLASH q_exprs IMPLIED_BY exprs_comma DOT'''
+    '''declaration : exprs PSLASH q_exprs IMPLIED_BY body DOT'''
     p[0] = 'delta', p[1], p[3], p[5]
 
 def p_declaration_3(p):
@@ -122,7 +134,7 @@ def p_declaration_3(p):
     p[0] = 'constraint', p[1], p[3], []
 
 def p_declaration_4(p):
-    '''declaration : NAME LBRACE expr RBRACE IMPLIED_BY exprs_comma DOT'''
+    '''declaration : NAME LBRACE expr RBRACE IMPLIED_BY body DOT'''
     p[0] = 'constraint', p[1], p[3], p[6]
 
 def p_declaration_5(p):
@@ -177,6 +189,41 @@ def p_q_exprs_3(p):
     '''q_exprs_comma : q_expr COMMA q_exprs_comma'''
     p[0] = [p[1]] + p[3]
 
+def p_body_0(p):
+    '''body : expr
+            | window '''
+    p[0] = [p[1]]
+
+def p_body_1(p):
+    '''body : expr COMMA body
+            | window COMMA body'''
+    p[0] = [p[1]] + p[3]
+
+def p_window(p):
+    '''window : SET vars operators'''
+    p[0] = evaluator.Term('set', [tuple(p[2]), tuple(p[3])])
+
+def p_vars_0(p):
+    '''vars : VAR'''
+    p[0] = [evaluator.Variable(p[1])]
+
+def p_vars_1(p):
+    '''vars : VAR vars'''
+    p[0] = [evaluator.Variable(p[1])] + p[2]
+
+def p_operators_0(p):
+    '''operators : COLON operator'''
+    p[0] = [p[2]]
+
+def p_operators_1(p):
+    '''operators : COLON operator operators'''
+    p[0] = [p[2]] + p[3]
+
+def p_operator(p):
+    '''operator : NAME terms BY term
+                | NAME terms AS term'''
+    p[0] = (p[1], p[2], p[3], p[4])
+
 def p_q_expr(p):
     '''q_expr : QUESTION expr
               | expr'''
@@ -201,19 +248,24 @@ def p_expr_2(p):
             | expr GT expr
             | expr STAR expr
             | expr SLASH expr
-            | expr MODULO expr'''
+            | expr MODULO expr
+            | expr POW expr'''
     op = {
         '+': operator.add, '-': operator.sub,
         '==': operator.eq, '!=': operator.ne,
         '<=': operator.le, '>=': operator.ge,
         '<': operator.lt, '>': operator.gt,
         '*': operator.mul, '/': operator.truediv,
-        '%': operator.mod}[p[2]]
+        '%': operator.mod, '^': operator.pow}[p[2]]
     p[0] = evaluator.Call(op, [p[1], p[3]])
 
 def p_expr_3(p):
     '''expr : MINUS expr'''
     p[0] = evaluator.Call(operator.neg, [p[2]])
+
+def p_expr_4(p):
+    '''expr : LPAREN expr RPAREN'''
+    p[0] = p[2]
 
 def p_term_2(p):
     '''term : LBRACKET exprs RBRACKET'''
@@ -225,13 +277,17 @@ def p_term_3(p):
 
 def p_literal_0(p):
     '''literal : INT'''
-    p[0] = int(p[1])
+    p[0] = p[1]
 
 def p_literal_1(p):
     '''literal : STRING'''
-    p[0] = int(p[1])
+    p[0] = p[1]
 
 def p_literal_2(p):
+    '''literal : FLOAT'''
+    p[0] = p[1]
+
+def p_literal_3(p):
     '''literal : VAR'''
     p[0] = evaluator.Variable(p[1])
 
@@ -269,6 +325,27 @@ def parse(string):
     mutators = []
     solvers = {}
 
+    def build_block(block, body):
+        for p in body:
+            if isinstance(p, evaluator.Term):
+                if p.functor == 'set':
+                    group = p.args[0]
+                    order = None
+                    aggregations = []
+                    for name, params, qualifier, var in p.args[1]:
+                        if qualifier == 'by' and name == 'order' and len(params) == 0:
+                            order = var
+                        elif qualifier == 'as':
+                            aggregations.append((var, name, tuple(params)))
+                        else:
+                            assert False, f"{name} {params} {qualifier} {var}"
+                    s = evaluator.window(group, order, aggregations)
+                else:
+                    s = evaluator.query(p.functor, *p.args)
+            else:
+                s = evaluator.check(p)
+            block.append(s)
+
     for row in result:
         name = row[0]
         if name == 'rule':
@@ -277,12 +354,7 @@ def parse(string):
             body = [evaluator.recall(p, renamings) for p in body]
             assert isinstance(head, evaluator.Term)
             block = [evaluator.insert(head.functor, *head.args)]
-            for p in body:
-                if isinstance(p, evaluator.Term):
-                    s = evaluator.query(p.functor, *p.args)
-                else:
-                    s = evaluator.check(p)
-                block.append(s)
+            build_block(block, body)
             rules.append(evaluator.rule(*block))
         elif name == 'solver':
             name, solver, rule = row
@@ -292,12 +364,7 @@ def parse(string):
             const = evaluator.recall(const, renamings)
             body = [evaluator.recall(p, renamings) for p in body]
             block = [evaluator.constraint(functor, const)]
-            for p in body:
-                if isinstance(p, evaluator.Term):
-                    s = evaluator.query(p.functor, *p.args)
-                else:
-                    s = evaluator.check(p)
-                block.append(s)
+            build_block(block, body)
             rules.append(evaluator.rule(*block))
         elif name == 'delta':
             name, ins, des, body = row
@@ -310,12 +377,7 @@ def parse(string):
             for b,p in des:
                 if not b:
                     block.append(evaluator.query(p.functor, *p.args))
-            for p in body:
-                if isinstance(p, evaluator.Term):
-                    s = evaluator.query(p.functor, *p.args)
-                else:
-                    s = evaluator.check(p)
-                block.append(s)
+            build_block(block, body)
             mutators.append(evaluator.rule(*block))
         else:
             assert False, row

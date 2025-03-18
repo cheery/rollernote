@@ -1,8 +1,9 @@
-from kiwisolver import Variable, Solver
+#from kiwisolver import Variable, Solver
 from reaction import *
 from collections import namedtuple
 from contextvars import ContextVar
 from .font import FontEngine
+import numpy as np
 import sdl2
 import moderngl
 
@@ -72,8 +73,8 @@ Down = namedtuple('Down', ['sym', 'repeat', 'modifiers'])
 Up   = namedtuple('Up', ['sym', 'modifiers'])
 Text = namedtuple('Text', ['text'])
 
-import dataui.parser
-import dataui.evaluator
+#import dataui.parser
+#import dataui.evaluator
 
 class GUI:
     def __init__(self, widget, scene_filename, storage):
@@ -124,6 +125,7 @@ class GUI:
         store = dataui.evaluator.Store(self.storage.copy())
         def interact(store):
             ui = self
+            draggable_set = store.data.get('draggable', [])
             button_set = store.data.get('button', [])
             t_hover = dataui.evaluator.Term('hover', ())
             t_click = dataui.evaluator.Term('click', ())
@@ -134,10 +136,21 @@ class GUI:
                     store.data['on'].add((t_hover, ident))
                     if ui.activeitem is None and ui.buttons == 1:
                         ui.activeitem = ident
+                        ui.activestate = ui.mouse
+                if ui.activeitem == ident and ui.buttons > 0 and (ident,) in draggable_set:
+                    dx = ui.mouse[0] - ui.activestate[0]
+                    dy = ui.mouse[1] - ui.activestate[1]
+                    t_drag = dataui.evaluator.Term('drag', (dx, dy))
+                    store.data['on'].add((t_drag, ident))
+                if ui.activeitem == ident and ui.buttons == 0 and (ident,) in draggable_set:
+                    dx = ui.mouse[0] - ui.activestate[0]
+                    dy = ui.mouse[1] - ui.activestate[1]
+                    t_drop = dataui.evaluator.Term('drop', (dx, dy))
+                    store.data['on'].add((t_drop, ident))
                 if ui.activeitem == ident and ui.buttons == 0 and (ident,) in button_set:
                     store.data['on'].add((t_click, ident))
                 
-        stages = {'on': (interact, ['present', 'button'])}
+        stages = {'on': (interact, ['present', 'button', 'draggable'])}
         dataui.evaluator.run_program(self.program, store, stages)
         self.finish()
 
@@ -148,6 +161,23 @@ class GUI:
         for color, rect in store.data.get('rectangle', set()):
             fill(self, color, rect)
 
+        for color, pos, r in store.data.get('circle', set()):
+            circle_fill(self, color, (pos[0] - r, pos[1] - r, r*2, r*2))
+
+        for color, pos0, pos1 in store.data.get('line', set()):
+            ui = self
+            program, vao, buffer, data = ui.mem(line_draw_setup)
+            program['scroll'] = ui.scroll_x, ui.scroll_y
+            program['size'] = ui.widget.width, ui.widget.height
+            program['color'] = color
+            data[0] = pos0[0]
+            data[1] = pos0[1]
+            data[2] = pos1[0]
+            data[3] = pos1[1]
+            buffer.write(data)
+            vao.render(mode=ui.ctx.LINES)
+
+
         font = self.mem(FontEngine, int(16))
         for text, (x,y) in store.data.get('text', set()):
             font.prepare((0,0,0,1))
@@ -155,6 +185,10 @@ class GUI:
             font.finish()
 
         sdl2.SDL_GL_SwapWindow(self.widget.window.window)
+
+        #for name in store.data:
+        #    for row in store.data[name]:
+        #        print(name, row)
 
     def prepare(self):
         self.hotitem = None
@@ -249,6 +283,13 @@ def plain_line_program(ui):
         """
     )
     return program
+
+def line_draw_setup(ui):
+   program = ui.mem(plain_line_program)
+   data = np.full(4, 0.0, dtype=np.float32)
+   buffer = ui.ctx.buffer(data)
+   vao = ui.ctx.vertex_array(program, buffer, 'point')
+   return program, vao, buffer, data
 
 def circle_filler(ui):
     ui.mem(common_interface)

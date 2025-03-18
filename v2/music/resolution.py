@@ -1,5 +1,5 @@
 from fractions import Fraction
-import notes
+from .notes import Pitch
 import colorsys
 import bisect
 import math
@@ -51,7 +51,7 @@ def resolve_pitch(note, key=base_key):
         return (octave+1)*12 + pc + note.accidental
 
 def pitch_name(p, key=base_key, show_octave=True):
-    if isinstance(p, notes.Pitch):
+    if isinstance(p, Pitch):
         q = resolve_pitch(p, key)
         p = resolve_pitch(p)
     else:
@@ -71,14 +71,14 @@ def enharmonics(pitch, key=base_key):
     try:
         i = list(x % 12 for x in key).index(pc)
         position = octave * (7 + (key[i] // 12)) + i
-        yield notes.Pitch(position, key[i] - base_key[i])
+        yield Pitch(position, key[i] - base_key[i])
     except ValueError:
         pass
     for k in range(-2, 3):
         octave = ((pitch - k) // 12)-1
         pc = (pitch - k) % 12
         try:
-            yield notes.Pitch(octave * 7 + base_key.index(pc), k)
+            yield Pitch(octave * 7 + base_key.index(pc), k)
         except ValueError:
             pass
 
@@ -98,7 +98,7 @@ def chord_enharmonics(canonical_pitches, key=base_key):
     # The problem is solved as an exact cover problem.
     X = build_X(Y)
     for solution in solve(X, Y, []):
-        yield list(s for s in solution if isinstance(s, notes.Pitch))
+        yield list(s for s in solution if isinstance(s, Pitch))
 
 def build_X(Y):
     X = dict()

@@ -6,7 +6,7 @@ from immutables import Map, MapMutation
 from typing import Union, Optional, Any, Callable
 
 from .avl import empty, Avl
-from .structures import Variable, Structure, Show, term
+from .structures import Variable, Structure, Kernel, Show, term
 from .query import query_pattern
 
 class Command:
@@ -29,11 +29,12 @@ class Stream:
     index  : dict[str, list[(int, int)]]
     alt    : deque[Answer]
 
-    def __init__(self, module, rules):
-        self.module = module
-        self.rules  = rules
-        self.index  = make_index(rules)
-        self.alt    = deque()
+    def branch(self, answers):
+        return Stream(self.module, self.rules, self.index, deque(answers))
+
+    @classmethod
+    def new(cls, module, rules):
+        return cls(module, rules, make_index(rules), deque())
 
     def run(self):
         while self.alt:
@@ -82,22 +83,31 @@ class Cont:
         return cont
 
 @dataclass
-class Answer:
+class Answer(Kernel):
     stream : Stream
     cont : Optional[Cont] = None
     subs : Map[Variable, Any] = Map()
-    sus  : Map[Variable, (Any, Any)] = Map()
+    sus  : Map[int, Any] = Map()
+    susi : Map[Variable, list[int]] = Map()
+    susn : int = 0
     ans  : Avl = empty
     neg  : Avl = empty
     pen  : Optional[(Any,Any)] = None
 
     def copy(self, **kwargs):
-        answer = Answer(self.stream, self.cont, self.subs, self.sus, self.ans, self.neg, self.pen)
+        answer = Answer(self.stream,
+            self.cont, self.subs,
+            self.sus, self.susi, self.susn,
+            self.ans, self.neg, self.pen)
         for k,v in kwargs.items():
             setattr(answer, k, v)
         return answer
 
-    def invoke(self, attr, val):
+    def query(self, attr, val):
+        entry = self.stream.module[attr.functor]
+        entry.query(self, attr, val)
+
+    def invoke(self, attr, val, _):
         #if attr.functor.startswith('!'):
         #    pos = term.New(attr.functor[1:], attr.args)
         #    if self.ground(pos) and self.ground(val):
@@ -113,104 +123,51 @@ class Answer:
         entry = self.stream.module[attr.functor]
         entry.enter(self, attr, val)
 
-    def invoke_choice(self, attr, vals, open):
+    def invoke_choice(self, attr, vals, _, open):
         entry = self.stream.module[attr.functor]
         entry.enter_choice(self, attr, vals, open)
 
     def bind(self, a, x):
-        if self.occurs(a, x):
+        if not super().bind(a,x):
             return False
-        self.subs = self.subs.set(a, x)
         try:
-            susps = self.sus[a]
+            indices = self.susi[a]
         except KeyError:
             pass
         else:
-            self.sus = self.sus.delete(a)
-            for susp in susps:
-                if self.ground(susp):
-                    if len(susp) == 2:
-                        self.invoke(*susp)
-                    else:
-                        self.invoke_choice(*susp)
-                else:
-                    self.suspension(susp)
+            self.susi = self.susi.delete(a)
+            susps = []
+            for n in indices:
+                susp = self.sus[n]
+                if self.ground_susp(susp):
+                    self.sus = self.sus.delete(n)
+                    susps.append(Unsuspend(susp))
+            if len(susps) > 0:
+                susps.append(Proceed())
+                self.cont = Cont([], susps, cont=self.cont)
         return True
 
     def suspension(self, record):
-        for v in self.occurrences(record):
-            self.sus = self.sus.set(v, self.sus.get(v, []) + [record])
+        n, self.susn = self.susn, self.susn + 1
+        self.sus = self.sus.set(n, record)
+        if record[2] & 1 > 0:
+            for v in self.occurrences(record[0]):
+                self.susi = self.susi.set(v, self.susi.get(v, []) + [n])
+        if record[2] & 2 > 0:
+            for v in self.occurrences(record[1]):
+                self.susi = self.susi.set(v, self.susi.get(v, []) + [n])
 
     def suspended(self):
-        for susps in self.sus.values():
-            yield from susps
+        for record in self.sus.values():
+            yield record
 
-    def deref(self, a):
-        while isinstance(a, Variable) and a in self.subs:
-            a = self.subs[a]
-        return a
-
-    def occurs(self, a, x):
-        x = self.deref(x)
-        if a is x:
-            return True
-        elif isinstance(x, Structure):
-            return self.occurs(a, x.args)
-        elif isinstance(x, tuple):
-            return any(self.occurs(a, y) for y in x)
-        else:
-            return False
-
-    def ground(self, x):
-        x = self.deref(x)
-        if isinstance(x, Variable):
-            return False
-        elif isinstance(x, Structure):
-            return self.ground(x.args)
-        elif isinstance(x, tuple):
-            return all(self.ground(y) for y in x)
-        return True
-
-    def occurrences(self, x):
-        x = self.deref(x)
-        if isinstance(x, Variable):
-            yield x
-        elif isinstance(x, Structure):
-            yield from self.occurrences(x.args)
-        elif isinstance(x, tuple):
-            for y in x:
-                yield from self.occurrences(y)
-    
-    def unify(self, x, y):
-        x = self.deref(x)
-        y = self.deref(y)
-        if x is y:
-            return True
-        elif isinstance(x, Variable):
-            return self.bind(x,y)
-        elif isinstance(y, Variable):
-            return self.bind(y,x)
-        elif isinstance(x, Structure) and isinstance(y, Structure):
-            if x.functor == y.functor:
-                return self.unify(x.args, y.args)
-            else:
-                return False
-        elif isinstance(x, tuple) and isinstance(y, tuple):
-            if len(x) == len(y):
-                return all(self.unify(x,y) for x,y in zip(x, y))
-            else:
-                return False
-        else:
-            return False
-
-    def walk(self, x):
-        x = self.deref(x)
-        if isinstance(x, Structure):
-            return Structure(x.functor, self.walk(x.args))
-        elif isinstance(x, tuple):
-            return tuple(self.walk(a) for a in x)
-        else:
-            return x
+    def ground_susp(self, record):
+        ground = True
+        if record[2] & 1 > 0:
+            ground &= self.ground(record[0])
+        if record[2] & 2 > 0:
+            ground &= self.ground(record[1])
+        return ground
 
 @dataclass
 class Ix(Expr):
@@ -227,10 +184,37 @@ class Xt(Expr):
         return term.New(self.functor, args)
 
 @dataclass
+class Tu(Expr):
+    args : list[Expr]
+    def evaluate(self, env : Env):
+        return tuple(a.evaluate(env) for a in self.args)
+
+@dataclass
 class Const(Expr):
     value : Any
     def evaluate(self, env : Env):
         return self.value
+
+@dataclass
+class Unsuspend(Command):
+    susp : Any
+    def __call__(self, answer : Answer):
+        susp = self.susp
+        if len(susp) == 3:
+            answer.invoke(*susp)
+        else:
+            answer.invoke_choice(*susp)
+
+@dataclass
+class Query(Command):
+    name : str
+    args : list[Expr]
+    val  : Expr
+    def __call__(self, answer : Answer):
+        env = answer.cont.env
+        args = tuple(a.evaluate(env) for a in self.args)
+        val  = self.val.evaluate(env)
+        answer.query(term.New(self.name, args), val)
 
 @dataclass
 class Invoke(Command):
@@ -249,7 +233,7 @@ class Invoke(Command):
             if cont is not None:
                 cont = cont.copy()
             answer.cont = cont
-        answer.invoke(term.New(self.name, args), val)
+        answer.invoke(term.New(self.name, args), val, 0)
         if self.recursive:
             answer.stream.alt.appendleft(answer)
             raise Halt
@@ -264,7 +248,7 @@ class InvokeChoice(Command):
         env = answer.cont.env
         args = tuple(a.evaluate(env) for a in self.args)
         vals = tuple(v.evaluate(env) for v in self.vals)
-        answer.invoke_choice(term.New(self.name, args), vals, self.open)
+        answer.invoke_choice(term.New(self.name, args), vals, 0, self.open)
 
 @dataclass
 class Function:
@@ -273,8 +257,8 @@ class Function:
     ground : bool = False
     def enter(self, answer, attr, val):
         assert self.arity == len(attr.args)
-        if self.ground and not answer.ground(attr) and not answer.ground(val):
-            answer.suspension((attr, val))
+        if self.ground and not answer.ground(attr):
+            answer.suspension((attr, val, 1))
         else:
             answer.cont = Cont(list(attr.args) + [val], self.code, cont=answer.cont)
 
@@ -321,15 +305,32 @@ def assertion(answer, attr, opt):
 @dataclass
 class Assertion:
     arity : int
+    def query(self, answer, attr, val):
+        assert self.arity == len(attr.args)
+        gen = query_pattern(answer.ans, answer.walk(attr))
+        try:
+            record = next(gen)
+        except StopIteration:
+            raise Halt
+        alt = Cont([], [ResumeQuery(gen, (attr,val)), Proceed()], cont=answer.cont.copy())
+        answer.stream.alt.append(answer.copy(cont=alt))
+        if not answer.unify(record, (attr,val)):
+            raise Halt
+
     def enter(self, answer, attr, val):
         assert self.arity == len(attr.args)
-        if answer.ground(attr) and answer.ground(val):
+        attr = answer.walk(attr)
+        val  = answer.walk(val)
+        if answer.ground((attr, val)):
             assertion(answer, attr, just(val))
             rollforward(answer)
         else:
-            answer.suspension((attr, val))
+            answer.suspension((attr, val, 3))
 
     def enter_choice(self, answer, attr, vals, open):
+        assert self.arity == len(attr.args)
+        attr = answer.walk(attr)
+        vals = answer.walk(vals)
         if answer.ground((attr, vals)):
             for val in vals:
                 subanswer = answer.copy(cont=answer.cont.copy())
@@ -344,7 +345,7 @@ class Assertion:
             else:
                 raise Halt
         else:
-            answer.suspension((attr, vals, open))
+            answer.suspension((attr, vals, 3, open))
 
 def rollforward(answer):
     if answer.pen is not None:
@@ -365,7 +366,7 @@ def select(answer, attr, val):
     rules = answer.stream.rules
     for index, column in answer.stream.index.get(attr.functor, []):
         precedents, env, code = rules[index]
-        subanswer = Answer(answer.stream)
+        subanswer = Kernel()
         if subanswer.unify((attr, val), precedents[column]):
             stream = [subanswer.subs]
             for i, (attr2, val2) in enumerate(precedents):
@@ -373,13 +374,13 @@ def select(answer, attr, val):
                     continue
                 new_stream = []
                 for subs in stream:
-                    subanswer = Answer(answer.stream, subs=subs)
+                    subanswer = Kernel(subs)
                     for record in query_pattern(answer.ans, subanswer.walk(attr2)):
                         if subanswer.unify((attr2, val2), record):
                             new_stream.append(subanswer.subs)
                 stream = new_stream
             for subs in stream:
-                subanswer = Answer(answer.stream, subs=subs)
+                subanswer = Kernel(subs=subs)
                 subenv = [subanswer.walk(x) for x in env]
                 assert all(subanswer.ground(x) for x in subenv)
                 answer.cont = Cont(subenv, code, cont=answer.cont)
@@ -405,8 +406,8 @@ class Dataset:
     ground : bool = False
     def enter(self, answer, attr, val):
         assert self.arity == len(attr.args)
-        if self.ground and not answer.ground(attr) and not answer.ground(val):
-            answer.suspension((attr, val))
+        if self.ground and not answer.ground(attr):
+            answer.suspension((attr, val, 1))
         else:
             gen = query_pattern(self.data, answer.walk(attr))
             try:
@@ -466,9 +467,72 @@ class Proceed(Command):
 
 @dataclass
 class Fail(Command):
-    def __call__(self, ab : Stream, frame : Frame):
+    def __call__(self, answer : Answer):
         raise Halt
- 
+
+@dataclass
+class Aggregation(Command):
+    part : Expr
+    group : Expr
+    subcode : Code
+    order_by : Optional[Expr]
+    def __call__(self, answer : Answer):
+        varset = set(self.occurrences(tuple(answer.cont.env)))
+        group  = self.group.evaluate(answer.cont.env)
+        part   = self.part.evaluate(answer.cont.env)
+        if self.order_by is None:
+            order_by = None
+        else:
+            order_by = self.order_by.evaluate(subenv)
+        partition = tuple(varset - set(self.occurrences(group)))
+
+        subanswer = answer.copy(cont=Cont(subenv, self.subcode))
+        stream = answer.stream.branch([subanswer])
+        partitions = dict()
+        for subanswer in stream.run():
+            #subanswer.sub = prune(subanswer.sub, varset)
+            key = subanswer.walk(partition)
+            key2 = subanswer.walk(part)
+            p = partitions.setdefault(key, dict())
+            p.setdefault(key2, []).append(subanswer)
+        nsubs = set()
+            #nsubs = set()
+            #for _, ppsubs in partitions.items():
+            #    if order is not None:
+            #        ppsubs.sort(key = sort_key)
+            #    ag = []
+            #    rankvar = None
+            #    for var, func, params in aggregations:
+            #        if func == 'max':
+            #            ag.append((var, max(evaluate(params[0], psub) for psub in ppsubs)))
+            #        elif func == 'min':
+            #            ag.append((var, min(evaluate(params[0], psub) for psub in ppsubs)))
+            #        elif func == 'sum':
+            #            ag.append((var, sum(evaluate(params[0], psub) for psub in ppsubs)))
+            #        elif func == 'avg':
+            #            ag.append((var, sum(evaluate(params[0], psub) for psub in ppsubs) / len(ppsubs)))
+            #        elif func == 'count':
+            #            ag.append((var, len(ppsubs)))
+            #        elif func == 'rank':
+            #            rankvar = var
+            #        else:
+            #            assert False, f"unknown aggregate function {func}"
+            #    for i, psub in enumerate(ppsubs):
+            #        if rankvar is not None:
+            #            psub = unify(i, evaluate(rankvar, psub), psub)
+            #        for var, value in ag:
+            #            if psub is not None:
+            #                psub = unify(evaluate(var, psub), value, psub)
+            #        if psub is None:
+            #            continue
+            #        nsubs.add(prune(psub, occ))
+            #if nsubs:
+            #    cb[2](nsubs, pivot, work, store, new, era, cn)
+
+def prune(subs, varset):
+    a = Kernel(subs)
+    return Map({k:a.walk(v) for k,v in subs.items() if k in varset})
+
 if __name__=='__main__':
     module = {
         "edge": Assertion(2),
@@ -502,12 +566,13 @@ if __name__=='__main__':
                             [Xt("unit", []), Xt("baz", [])], open=True),
         InvokeChoice("bar", [Xt("foo", []), Ix(0)],
                             [Xt("unit", []), Xt("bar", [])], open=True),
-        Invoke("foo", [Ix(0), Ix(1)], Xt("unit", [])),
+        Invoke("foo", [Xt("baz", []), Ix(1)], Xt("unit", [])),
         Unify(Ix(0), Const(2)),
+        Query("edge", [Const(1), Ix(1)], Xt("unit", [])),
         Proceed(),
     ]
 
-    stream = Stream(module, rules)
+    stream = Stream.new(module, rules)
     stream.answer(Cont([X,Y], code))
     for answer in stream.run():
         show = Show(names = {X: "X", Y: "Y"})
@@ -515,15 +580,21 @@ if __name__=='__main__':
         for attr, val in answer.ans:
             print(f"  {show(answer.walk(attr),5)} is {show(answer.walk(val),5)}")
         for record in set(answer.suspended()):
-            if len(record) == 2:
-                attr, val = record
+            if len(record) == 3:
+                attr, val, _ = record
                 print(f"  [{show(answer.walk(attr),5)} is {show(answer.walk(val),5)}]")
-            elif record[2]:
-                attr, vals, _ = record
-                s = "{" + ", ".join(show(answer.walk(v), 5) for v in vals) + "}"
+            elif record[3]:
+                attr, vals, _, _ = record
+                if len(vals) == 1:
+                    s = show(answer.walk(vals[0]))
+                else:
+                    s = show(answer.walk(vals))
                 print(f"  [{show(answer.walk(attr),5)} is? {s}]")
             else:
-                attr, vals, _ = record
-                s = "{" + ", ".join(show(answer.walk(v), 5) for v in vals) + "}"
+                attr, vals, _, _ = record
+                if len(vals) == 1:
+                    s = show(answer.walk(vals[0]))
+                else:
+                    s = show(answer.walk(vals))
                 print(f"  [{show(answer.walk(attr),5)} is {s}]")
 

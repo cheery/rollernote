@@ -84,6 +84,20 @@ def occurs(var, t):
         return any(occurs(var, a) for a in t)
     return False
 
+def occurences(t, result):
+    if isinstance(t, Variable):
+        result.add(t)
+    if isinstance(t, Term):
+        for a in t.args:
+            occurences(a, result)
+    if isinstance(t, Call):
+        for a in t.args:
+            occurences(a, result)
+    if isinstance(t, tuple):
+        for a in t:
+            occurences(a, result)
+    return result
+
 def step(t, subs):
     while isinstance(t, Variable) and t in subs:
         t = subs[t]
@@ -92,10 +106,10 @@ def step(t, subs):
 def walk(t, subs):
     t = step(t, subs)
     if isinstance(t, Term):
-        args = [walk(a, subs) for a in t.args]
+        args = tuple(walk(a, subs) for a in t.args)
         return Term(t.functor, args)
     if isinstance(t, Call):
-        args = [walk(a, subs) for a in t.args]
+        args = tuple(walk(a, subs) for a in t.args)
         return Call(t.func, args)
     if isinstance(t, tuple):
         return tuple(walk(a, subs) for a in t)
@@ -204,6 +218,65 @@ X = Variable('X')
 Y = Variable('Y')
 Z = Variable('Z')
 
+def window(group, order, aggregations):
+    def _chain_(cb):
+        def _init_(store):
+            return cb[0](store)
+        def _rerun_(pivot):
+            return cb[1](pivot)
+        def _impl_(psubs, pivot, work, store, new, era, cn):
+            partition = tuple(o for o in _occur_(set()) if o not in group)
+            occ = cb[4](set())
+            partitions = dict()
+            for psub in psubs:
+                key = evaluate(partition, psub)
+                partitions.setdefault(key, list()).append(psub)
+            def sort_key(psub):
+                return evaluate(order, psub)
+            nsubs = set()
+            for _, ppsubs in partitions.items():
+                if order is not None:
+                    ppsubs.sort(key = sort_key)
+                ag = []
+                rankvar = None
+                for var, func, params in aggregations:
+                    if func == 'max':
+                        ag.append((var, max(evaluate(params[0], psub) for psub in ppsubs)))
+                    elif func == 'min':
+                        ag.append((var, min(evaluate(params[0], psub) for psub in ppsubs)))
+                    elif func == 'sum':
+                        ag.append((var, sum(evaluate(params[0], psub) for psub in ppsubs)))
+                    elif func == 'avg':
+                        ag.append((var, sum(evaluate(params[0], psub) for psub in ppsubs) / len(ppsubs)))
+                    elif func == 'count':
+                        ag.append((var, len(ppsubs)))
+                    elif func == 'rank':
+                        rankvar = var
+                    else:
+                        assert False, f"unknown aggregate function {func}"
+                for i, psub in enumerate(ppsubs):
+                    if rankvar is not None:
+                        psub = unify(i, evaluate(rankvar, psub), psub)
+                    for var, value in ag:
+                        if psub is not None:
+                            psub = unify(evaluate(var, psub), value, psub)
+                    if psub is None:
+                        continue
+                    nsubs.add(prune(psub, occ))
+            if nsubs:
+                cb[2](nsubs, pivot, work, store, new, era, cn)
+        def _graph_():
+            return cb[3]()
+        def _occur_(result):
+            occurences(group, result)
+            occurences(order, result)
+            for k, func, params in aggregations:
+                occurences(k, result)
+                occurences(params, result)
+            return cb[4](result)
+        return _init_, _rerun_, _impl_, _graph_, _occur_
+    return _chain_
+
 def query(name, *params):
     def _chain_(cb):
         def _init_(store):
@@ -211,20 +284,31 @@ def query(name, *params):
         def _rerun_(pivot):
             return cb[1](pivot) or name == pivot
         def _impl_(psubs, pivot, work, store, new, era, cn):
+            occ = cb[4](set())
             try:
                 seq = work if name == pivot else store.data[name]
             except KeyError:
                 seq = set()
-            head = evaluate(Term(name, params), psubs)
-            for t in seq:
-                subs = unify(head, Term(name, t), psubs)
-                if subs is not None:
-                    cb[2](subs, pivot, work, store, new, era, cn)
+            nsubs = set()
+            for psub in psubs:
+                head = evaluate(Term(name, params), psub)
+                for t in seq:
+                    subs = unify(head, Term(name, t), psub)
+                    if subs is not None:
+                        nsubs.add(prune(subs, occ))
+            if nsubs:
+                cb[2](nsubs, pivot, work, store, new, era, cn)
         def _graph_():
             dst, src = cb[3]()
             return dst, src + [name]
-        return _init_, _rerun_, _impl_, _graph_
+        def _occur_(result):
+            occurences(Term(name, params), result)
+            return cb[4](result)
+        return _init_, _rerun_, _impl_, _graph_, _occur_
     return _chain_
+
+def prune(subs, occ):
+    return Map({k:v for k,v in subs.items() if k in occ})
 
 def check(param):
     def _chain_(cb):
@@ -232,12 +316,19 @@ def check(param):
             return cb[0](store)
         def _rerun_(pivot):
             return cb[1](pivot)
-        def _impl_(subs, pivot, work, store, new, era, cn):
-            if evaluate(param, subs):
-                cb[2](subs, pivot, work, store, new, era, cn)
+        def _impl_(psubs, pivot, work, store, new, era, cn):
+            nsubs = set()
+            for psub in psubs:
+                if evaluate(param, psub):
+                    nsubs.add(psub)
+            if nsubs:
+                cb[2](nsubs, pivot, work, store, new, era, cn)
         def _graph_():
             return cb[3]()
-        return _init_, _rerun_, _impl_, _graph_
+        def _occur_(result):
+            occurences(param, result)
+            return cb[4](result)
+        return _init_, _rerun_, _impl_, _graph_, _occur_
     return _chain_
 
 def insert(name, *params):
@@ -246,17 +337,19 @@ def insert(name, *params):
             store.data[name] = set()
     def _rerun_(pivot):
         return False
-    def _impl_(subs, pivot, work, store, new, era, cn):
-        t = tuple(evaluate(p, subs) for p in params)
-        assert is_ground(Term(name, t))
-        if t not in store.data[name]:
-            if name not in new:
-                new[name] = set([t])
-            else:
-                new[name].add(t)
+    def _impl_(psubs, pivot, work, store, new, era, cn):
+        for psub in psubs:
+            t = tuple(evaluate(p, psub) for p in params)
+            assert is_ground(Term(name, t))
+            if t not in store.data[name]:
+                new.setdefault(name, set()).add(t)
     def _graph_():
         return name, []
-    return _init_, _rerun_, _impl_, _graph_
+    def _occur_(result):
+        for param in params:
+            occurences(param, result)
+        return result
+    return _init_, _rerun_, _impl_, _graph_, _occur_
 
 def mutate(inserts, deletions):
     def _init_(store):
@@ -266,27 +359,33 @@ def mutate(inserts, deletions):
                 store.data[name] = set()
     def _rerun_(pivot):
         return False
-    def _impl_(subs, pivot, work, store, new, era, cn):
-        for ins in inserts:
-            ins = evaluate(ins, subs)
-            assert is_ground(ins)
-            name, t = ins
-            if name not in new:
-                new[name] = set([t])
-            else:
-                new[name].add(t)
-        for de in deletions:
-            de = evaluate(de, subs)
-            assert is_ground(de)
-            name, t = de
-            if name not in era:
-                era[name] = set([t])
-            else:
-                era[name].add(t)
-            
+    def _impl_(psubs, pivot, work, store, new, era, cn):
+        for psub in psubs:
+            for ins in inserts:
+                ins = evaluate(ins, psub)
+                assert is_ground(ins)
+                name, t = ins
+                if name not in new:
+                    new[name] = set([t])
+                else:
+                    new[name].add(t)
+            for de in deletions:
+                de = evaluate(de, psub)
+                assert is_ground(de)
+                name, t = de
+                if name not in era:
+                    era[name] = set([t])
+                else:
+                    era[name].add(t)
     def _graph_():
         return '', []
-    return _init_, _rerun_, _impl_, _graph_
+    def _occur_(result):
+        for ins in inserts:
+            occurences(ins, result)
+        for de in deletions:
+            occurences(de, result)
+        return result
+    return _init_, _rerun_, _impl_, _graph_, _occur_
 
 def constraint(name, param):
     def _init_(store):
@@ -294,16 +393,16 @@ def constraint(name, param):
             store.data[name] = set()
     def _rerun_(pivot):
         return False
-    def _impl_(subs, pivot, work, store, new, era, cn):
-        p = walk(param, subs)
-        assert is_evaluable(p)
-        if name not in cn:
-            cn[name] = [p]
-        else:
-            cn[name].append(p)
+    def _impl_(psubs, pivot, work, store, new, era, cn):
+        for psub in psubs:
+            p = walk(param, psub)
+            assert is_evaluable(p)
+            cn.setdefault(name, []).append(p)
     def _graph_():
         return name, []
-    return _init_, _rerun_, _impl_, _graph_
+    def _occur_(result):
+        return occurences(param, result)
+    return _init_, _rerun_, _impl_, _graph_, _occur_
 
 def rule(head, *chain):
     for fn in reversed(chain):
@@ -320,7 +419,7 @@ def run(store, rules, once=False):
     for rule in rules:
         rule[0](store)
     for rule in rules:
-        rule[2](empty, None, None, store, new, era, cn)
+        rule[2]([empty], None, None, store, new, era, cn)
     while new and not once:
         n += 1
         fresh, new = new, dict()
@@ -332,7 +431,7 @@ def run(store, rules, once=False):
         for name in fresh:
             for rule in rules:
                 if rule[1](name):
-                    rule[2](empty, name, fresh[name], store, new, era, cn)
+                    rule[2]([empty], name, fresh[name], store, new, era, cn)
     if once:
         for name in era:
             store.data[name].difference_update(era[name])
