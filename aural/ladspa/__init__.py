@@ -83,8 +83,8 @@ class Handle:
                 default = hint['default']
                 value = default['value']
                 if default['ratio']:
-                    u = value
-                    w = 1 - u
+                    w = value
+                    u = 1 - w
                     if logarithmic:
                         value = math.exp(math.log(hint['lower']) * u + math.log(hint['upper'] * w))
                     else:
@@ -180,17 +180,19 @@ class Locator:
                 root = os.path.splitext(os.path.basename(name))[0]
                 if root not in self.modules:
                     self.modules[root] = name
+        self.loaded = {}
 
-    def load(self, root, index=0):
+    def load(self, root, index):
+        if root in self.loaded:
+            return self.loaded[root][index]
         name = self.modules[root]
-        if isinstance(index, int):
-            this = load(name, index)
-        else:
-            this = None
-            for desc in load_all(name):
-                if desc.info['label'] == index:
-                    this = desc
-                    break
+        this = None
+        self.loaded[root] = table = {}
+        for desc in load_all(name):
+            label = desc.info['label']
+            table[label] = desc
+            if label == index:
+                this = desc
         if this is None:
             contents = []
             for desc in load_all(name):
@@ -236,6 +238,9 @@ class Plugin:
 
     def connect(self, wargs, wout=None):
         return self.instance.connect(wargs, self.engine.sample_count, wout)
+
+    def connect_port(self, i, data):
+        return self.instance.connect_port(i, data)
 
     def run(self):
         self.instance.run(self.engine.sample_count)

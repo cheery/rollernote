@@ -8,6 +8,31 @@ import math
 import numpy as np
 import moderngl
 
+#detach_context_menu = namedtuple('detach_context_menu', [])
+
+class ContextMenuSheet(gui6.Node):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        with gui6.NodeContextManager(self):
+            gui6.position_type(gui6.Absolute)
+            gui6.width_percent(100.0)
+            gui6.height_percent(100.0)
+
+    def post_draw(self, ui, x, y):
+        if ui.inside and ui.buttons > 0:
+            ui.queue(self.root.close_context_menu, self)
+
+class ContextMenu(gui6.Node):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        with gui6.NodeContextManager(self):
+            gui6.position_type(gui6.Absolute)
+            gui6.padding(gui6.All, 2.0)
+
+    def pre_draw(self, ui, x, y):
+        rect = self.rect.offset(x, y)
+        gui6.fill(ui, (0.6,0.6,0.6, 1.0), rect)
+
 class Border(gui6.Node):
     def __init__(self, *args, color=(0,0,0,1), **kwargs):
         super().__init__(*args, **kwargs)
@@ -26,12 +51,11 @@ class Fill(gui6.Node):
         rect = self.rect.offset(x,y)
         gui6.fill(ui, self.color, rect)
 
-clicked = namedtuple('clicked', [])
-
 class Button(gui6.Node):
-    def __init__(self, *args, signal=clicked(), **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.signal = signal
+
+    clicked : gui6.Signal
 
     def pre_draw(self, ui, x, y):
         rect = self.rect.offset(x,y)
@@ -44,7 +68,7 @@ class Button(gui6.Node):
         else:
             gui6.trace(ui, (0,0,0,1), rect)
         if ui.buttons == 0 and ui.hotitem == self and ui.activeitem == self:
-            self.emit([], self.signal)
+            ui.queue(self.clicked.emit)
 
 def measure_label(noderef, width, widthMode, height, heightMode):
     font_height, text = gui6.YGNodeGetContext(noderef)

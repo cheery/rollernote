@@ -40,8 +40,8 @@ class Patch(reaction.Flow):
                     if hint['sample_rate']:
                         lower *= bay.engine.sample_rate
                         upper *= bay.engine.sample_rate
-                    u = value
-                    w = 1.0 - value
+                    u = 1.0 - value
+                    w = value
                     if hint['logarithmic']:
                         value = math.exp(math.log(lower) * u + math.log(upper) * w)
                     else:

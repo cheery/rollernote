@@ -29,6 +29,12 @@ class SDLDevice:
     def close(self):
         sdl2.SDL_PauseAudio(1)
 
+    def __enter__(self):
+        self.lock()
+
+    def __exit__(self, type, value, traceback):
+        self.unlock()
+
 class WavDevice:
     def __init__(self, filename, transport, *channels):
         self.transport = transport

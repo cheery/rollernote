@@ -6,6 +6,7 @@ from contextvars import ContextVar
 import numpy as np
 import sdl2
 import moderngl
+import typing
 
 context = ContextVar('context')
 ui      = ContextVar('ui')
@@ -33,11 +34,15 @@ class Node(metaclass=NodeMetaclass):
         self.node = YGNodeNew()
         self.pending_signals = []
         self.pending_children = False
+        for _name, _cls in typing.get_type_hints(type(self)).items():
+            if _cls is Signal and not hasattr(self, _name):
+                setattr(self, _name, _cls())
 
         #self.rect = rect
         #self.layout = layout
         #self.computed_size = None
         #self.scroll = scroll
+        self.mouse_visible = True
 
     @property
     def rect(self):
@@ -92,26 +97,20 @@ class Node(metaclass=NodeMetaclass):
     def __del__(self):
         YGNodeFree(self.node)
 
-    def emit(self, path, action):
-        if not self.on_signal(path, action):
-            if self.parent:
-                self.parent.emit([self.name] + path, action)
-        else:
-            self.pending_signals.append((path, action))
-            parent = self.parent
-            while parent:
-                  parent.pending_children = True
-                  parent = parent.parent
-
-    def on_signal(self, path, action):
-        return False
-
     def draw(self, ui, x, y):
         x1, y1 = x + self.rect.left, y + self.rect.bottom
-        inside, ui.inside = ui.inside, ui.inside and box((ui.mouse[0] - x, ui.mouse[1] - y), self.rect)
+        mouse = ui.mouse[0] - x1, ui.mouse[1] - y1
         self.pre_draw(ui, x, y)
+        inside = ui.inside
+        cover = None
+        if inside:
+            for child in self:
+                if child.mouse_visible and box(mouse, child.rect):
+                    cover = child
         for child in self:
+            ui.inside = child is cover
             child.draw(ui, x1, y1)
+        ui.inside = None is cover
         self.post_draw(ui, x, y)
         ui.inside = inside
         #trace(ui, (1,0,1,1), self.rect.offset(x, y))
@@ -121,18 +120,6 @@ class Node(metaclass=NodeMetaclass):
 
     def post_draw(self, ui, x, y):
         pass
-
-    def on_process(self, path, action):
-        pass
-
-    def process(self):
-        pending, self.pending_signals = self.pending_signals, []
-        for path, action in pending:
-            self.on_process(path, action)
-        if self.pending_children:
-            self.pending_children = False
-            for child in self:
-                child.process()
 
     #def get_size(self, ui, available_width, available_height):
     #    if self.layout is None:
@@ -178,6 +165,13 @@ class Node(metaclass=NodeMetaclass):
             node.traverse(results)
         return results
 
+    @property
+    def root(self):
+        root = self
+        while root.parent:
+            root = root.parent
+        return root
+
 def prefab(constructor=Node, *nargs, **nkwargs):
     def _decorator_(func):
         def _prefab_(*args, **kwargs):
@@ -202,6 +196,22 @@ class NodeContextManager:
 
     def __exit__(self, exc_type, exc_value, traceback):
         context.reset(self.token)
+
+class Signal:
+    def __init__(self):
+        self._slots = []
+
+    def connect(self, slot):
+        if slot not in self._slots:
+            self._slots.append(slot)
+
+    def disconnect(self, slot):
+        if slot in self._slots:
+            self._slots.remove(slot)
+
+    def emit(self, *args, **kwargs):
+        for slot in self._slots:
+            slot(*args, **kwargs)
 
 def circle(xy, rect):
     x, y = xy
@@ -264,6 +274,7 @@ class GUI:
         self.hotitem = None
         self.activeitem = None
         self.activestate = None
+        self.activedrag = None
         self.focus = None
         self.focusstate = None
         self.lastfocusable = None
@@ -273,6 +284,8 @@ class GUI:
 
         #self.scroll_x = 0
         #self.scroll_y = 0
+
+        self.queued = []
 
         self.scene = scene
         self.do_layout()
@@ -289,6 +302,9 @@ class GUI:
 
         #self.program = program
         #self.storage = storage
+
+    def queue(self, fn, *args, **kwargs):
+        self.queued.append((fn, args, kwargs))
 
     def do_layout(self):
         token = ui.set(self)
@@ -353,7 +369,9 @@ class GUI:
         #stages = {'on': (interact, ['present', 'button', 'draggable'])}
         #dataui.evaluator.run_program(self.program, store, stages)
         self.finish()
-        self.scene.process()
+        queued, self.queued = self.queued, []
+        for fn, args, kwargs in queued:
+            fn(*args, **kwargs)
 
         #for color, rect in store.data.get('rectangle', set()):
         #    fill(self, color, rect)
@@ -957,14 +975,14 @@ def flex_basis_auto():
 def flex_basis_percent(basis):
     YGNodeStyleSetFlexBasisPercent(context.get().node, basis)
 
-def grow(grow):
-    YGNodeStyleSetGrow(context.get().node, grow)
+def flex_grow(grow):
+    YGNodeStyleSetFlexGrow(context.get().node, grow)
 
-def shrink(shrink):
-    YGNodeStyleSetShrink(context.get().node, shrink)
+def flex_shrink(shrink):
+    YGNodeStyleSetFlexShrink(context.get().node, shrink)
 
-def wrap(wrap):
-    YGNodeStyleSetWrap(context.get().node, wrap)
+def flex_wrap(wrap):
+    YGNodeStyleSetFlexWrap(context.get().node, wrap)
 
 def justify_content(jc):
     YGNodeStyleSetJustifyContent(context.get().node, jc)

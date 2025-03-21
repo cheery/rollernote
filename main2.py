@@ -1,7 +1,6 @@
-# Midiä sämpleiksi nauhoittava soitto-ohjelma
 import aural.device
 import aural.ladspa
-
+from collections import namedtuple
 import components3
 import mido
 import sdl2.ext
@@ -441,16 +440,23 @@ def demo(editor):
 # #        self.dataset.loc[key, name] = value
 
 class MainApp(gui6.Node):
-    def on_signal(self, path, action):
-        match action:
-            case components3.clicked():
-                print("button clicked")
-            case _:
-                pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.context_menus = []
 
     def pre_draw(self, ui, x, y):
         rect = self.rect.offset(x, y)
         gui6.fill(ui, (0.2, 0.2, 0.2, 1.0), rect)
+
+    def open_context_menu(self, cmenu):
+        self.context_menus.append(cmenu)
+        self.add_child(cmenu)
+
+    def close_context_menu(self, cmenu):
+        index = self.context_menus.index(cmenu)
+        for node in self.context_menus[index:]:
+            node.detach()
+        self.context_menus[index:] = []
 
 import v2.avl
 import v2.mid
@@ -461,71 +467,16 @@ import v2.widget
 
 import aural.ladspa
 
-locator = aural.ladspa.Locator()
-selection = list(locator.list())
+from synth.entities import PrimType, signal, control
+from synth.entities import Pipeline, OutPort, InPort, Constant, Knob, value_knob
+from synth.entities import Template
+from synth.instances import build_pipeline, Transport
 
-class PrimType:
-    pass
-
-signal  = PrimType()
-control = PrimType()
-clavier = PrimType()
-
-class Pipeline:
-    def __init__(self, uid, inputs, pipe, outputs, input_names, output_names):
-        self.uid = uid
-        self.inputs = inputs
-        self.pipe = pipe
-        self.outputs = outputs
-        self.input_names = input_names
-        self.output_names = output_names
-
-class OutPort:
-    def __init__(self, uid, ty):
-        self.uid = uid
-        self.ty  = ty
-
-class Constant:
-    def __init__(self, const):
-        self.const = const
-
-class Knob:
-    def __init__(self, lower, upper, ratio, is_log=False):
-        self.lower = lower
-        self.upper = upper
-        self.is_log = is_log
-        self.ratio = ratio
-
-    def get_value(self):
-        lower, upper = self.lower, self.upper
-        u = self.ratio
-        if self.is_log:
-            return math.exp(math.log(lower) * u + math.log(upper) * (1-u))
-        else:
-            return lower * u + upper * (1-u)
-
-def value_knob(lower, upper, value, is_log=False):
-    ratio = math.log(value / upper) / math.log(lower / upper)
-    return Knob(lower, upper, ratio, is_log=is_log)
-
-class InPort:
-    def __init__(self, value, ty):
-        self.value = value
-        self.ty    = ty
-
-class Template:
-    def __init__(self, uid, module, label, inputs, outputs):
-        self.uid = uid
-        self.module = module
-        self.label = label
-        self.inputs = inputs
-        self.outputs = outputs
-        self.desc = locator.load(module, label)
-        #print("%.2f" % (self.desc.info['ports'][0]['hint']['lower'] * 44100))
-        #print("%.2f" % (self.desc.info['ports'][0]['hint']['upper'] * 44100))
+value_updated = namedtuple("value_updated", [])
+open_context_menu = namedtuple("open_context_menu", ['menu'])
 
 main_pipe = Pipeline(1, 
-  inputs = [ OutPort(2, clavier) ],
+  inputs = [ ], #OutPort(2, clavier) ],
   pipe = [
       Template(4, "sawtooth_1641", b"sawtooth_fc_oa",
          inputs = [ InPort(value_knob(0.92, 22050, 440.0, is_log=True), control) ],
@@ -543,11 +494,49 @@ def color_by_type(ty):
     else:
         return (1,1,1,1)
 
+port_detach = namedtuple('port_detach', ['port'])
+
+def close_context_menu(node):
+    def _close_context_menu():
+        node.root.close_context_menu(node)
+    return _close_context_menu
+
+@gui6.prefab(components3.ContextMenuSheet)
+def guiport_context_menu(x, y, guiport):
+    this = gui6.context.get()
+    with components3.ContextMenu():
+        gui6.position(gui6.Left, x)
+        gui6.position(gui6.Top, y)
+        if isinstance(guiport.port, InPort):
+            with components3.Button() as button:
+                button.clicked.connect(close_context_menu(this))
+                @button.clicked.connect
+                def detach_port():
+                    guiport.port.value = Constant(0)
+                    guiport.updated.emit()
+                gui6.padding(gui6.Horizontal, 10)
+                components3.Label(text="detach",   color=(0,0,0,1))
+            with components3.Button() as button:
+                button.clicked.connect(close_context_menu(this))
+                gui6.padding(gui6.Horizontal, 10)
+                components3.Label(text="constant", color=(0,0,0,1))
+            with components3.Button() as button:
+                button.clicked.connect(close_context_menu(this))
+                gui6.padding(gui6.Horizontal, 10)
+                components3.Label(text="knob",     color=(0,0,0,1))
+
 class GuiPort(gui6.Node):
-    def __init__(self, *args, color, value=None, **kwargs):
+    def __init__(self, *args, color, port, **kwargs):
         super().__init__(*args, **kwargs)
         self.color = color
-        self.value = value
+        self.port  = port
+
+    updated : gui6.Signal
+
+    @property
+    def value(self):
+        if isinstance(self.port, InPort):
+            return self.port.value
 
     def pre_draw(self, ui, x, y):
         rect = self.rect.offset(x, y)
@@ -575,10 +564,41 @@ class GuiPort(gui6.Node):
             font.text(text, round(hc - width/2),
                             round(rect.bottom - height + font.descent))
             font.finish()
-
+            if ui.inside:
+                ui.hotitem = self
+                if ui.activeitem is None and ui.buttons > 0:
+                    ui.activeitem = self
+                    ui.activestate = ui.mouse[1], self.value.ratio, ui.buttons
+            if ui.activeitem is self and ui.buttons == 1:
+                dy = ui.mouse[1] - ui.activestate[0]
+                self.value.ratio = min(1.0, max(0.0, ui.activestate[1] + dy / 100.0))
+                ui.queue(self.updated.emit)
         else:
+            if ui.inside:
+                ui.hotitem = self
+                if ui.activeitem is None and ui.buttons > 0:
+                    ui.activeitem = self
+                    ui.activestate = ui.mouse[1], None, ui.buttons
             gui6.circle_stroke(ui, self.color, inrect0)
             gui6.circle_fill(ui, self.color, inrect1)
+            if isinstance(self.value, Constant) and self.value.const != 0:
+                hc = rect.hcenter
+                vc = rect.vcenter
+                value = self.value.const
+                if -10 < value < 10.0:
+                    text = "%.2f" % value
+                else: 
+                    text = "%.1f" % value
+                font = ui.mem(FontEngine, int(9))
+                width = font.measure(text)
+                height = font.ascent + font.descent
+                font.prepare((1,1,1,1))
+                font.text(text, round(hc - width/2),
+                                round(rect.bottom - height + font.descent))
+                font.finish()
+        if ui.buttons == 0 and ui.hotitem == self and ui.activeitem == self and ui.activestate[2] == 4:
+            cmenu = guiport_context_menu(ui.mouse[0], ui.widget.height - ui.mouse[1], self)
+            ui.queue(self.root.open_context_menu, cmenu)
 
 def inport_column(names, ports, inline=False):
     with gui6.Node():
@@ -591,7 +611,7 @@ def inport_column(names, ports, inline=False):
             with gui6.Node():
                 gui6.flex_direction(gui6.Row)
                 gui6.align_items(gui6.Center)
-                with GuiPort(value=port.value, color=color_by_type(port.ty)):
+                with GuiPort(port=port, color=color_by_type(port.ty)):
                     gui6.width(32)
                     gui6.height(32)
                     gui6.margin(gui6.All, 10)
@@ -609,14 +629,15 @@ def outport_column(names, ports, inline=False):
                 gui6.flex_direction(gui6.Row)
                 gui6.align_items(gui6.Center)
                 components3.Label(text=names[i], color=(0,1,0,1), font_height=12)
-                with GuiPort(name=port.uid, color=color_by_type(port.ty)):
+                with GuiPort(name=port.uid, port=port, color=color_by_type(port.ty)):
                     gui6.width(32)
                     gui6.height(32)
                     gui6.margin(gui6.All, 10)
 
-def plugin_template(template):
-    iports = [port for port in template.desc.info['ports'] if port['type'].startswith('input')]
-    oports = [port for port in template.desc.info['ports'] if port['type'].startswith('output')]
+def plugin_template(locator, template):
+    desc = locator.load(template.module, template.label)
+    iports = [port for port in desc.info['ports'] if port['type'].startswith('input')]
+    oports = [port for port in desc.info['ports'] if port['type'].startswith('output')]
     with gui6.Node():
         gui6.flex_direction(gui6.Column)
         with gui6.Node():
@@ -630,16 +651,33 @@ def plugin_template(template):
             outport_column([p['name'].decode('utf-8') for p in oports], template.outputs, inline=True)
 
 class PipelineEditor(gui6.Node):
-    def __init__(self, *args, pipeline, **kwargs):
+    def __init__(self, *args, pipeline, audio_output, **kwargs):
         super().__init__(*args, **kwargs)
         self.pipeline = pipeline
+        self.audio_output = audio_output
         with gui6.NodeContextManager(self):
             gui6.flex_direction(gui6.Row)
             outport_column(pipeline.input_names, pipeline.inputs)
             for item in pipeline.pipe:
                 if isinstance(item, Template):
-                    plugin_template(item)
+                    plugin_template(audio_output.transport.locator, item)
             inport_column(pipeline.output_names, pipeline.outputs)
+        for node in self.traverse():
+            if isinstance(node, GuiPort):
+                node.updated.connect(self.update_pipeline)
+        self.update_edges()
+
+    def update_pipeline(self):
+        with self.audio_output:
+            engine = self.audio_output.transport.engine
+            locator = self.audio_output.transport.locator
+            cache = self.audio_output.transport.pi.deconstruct()
+            pi = build_pipeline(engine, locator, self.pipeline, [], cache)
+            self.audio_output.transport.pi = pi
+            self.audio_output.channels = pi.outputs
+        self.update_edges()
+
+    def update_edges(self):
         self.edges = {}
         for node in self.traverse():
             if isinstance(node, GuiPort) and isinstance(node.name, int):
@@ -679,27 +717,37 @@ class Blank(gui6.Node):
              gui6.width(width)
 
 class PluginPager(gui6.Node):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, selection, **kwargs):
         super().__init__(*args, **kwargs)
+        self.selection = selection
         with gui6.NodeContextManager(self):
-            with gui6.Node(name="content"):
-                gui6.flex_direction(gui6.Row)
-                gui6.position_type(gui6.Relative)
-                gui6.position(gui6.Left, 0.0)
+            gui6.overflow(gui6.Scroll)
+            gui6.flex_direction(gui6.Row)
+            gui6.padding(gui6.Top, 20.0)
+            #with gui6.Node(name="content"):
+            #    gui6.flex_direction(gui6.Row)
+            #    gui6.position_type(gui6.Absolute)
+            #    gui6.position(gui6.Left, 0.0)
+            #    gui6.position(gui6.Top, 20.0)
         self.on_screen = 0
-        self.add_10_on_screen()
+        #self.add_10_on_screen()
         self.scroll_x = 0.0
 
+        for i, (root, name, desc) in enumerate(self.selection):
+            node = plugin_entry(root, name, desc)
+            node.name = i
+            self.add_child(node)
+        self.on_screen = len(self.selection)
+
     def update_after_scroll(self):
-        content = self["content"]
-        screen_width = gui6.YGNodeLayoutGetWidth(self.node)
-        content_width = gui6.YGNodeLayoutGetWidth(content.node)
-        self.hide_off_screen(screen_width)
-        if self.on_screen >= len(selection):
-            self.scroll_x = max(self.scroll_x, -(content_width - screen_width))
+        #content = self["content"]
+        #content_width = gui6.YGNodeLayoutGetWidth(content.node)
+        ##self.hide_off_screen(screen_width)
+        #if self.on_screen >= len(self.selection):
+        self.scroll_x = max(self.scroll_x, -(self.content_width - self.screen_width))
         self.scroll_x = min(0, self.scroll_x)
-        if content_width + self.scroll_x < screen_width and self.on_screen < len(selection):
-            self.add_10_on_screen()
+        #if content_width + self.scroll_x < screen_width and self.on_screen < len(self.selection):
+        #    self.add_10_on_screen()
 
     def hide_off_screen(self, screen_width):
         x0 = -self.scroll_x
@@ -711,7 +759,7 @@ class PluginPager(gui6.Node):
             z1 = z0 + gui6.YGNodeLayoutGetWidth(item.node)
             show = (max(x0,z0) <= min(x1,z1))
             if show and hidden:
-                node = plugin_entry(*selection[index])
+                node = plugin_entry(*self.selection[index])
                 node.name = index
                 self["content"].swap_child(node, index)
             if not show and not hidden:
@@ -719,11 +767,11 @@ class PluginPager(gui6.Node):
 
     def add_10_on_screen(self):
         on_screen = self.on_screen
-        for i, (root, name, desc) in enumerate(selection[on_screen:on_screen+10], on_screen):
+        for i, (root, name, desc) in enumerate(self.selection[on_screen:on_screen+10], on_screen):
             node = plugin_entry(root, name, desc)
             node.name = i
             self["content"].add_child(node)
-        self.on_screen = min(on_screen + 10, len(selection))
+        self.on_screen = min(on_screen + 10, len(self.selection))
 
     def re_present(self, start, stop):
         if self.start == start and self.stop == stop:
@@ -733,27 +781,67 @@ class PluginPager(gui6.Node):
                 width = gui6.YGNodeLayoutGetWidth(item.node)
                 self.scroll_x += width
             item.detach()
-        for i, (root, name, desc) in enumerate(selection[start:stop], start):
+        for i, (root, name, desc) in enumerate(self.selection[start:stop], start):
             node = plugin_entry(root, name, desc)
             node.name = i
             self["content"].add_child(node)
         self.start = max(start, 0)
-        self.stop = min(stop, len(selection))
+        self.stop = min(stop, len(self.selection))
+
+    def pre_draw(self, ui, x, y):
+        self.screen_width = gui6.YGNodeLayoutGetWidth(self.node)
+        self.content_width = max((child.rect.right for child in self), default=0)
+        ui.ctx.scissor = self.rect.offset(x, y)
+
+    def draw(self, ui, x, y):
+        x1, y1 = x + self.rect.left + self.scroll_x, y + self.rect.bottom
+        mouse = ui.mouse[0] - x1, ui.mouse[1] - y1
+        self.pre_draw(ui, x, y)
+        inside = ui.inside
+        cover = None
+        if inside:
+            for child in self:
+                if gui6.box(mouse, child.rect):
+                    cover = child
+        x2 = x + self.rect.left
+        x3 = x2 + gui6.YGNodeLayoutGetWidth(self.node)
+        for child in self:
+            ui.inside = child is cover
+            rect = child.rect.offset(x1, y1)
+            ix = max(rect.left, x2) <= min(rect.right, x3)
+            if ix:
+                child.draw(ui, x1, y1)
+        ui.inside = None is cover
+        self.post_draw(ui, x, y)
+        ui.inside = inside
 
     def post_draw(self, ui, x, y):
+        rect = self.rect.offset(x, y)
+        bar = gui6.Rect(rect.left, rect.top - 20, rect.width, 20)
+        gui6.fill(ui, (1,1,1,1), bar)
+        handle_width = min(bar.width, 10 + bar.width * (self.screen_width / self.content_width))
+        handle = gui6.Rect(bar.left + 2 + (bar.width - 2 - handle_width/2) * (-self.scroll_x / self.content_width),
+                           bar.bottom + 2,
+                           handle_width, 16)
+        gui6.fill(ui, (0,0,0,1), handle)
+
+        ui.ctx.scissor = None
         if ui.inside:
             ui.hotitem = self
             if ui.activeitem is None and ui.buttons > 0:
                 ui.activeitem = self
-                ui.activestate = ui.mouse
+                ui.activestate = ui.mouse, gui6.box(ui.mouse, bar), gui6.box(ui.mouse, handle)
         if ui.activeitem is self and ui.buttons > 0:
-            px, py = ui.activestate
+            (px, py), in_bar, in_handle = ui.activestate
             mx, my = ui.mouse
-            ui.activestate = ui.mouse
-            content = self["content"].node
-            self.scroll_x = self.scroll_x + (mx - px)
+            ui.activestate = ui.mouse, in_bar, in_handle
+            if in_handle:
+                self.scroll_x = self.scroll_x - (mx - px) * self.content_width / (bar.width - handle.width)
+            else:
+            #content = self["content"].node
+                self.scroll_x = self.scroll_x + (mx - px)
             self.update_after_scroll()
-            gui6.YGNodeStyleSetPosition(content, gui6.Left, self.scroll_x)
+            #gui6.YGNodeStyleSetPosition(content, gui6.Left, self.scroll_x)
         if ui.buttons == 0 and ui.hotitem == self and ui.activeitem == self:
             pass
             #content = self["content"].node
@@ -825,15 +913,49 @@ class KKnob(gui6.Node):
       except ValueError:
         pass
 
+class DragItem(components3.Border):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.mouse_visible = False
+
+    def pre_draw(self, ui, x, y):
+        super().pre_draw(ui, x, y)
+        if ui.activeitem is not None and ui.buttons > 0:
+            with gui6.NodeContextManager(self):
+                gui6.position(gui6.Left, ui.mouse[0])
+                gui6.position(gui6.Top, ui.widget.height - ui.mouse[1])
+        if ui.buttons == 0:
+            ui.activedrag = None
+            ui.queue(self.detach)
+
+class DragSource(gui6.Node):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def pre_draw(self, ui, x, y):
+        if ui.inside:
+            ui.hotitem = self
+            if ui.activeitem is None and ui.buttons > 0:
+                ui.activeitem = self
+                ui.activedrag = DragItem(color=(1,1,1,1), _attach_=False)
+                with gui6.NodeContextManager(ui.activedrag):
+                    gui6.position_type(gui6.Absolute)
+                    gui6.position(gui6.Left, ui.mouse[0])
+                    gui6.position(gui6.Top, ui.widget.height - ui.mouse[1])
+                    gui6.width(40.0)
+                    gui6.height(40.0)
+                ui.queue(self.root.add_child, ui.activedrag)
+                
+
 @gui6.prefab(gui6.Node)
 def plugin_entry(root, name, desc):
     name = name.decode('utf-8')
-    with gui6.Node():
+    with DragSource():
         gui6.padding(gui6.All, 10.0)
         with gui6.Node():
             gui6.flex_direction(gui6.Column)
-            components3.Label(text=root, color=(1,1,1,1), font_height=16)
-            components3.Label(text=name, color=(1,1,1,1), font_height=24)
+            components3.Label(text=root, color=(1,1,1,1), font_height=12)
+            components3.Label(text=name, color=(1,1,1,1), font_height=16)
             with gui6.Node():
                 gui6.flex_direction(gui6.Row)
                 inputs = [port for port in desc.info['ports'] if port['type'].startswith('input')]
@@ -873,14 +995,21 @@ def plugin_entry(root, name, desc):
 @gui6.prefab(MainApp)
 def main_widget(editor):
     gui6.flex_direction(gui6.Column)
-    with PipelineEditor(pipeline=main_pipe):
+    with PipelineEditor(name='pipeline_editor', pipeline=main_pipe, audio_output=editor.audio_output):
         gui6.margin(gui6.All, 10.0)
         gui6.height(300.0)
         gui6.overflow(gui6.Scroll)
+    with gui6.Node():
+        gui6.flex_grow(1)
+
+    locator = editor.audio_output.transport.locator
+    selection = list(locator.list())
+    with PluginPager(selection=selection):
+        gui6.margin(gui6.All, 10.0)
+        gui6.height(200)
     # with PluginPager():
     #     gui6.padding(gui6.All, 10.0)
     #     gui6.flex_direction(gui6.Row)
-    #     gui6.overflow(gui6.Scroll)
 
     # with components3.Border(color=(0,1,0,1)):
     #     gui6.width(100.0)
@@ -957,7 +1086,7 @@ class Editor:
         #    index = pd.Series([0,1], dtype='uint32'))
 
         locator = aural.ladspa.Locator()
-        engine = aural.ladspa.Engine(sample_rate=44100, sample_count=2048)
+        engine = aural.ladspa.Engine(sample_rate=44100, sample_count=4096)
         self.bay = bay = box.Bay(Engine(), engine, locator, pulse = Event())
         self.clavier = Source(bay.event_engine, as_stream)
         frame = Hold(0, bay.pulse)
@@ -1031,15 +1160,19 @@ class Editor:
         #  gain = Hold(2.0),
         #  input = out)
 
-        left  = engine.zeros()
-        right = engine.zeros()
-        @bay.event_engine.observe(lout, rout)
-        def _listening_(ldata, rdata):
-            left[:] = ldata
-            right[:] = rdata
-        self.audio_output = aural.device.SDLDevice(bay, left, right)
-        self.out0 = engine.zeros()
-        self.out1 = engine.zeros()
+        # left  = engine.zeros()
+        # right = engine.zeros()
+        # @bay.event_engine.observe(lout, rout)
+        # def _listening_(ldata, rdata):
+        #     left[:] = ldata
+        #     right[:] = rdata
+        # self.audio_output = aural.device.SDLDevice(bay, left, right)
+        # self.out0 = engine.zeros()
+        # self.out1 = engine.zeros()
+
+        pi = build_pipeline(engine, locator, main_pipe, [], cache={})
+        tr = Transport(engine, locator, pi)
+        self.audio_output = aural.device.SDLDevice(tr, *pi.outputs)
 
         self.running = False
         self.time = 0.0
