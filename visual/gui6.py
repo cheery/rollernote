@@ -62,11 +62,15 @@ class Node(metaclass=NodeMetaclass):
                 height)
 
     @property
+    def irect(self):
+        return self.rect
+
+    @property
     def global_rect(self):
         rect = self.rect
         parent = self.parent
         while parent:
-            left, bottom, _, _ = parent.rect
+            left, bottom, _, _ = parent.irect
             rect = rect.offset(left, bottom)
             parent = parent.parent
         return rect
@@ -94,6 +98,10 @@ class Node(metaclass=NodeMetaclass):
         self.parent.children.pop(self.name)
         self.parent = None
 
+    def detach_children(self):
+        for node in list(self):
+            node.detach()
+
     def __del__(self):
         YGNodeFree(self.node)
 
@@ -110,7 +118,7 @@ class Node(metaclass=NodeMetaclass):
         for child in self:
             ui.inside = child is cover
             child.draw(ui, x1, y1)
-        ui.inside = None is cover
+        ui.inside = inside and None is cover
         self.post_draw(ui, x, y)
         ui.inside = inside
         #trace(ui, (1,0,1,1), self.rect.offset(x, y))
@@ -257,6 +265,9 @@ class Rect:
     def offset(self, x, y):
         return Rect(x + self.left, y + self.bottom, self.width, self.height)
 
+    def outset(self, x, y):
+        return Rect(self.left - x, self.bottom - y, self.width + 2*x, self.height + 2*y)
+
 KeyDown = namedtuple('KeyDown', ['sym', 'repeat', 'modifiers'])
 KeyUp   = namedtuple('KeyUp', ['sym', 'modifiers'])
 KeyText = namedtuple('KeyText', ['text'])
@@ -307,6 +318,7 @@ class GUI:
         self.queued.append((fn, args, kwargs))
 
     def do_layout(self):
+        self.ctx.scissor = 0,0,self.widget.width,self.widget.height
         token = ui.set(self)
         try:
             YGNodeCalculateLayout(self.scene.node,

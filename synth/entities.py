@@ -8,8 +8,9 @@ control = PrimType()
 clavier = PrimType() # TODO: rename into something else
 
 class Pipeline:
-    def __init__(self, uid, inputs, pipe, outputs, input_names, output_names):
+    def __init__(self, uid, name, inputs, pipe, outputs, input_names, output_names):
         self.uid = uid
+        self.name = name
         self.inputs = inputs
         self.pipe = pipe
         self.outputs = outputs
@@ -46,7 +47,10 @@ class Knob:
             return lower * (1-u) + upper * u
 
 def value_knob(lower, upper, value, is_log=False):
-    ratio = math.log(value / lower) / math.log(upper / lower)
+    if is_log:
+        ratio = math.log(value / lower) / math.log(upper / lower)
+    else:
+        ratio = (value - lower) / (upper - lower)
     return Knob(lower, upper, ratio, is_log=is_log)
 
 class Template:

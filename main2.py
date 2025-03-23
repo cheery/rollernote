@@ -475,7 +475,7 @@ from synth.instances import build_pipeline, Transport
 value_updated = namedtuple("value_updated", [])
 open_context_menu = namedtuple("open_context_menu", ['menu'])
 
-main_pipe = Pipeline(1, 
+main_pipe = Pipeline(1, "main",
   inputs = [ ], #OutPort(2, clavier) ],
   pipe = [
       Template(4, "sawtooth_1641", b"sawtooth_fc_oa",
@@ -509,6 +509,7 @@ def guiport_context_menu(x, y, guiport):
         gui6.position(gui6.Top, y)
         if isinstance(guiport.port, InPort):
             with components3.Button() as button:
+                button.clicked.connect(lambda: print('hello'))
                 button.clicked.connect(close_context_menu(this))
                 @button.clicked.connect
                 def detach_port():
@@ -544,6 +545,27 @@ class GuiPort(gui6.Node):
         inrect1 = gui6.Rect(rect.left + 10, rect.bottom + 10, rect.width - 20, rect.height - 20)
         gui6.fill(ui, (0,0,0,1), rect)
         gui6.trace(ui, self.color, rect)
+        if isinstance(self.port, OutPort):
+            if ui.inside:
+                ui.hotitem = self
+                if ui.activeitem is None and ui.buttons == 1:
+                    ui.activeitem = self
+                    ui.activedrag = DragItem(color=(1,1,1,1), _attach_=False)
+                    ui.activedrag.value = self.port
+                    with gui6.NodeContextManager(ui.activedrag):
+                        gui6.position_type(gui6.Absolute)
+                        gui6.position(gui6.Left, ui.mouse[0])
+                        gui6.position(gui6.Top, ui.widget.height - ui.mouse[1])
+                        gui6.width(40.0)
+                        gui6.height(40.0)
+                    ui.queue(self.root.add_child, ui.activedrag)
+        if isinstance(self.port, InPort) and ui.activeitem is not None and isinstance(ui.activedrag, DragItem) and isinstance(ui.activedrag.value, OutPort) and self.port.ty == ui.activedrag.value.ty:
+            gui6.trace(ui, self.color, rect.outset(2,2))
+            if ui.inside:
+                gui6.trace(ui, self.color, rect.outset(4,4))
+                if ui.buttons == 0:
+                    self.port.value = ui.activedrag.value.uid
+                    ui.queue(self.updated.emit)
         if isinstance(self.value, Knob):
             gui6.circle_stroke(ui, (0.5,0.5,0.5,1), inrect0)
             ratio = self.value.ratio
@@ -650,22 +672,107 @@ def plugin_template(locator, template):
             inport_column([p['name'].decode('utf-8') for p in iports], template.inputs, inline=True)
             outport_column([p['name'].decode('utf-8') for p in oports], template.outputs, inline=True)
 
+class Uids:
+    def __init__(self, index=1000):
+        self.index = index
+
+    def __next__(self):
+        self.index += 1
+        return self.index
+uids = Uids()
+
+class PluginInfo:
+    def __init__(self, module, label, info):
+        self.module = module
+        self.label = label
+        self.info = info
+
+    def to_template(self):
+        inputs = [port for port in self.info['ports'] if port['type'].startswith('input')]
+        outputs = [port for port in self.info['ports'] if port['type'].startswith('output')]
+        inports = []
+        for port in inputs:
+            try:
+                hint = port['hint']
+                default = hint['default']
+                if default is None:
+                    value = Constant(0)
+                else:
+                    val = default['value']
+                    if hint['lower'] is not None and hint['upper'] is not None:
+                        lower = hint['lower'] or 0.0
+                        upper = hint['upper'] or 0.0
+                        if hint['sample_rate']: # TODO: fetch real sample rate somehow
+                            lower *= 44100
+                            upper *= 44100
+                        if default['ratio']:
+                            u = val
+                            if hint['logarithmic']:
+                                val = math.exp(math.log(lower) * (1-u) + math.log(upper) * u)
+                            else:
+                                val = lower * (1-u) + upper * u
+                        value = value_knob(lower, upper, val, is_log=hint['logarithmic'])
+                    else:
+                        value = Constant(val)
+            except ValueError:
+                value = Constant(0)
+            ty = signal if port['type'].endswith('*') else control
+            inports.append(InPort(value, ty))
+        outports = []
+        for port in outputs:
+            ty = signal if port['type'].endswith('*') else control
+            outports.append(OutPort(next(uids), ty))
+        return Template(next(uids), self.module, self.label, inports, outports)
+
+class StageDropArea(gui6.Node):
+    def __init__(self, *args, pipeline, index, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pipeline = pipeline
+        self.index = index
+
+    updated : gui6.Signal
+
+    def pre_draw(self, ui, x, y):
+        rect = self.rect.offset(x, y)
+        if ui.activeitem is not None and isinstance(ui.activedrag, DragItem):
+            if isinstance(ui.activedrag.value, PluginInfo):
+                gui6.fill(ui, (0,1,1,1), rect.outset(-2,-2))
+            if ui.inside:
+                gui6.trace(ui, (0,1,1,1), rect.outset(4,4))
+                if ui.buttons == 0:
+                    tpl = ui.activedrag.value.to_template()
+                    self.pipeline.pipe.insert(self.index, tpl)
+                    ui.queue(self.updated.emit)
+
 class PipelineEditor(gui6.Node):
     def __init__(self, *args, pipeline, audio_output, **kwargs):
         super().__init__(*args, **kwargs)
         self.pipeline = pipeline
         self.audio_output = audio_output
+        self.redraw()
+        self.update_edges()
+
+    def redraw(self):
+        self.detach_children()
+        pipeline = self.pipeline
+        audio_output = self.audio_output
         with gui6.NodeContextManager(self):
             gui6.flex_direction(gui6.Row)
             outport_column(pipeline.input_names, pipeline.inputs)
-            for item in pipeline.pipe:
+            with StageDropArea(pipeline=pipeline, index=0):
+                gui6.width(10.0)
+            for k, item in enumerate(pipeline.pipe, 1):
                 if isinstance(item, Template):
                     plugin_template(audio_output.transport.locator, item)
+                with StageDropArea(pipeline=pipeline, index=k):
+                    gui6.width(10.0)
             inport_column(pipeline.output_names, pipeline.outputs)
         for node in self.traverse():
             if isinstance(node, GuiPort):
                 node.updated.connect(self.update_pipeline)
-        self.update_edges()
+            if isinstance(node, StageDropArea):
+                node.updated.connect(self.redraw)
+                node.updated.connect(self.update_pipeline)
 
     def update_pipeline(self):
         with self.audio_output:
@@ -686,6 +793,7 @@ class PipelineEditor(gui6.Node):
                 self.edges[node.value][1].append(node)
 
     def pre_draw(self, ui, x, y):
+        self.update_edges()
         rect = self.rect.offset(x, y)
         gui6.trace(ui, (1,1,1,1), rect)
         line_width = ui.ctx.line_width
@@ -709,149 +817,6 @@ class PipelineEditor(gui6.Node):
                 buffer.write(data)
                 vao.render(mode=ui.ctx.LINES)
         ui.ctx.line_width = line_width
-
-class Blank(gui6.Node):
-    def __init__(self, *args, width=0, **kwargs):
-        super().__init__(*args, **kwargs)
-        with gui6.NodeContextManager(self):
-             gui6.width(width)
-
-class PluginPager(gui6.Node):
-    def __init__(self, *args, selection, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.selection = selection
-        with gui6.NodeContextManager(self):
-            gui6.overflow(gui6.Scroll)
-            gui6.flex_direction(gui6.Row)
-            gui6.padding(gui6.Top, 20.0)
-            #with gui6.Node(name="content"):
-            #    gui6.flex_direction(gui6.Row)
-            #    gui6.position_type(gui6.Absolute)
-            #    gui6.position(gui6.Left, 0.0)
-            #    gui6.position(gui6.Top, 20.0)
-        self.on_screen = 0
-        #self.add_10_on_screen()
-        self.scroll_x = 0.0
-
-        for i, (root, name, desc) in enumerate(self.selection):
-            node = plugin_entry(root, name, desc)
-            node.name = i
-            self.add_child(node)
-        self.on_screen = len(self.selection)
-
-    def update_after_scroll(self):
-        #content = self["content"]
-        #content_width = gui6.YGNodeLayoutGetWidth(content.node)
-        ##self.hide_off_screen(screen_width)
-        #if self.on_screen >= len(self.selection):
-        self.scroll_x = max(self.scroll_x, -(self.content_width - self.screen_width))
-        self.scroll_x = min(0, self.scroll_x)
-        #if content_width + self.scroll_x < screen_width and self.on_screen < len(self.selection):
-        #    self.add_10_on_screen()
-
-    def hide_off_screen(self, screen_width):
-        x0 = -self.scroll_x
-        x1 = -self.scroll_x + screen_width
-        for item in self["content"]:
-            index = item.name
-            hidden = isinstance(item, Blank)
-            z0 = gui6.YGNodeLayoutGetLeft(item.node)
-            z1 = z0 + gui6.YGNodeLayoutGetWidth(item.node)
-            show = (max(x0,z0) <= min(x1,z1))
-            if show and hidden:
-                node = plugin_entry(*self.selection[index])
-                node.name = index
-                self["content"].swap_child(node, index)
-            if not show and not hidden:
-                self["content"].swap_child(Blank(name=index, width=z1-z0, _attach_=False), index)
-
-    def add_10_on_screen(self):
-        on_screen = self.on_screen
-        for i, (root, name, desc) in enumerate(self.selection[on_screen:on_screen+10], on_screen):
-            node = plugin_entry(root, name, desc)
-            node.name = i
-            self["content"].add_child(node)
-        self.on_screen = min(on_screen + 10, len(self.selection))
-
-    def re_present(self, start, stop):
-        if self.start == start and self.stop == stop:
-            return
-        for item in list(self["content"]):
-            if item.name < start:
-                width = gui6.YGNodeLayoutGetWidth(item.node)
-                self.scroll_x += width
-            item.detach()
-        for i, (root, name, desc) in enumerate(self.selection[start:stop], start):
-            node = plugin_entry(root, name, desc)
-            node.name = i
-            self["content"].add_child(node)
-        self.start = max(start, 0)
-        self.stop = min(stop, len(self.selection))
-
-    def pre_draw(self, ui, x, y):
-        self.screen_width = gui6.YGNodeLayoutGetWidth(self.node)
-        self.content_width = max((child.rect.right for child in self), default=0)
-        ui.ctx.scissor = self.rect.offset(x, y)
-
-    def draw(self, ui, x, y):
-        x1, y1 = x + self.rect.left + self.scroll_x, y + self.rect.bottom
-        mouse = ui.mouse[0] - x1, ui.mouse[1] - y1
-        self.pre_draw(ui, x, y)
-        inside = ui.inside
-        cover = None
-        if inside:
-            for child in self:
-                if gui6.box(mouse, child.rect):
-                    cover = child
-        x2 = x + self.rect.left
-        x3 = x2 + gui6.YGNodeLayoutGetWidth(self.node)
-        for child in self:
-            ui.inside = child is cover
-            rect = child.rect.offset(x1, y1)
-            ix = max(rect.left, x2) <= min(rect.right, x3)
-            if ix:
-                child.draw(ui, x1, y1)
-        ui.inside = None is cover
-        self.post_draw(ui, x, y)
-        ui.inside = inside
-
-    def post_draw(self, ui, x, y):
-        rect = self.rect.offset(x, y)
-        bar = gui6.Rect(rect.left, rect.top - 20, rect.width, 20)
-        gui6.fill(ui, (1,1,1,1), bar)
-        handle_width = min(bar.width, 10 + bar.width * (self.screen_width / self.content_width))
-        handle = gui6.Rect(bar.left + 2 + (bar.width - 2 - handle_width/2) * (-self.scroll_x / self.content_width),
-                           bar.bottom + 2,
-                           handle_width, 16)
-        gui6.fill(ui, (0,0,0,1), handle)
-
-        ui.ctx.scissor = None
-        if ui.inside:
-            ui.hotitem = self
-            if ui.activeitem is None and ui.buttons > 0:
-                ui.activeitem = self
-                ui.activestate = ui.mouse, gui6.box(ui.mouse, bar), gui6.box(ui.mouse, handle)
-        if ui.activeitem is self and ui.buttons > 0:
-            (px, py), in_bar, in_handle = ui.activestate
-            mx, my = ui.mouse
-            ui.activestate = ui.mouse, in_bar, in_handle
-            if in_handle:
-                self.scroll_x = self.scroll_x - (mx - px) * self.content_width / (bar.width - handle.width)
-            else:
-            #content = self["content"].node
-                self.scroll_x = self.scroll_x + (mx - px)
-            self.update_after_scroll()
-            #gui6.YGNodeStyleSetPosition(content, gui6.Left, self.scroll_x)
-        if ui.buttons == 0 and ui.hotitem == self and ui.activeitem == self:
-            pass
-            #content = self["content"].node
-            #self.scroll_x -= 50
-            #x = gui6.YGNodeStyleGetPosition(content, gui6.Left).value
-            #gui6.YGNodeStyleSetPosition(content, gui6.Left, self.scroll_x)
-            #self.update_after_scroll()
-            #YGGetPosition(self.node, Left)
-            #self.page += 5
-            #self.present(self.page)
 
 from visual.font import FontEngine
 
@@ -917,6 +882,7 @@ class DragItem(components3.Border):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.mouse_visible = False
+        self.value = None
 
     def pre_draw(self, ui, x, y):
         super().pre_draw(ui, x, y)
@@ -929,8 +895,9 @@ class DragItem(components3.Border):
             ui.queue(self.detach)
 
 class DragSource(gui6.Node):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, value, **kwargs):
         super().__init__(*args, **kwargs)
+        self.value = value
 
     def pre_draw(self, ui, x, y):
         if ui.inside:
@@ -938,6 +905,7 @@ class DragSource(gui6.Node):
             if ui.activeitem is None and ui.buttons > 0:
                 ui.activeitem = self
                 ui.activedrag = DragItem(color=(1,1,1,1), _attach_=False)
+                ui.activedrag.value = self.value
                 with gui6.NodeContextManager(ui.activedrag):
                     gui6.position_type(gui6.Absolute)
                     gui6.position(gui6.Left, ui.mouse[0])
@@ -949,8 +917,8 @@ class DragSource(gui6.Node):
 
 @gui6.prefab(gui6.Node)
 def plugin_entry(root, name, desc):
-    name = name.decode('utf-8')
-    with DragSource():
+    with DragSource(value=PluginInfo(root, name, desc.info)):
+        name = name.decode('utf-8')
         gui6.padding(gui6.All, 10.0)
         with gui6.Node():
             gui6.flex_direction(gui6.Column)
@@ -995,85 +963,24 @@ def plugin_entry(root, name, desc):
 @gui6.prefab(MainApp)
 def main_widget(editor):
     gui6.flex_direction(gui6.Column)
-    with PipelineEditor(name='pipeline_editor', pipeline=main_pipe, audio_output=editor.audio_output):
+    with components3.Scrollable():
+        with gui6.Node():
+            gui6.position_type(gui6.Absolute)
+            with PipelineEditor(name='pipeline_editor', pipeline=main_pipe, audio_output=editor.audio_output):
+                pass
         gui6.margin(gui6.All, 10.0)
-        gui6.height(300.0)
-        gui6.overflow(gui6.Scroll)
-    with gui6.Node():
-        gui6.flex_grow(1)
-
+        gui6.flex_grow(1.0)
+        gui6.flex_shrink(1.0)
     locator = editor.audio_output.transport.locator
     selection = list(locator.list())
-    with PluginPager(selection=selection):
+    with components3.Scrollable(vertical = False) as this:
+        gui6.flex_direction(gui6.Row)
         gui6.margin(gui6.All, 10.0)
         gui6.height(200)
-    # with PluginPager():
-    #     gui6.padding(gui6.All, 10.0)
-    #     gui6.flex_direction(gui6.Row)
-
-    # with components3.Border(color=(0,1,0,1)):
-    #     gui6.width(100.0)
-    #     gui6.height(100.0)
-    # with components3.Border(color=(1,0,0,1)):
-    #     gui6.width(100.0)
-    #     gui6.height(100.0)
-    # components3.Label(text="Hello world", color=(1,1,1,1))
-    # components3.Label(text="Hello world", color=(1,1,1,1))
-    # components3.Label(text="Hello world", color=(1,1,1,1))
-    # components3.Label(text="Hello world", color=(1,1,1,1))
-    # components3.Label(text="Hello world", color=(1,1,1,1))
-
-
-    #with gui6.Node(layout=gui6.VBox(width=gui6.Flex(0), height=gui6.Flex(0))):
-    #    with gui6.Node(layout=gui6.HBox(width=gui6.Flex(0), height=gui6.Flex(0))):
-    #        with gui6.Node(layout=gui6.Padding(10, 10, 10, 10)):
-    #            with components3.Border(layout=gui6.HBox(width=100, height=300), color=(1,0,0,1)):
-    #                with gui6.Node(layout=gui6.VBox(width=gui6.Flex(0), height=gui6.Flex(0))):
-    #                    components3.Border(layout=gui6.Box(width=50, height=30), color=(0,1,0,1))
-    #                    components3.Border(layout=gui6.Box(width=50, height=30), color=(0,1,0,1))
-    #                    components3.Border(layout=gui6.Box(width=50, height=30), color=(0,1,0,1))
-    #                    components3.Border(layout=gui6.Box(width=50, height=30), color=(0,1,0,1))
-    #                with gui6.Node(layout=gui6.VBox(width=gui6.Flex(0), height=gui6.Flex(0))):
-    #                    components3.Border(layout=gui6.Box(width=50, height=30), color=(0,1,0,1))
-    #                    components3.Border(layout=gui6.Box(width=50, height=30), color=(0,1,0,1))
-    #                    components3.Border(layout=gui6.Box(width=50, height=30), color=(0,1,0,1))
-    #                    components3.Border(layout=gui6.Box(width=50, height=30), color=(0,1,0,1))
-    #                    components3.Border(layout=gui6.Box(width=50, height=30), color=(0,1,0,1))
-    #        with gui6.Node(layout=gui6.Padding(10, 10, 10, 10)):
-    #            components3.Border(layout=gui6.Box(width=100, height=300), color=(1,0,0,1))
-    #        with gui6.Node(layout=gui6.Padding(10, 10, 10, 10)):
-    #            components3.Border(layout=gui6.Box(width=100, height=300), color=(1,0,0,1))
-    #        with gui6.Node(layout=gui6.Padding(10, 10, 10, 10)):
-    #            components3.Border(layout=gui6.Box(width=100, height=300), color=(1,0,0,1))
-    #    with PluginPager(layout=gui6.HBox(align=gui6.align_high, width=gui6.Flex(0), height=gui6.Flex(0))):
-    #        pass
-    #                    #components3.Label(text=name, color=(1,1,1,1), font_height=24, layout=gui6.Box())
-    #pass
-    #v2.widget.Widget(layout=gui6.Box(width=gui6.Flex(0), height=gui6.Flex(0)))
-    
-    #components3.Fill(rect=gui6.Rect(10, 10, 50, 50), color=(0.5, 0.2, 0.4, 1.0))
-    #components3.Border(rect=gui6.Rect(200, 10, 50, 50), color=(0.2, 0.8, 0.4, 1.0))
-    #components3.Border(rect=gui6.Rect(200, 0, 50, 300), color=(0.2, 0.8, 0.4, 1.0))
-    #with components3.Button(rect=gui6.Rect(200, 100, 50, 50)):
-    #    components3.Label(layout=gui6.Box(absolute=(gui6.align_middle, gui6.align_middle)), text="button")
-
-    #components3.Label(rect=gui6.Rect(200, 150, 50, 50), text="Hello world!")
-    #with gui6.Node(layout=gui6.HBox(align=gui6.align_middle, width=gui6.Flex(0), height=gui6.Flex(0))):
-    #    components3.Border(layout=gui6.Box(width=50, height=100), color=(0.5,0.5,0.5,1))
-    #    with components3.Border(layout=gui6.VBox(width=gui6.Flex(0), height=0), color=(0.5,0.5,0.5,1)):
-    #        with components3.Border(layout=gui6.Box(width=50, height=200), color=(1.0,0.5,0.5,1)):
-    #            components3.Label(layout=gui6.Box(width=gui6.Flex(0), height=32), text="200")
-    #        with components3.Border(layout=gui6.Box(width=50, height=300), color=(0.5,0.5,1.0,1)):
-    #            components3.Label(layout=gui6.Box(width=gui6.Flex(0), height=32), text="300")
-    #    with components3.Border(layout=gui6.VBox(width=gui6.Flex(0), height=gui6.Flex(0)), color=(0.5,0.5,0.5,1)):
-    #        gui6.Node(layout=gui6.Box(width=0, height=gui6.Flex(0)))
-    #        with components3.Border(layout=gui6.Box(width=50, height=200), color=(1.0,0.5,0.5,1)):
-    #            components3.Label(layout=gui6.Box(), text="200")
-    #        with components3.Border(layout=gui6.Box(width=50, height=300), color=(0.5,0.5,1.0,1)):
-    #            components3.Label(layout=gui6.Box(), text="300")
-    #        gui6.Node(layout=gui6.Box(width=0, height=gui6.Flex(0)))
-    #        
-    #    components3.Border(layout=gui6.Box(width=50, height=100), color=(0.5,0.5,0.5,1))
+        for i, (root, name, desc) in enumerate(selection):
+            node = plugin_entry(root, name, desc)
+            node.name = i
+            this.add_child(node)
 
 class Editor:
     def __init__(self):
